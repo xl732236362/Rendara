@@ -17,8 +17,13 @@ describe("HTTP job application wiring", () => {
   it.each([
     [
       "image-generation",
-      { prompt: "image", aspect_ratio: "1:1" },
-      { type: "image_generation", prompt: "image", aspect_ratio: "1:1" },
+      { prompt: "image", aspect_ratio: "1:1", quality: "standard" },
+      {
+        type: "image_generation",
+        prompt: "image",
+        aspect_ratio: "1:1",
+        quality: "standard",
+      },
     ],
     [
       "video-generation",

@@ -22,7 +22,11 @@ const imageJob = {
   canvas_id: ids.canvas,
   session_id: ids.session,
   thread_id: "thread-123",
-  payload: { prompt: "A product photograph", aspect_ratio: "1:1" },
+  payload: {
+    prompt: "A product photograph",
+    aspect_ratio: "1:1",
+    quality: "ultra",
+  },
 };
 
 describe("generation queue boundary", () => {
@@ -45,7 +49,11 @@ describe("generation queue boundary", () => {
       session_id: ids.session,
       schemaVersion: 1,
       type: "image_generation",
-      payload: { job_id: ids.job, workspace_id: ids.workspace },
+      payload: {
+        job_id: ids.job,
+        workspace_id: ids.workspace,
+        quality: "ultra",
+      },
     });
   });
 
@@ -73,6 +81,7 @@ describe("generation queue boundary", () => {
           job_id: ids.job,
           workspace_id: ids.workspace,
           prompt: "A product photograph",
+          quality: "ultra",
         },
       },
     });

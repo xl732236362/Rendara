@@ -28,11 +28,13 @@ export function normalizeGenerationError(error: unknown): AppError {
       isHttpErrorStatus(error.statusCode) &&
       isApprovedPair(parsedCode.data, error.statusCode)
     ) {
+      const details = billingDetails(error);
       return new AppError({
         code: parsedCode.data,
         statusCode: error.statusCode,
         message: error.message,
         expose: error.statusCode < 500,
+        ...(details ? { details } : {}),
         cause: error,
       });
     }
@@ -44,6 +46,25 @@ export function normalizeGenerationError(error: unknown): AppError {
     message: "Generation operation failed.",
     cause: error,
   });
+}
+
+function billingDetails(error: Error): Record<string, unknown> | undefined {
+  const source = error as Error & Record<string, unknown>;
+  const details: Record<string, unknown> = {};
+  if (
+    typeof source.currentBalance === "number" &&
+    Number.isFinite(source.currentBalance)
+  )
+    details.currentBalance = source.currentBalance;
+  if (
+    typeof source.requiredAmount === "number" &&
+    Number.isFinite(source.requiredAmount)
+  )
+    details.requiredAmount = source.requiredAmount;
+  if (typeof source.plan === "string") details.plan = source.plan.slice(0, 64);
+  if (typeof source.dailyClaimed === "boolean")
+    details.dailyClaimed = source.dailyClaimed;
+  return Object.keys(details).length > 0 ? details : undefined;
 }
 
 function isErrorWithLegacyFields(

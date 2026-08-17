@@ -58,7 +58,11 @@ export function createMainAgentTools(
   deps: {
     createUserClient: (accessToken: string) => any;
     applyCanvasOperations?: ApplyCanvasOperations;
-    resolveWorkspaceId?: (accessToken: string) => Promise<string>;
+    resolveWorkspaceId?: (context: {
+      accessToken: string;
+      userId: string;
+      canvasId: string;
+    }) => Promise<string>;
     brandKitId?: string | null;
     connectionManager?: ConnectionManager;
     persistImage?: PersistImageFn;

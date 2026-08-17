@@ -85,6 +85,30 @@ function setup() {
 }
 
 describe("SubmitGeneration", () => {
+  it.each(["standard", "hd", "ultra"] as const)(
+    "uses requested %s quality for authorization, cost, and job payload",
+    async (quality) => {
+      const { ports, submit } = setup();
+      const request = {
+        type: "image_generation" as const,
+        prompt: "draw",
+        quality,
+      };
+
+      await submit(principal, request);
+
+      expect(ports.tiers.authorizeMedia).toHaveBeenCalledWith("pro", request);
+      expect(ports.tiers.calculateCreditCost).toHaveBeenCalledWith(
+        "image/default",
+        request,
+      );
+      expect(ports.jobs.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({ quality }),
+        }),
+      );
+    },
+  );
   it.each([
     [{ id: ids.job, status: "running" }, "unexpected create status"],
     [{ id: "not-a-uuid", status: "queued" }, "invalid create id"],

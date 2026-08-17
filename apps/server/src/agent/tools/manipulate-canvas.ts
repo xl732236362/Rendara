@@ -10,14 +10,19 @@ export { measureTextWidth };
 
 export function createManipulateCanvasTool(deps: {
   applyCanvasOperations: ApplyCanvasOperations;
-  resolveWorkspaceId(accessToken: string): Promise<string>;
+  resolveWorkspaceId(context: {
+    accessToken: string;
+    userId: string;
+    canvasId: string;
+  }): Promise<string>;
 }) {
   return tool(
     async (input, config) => {
-      const canvasId = (config as any)?.configurable?.canvas_id;
-      const accessToken = (config as any)?.configurable?.access_token;
+      const canvasId = configurableString(config, "canvas_id");
+      const accessToken = configurableString(config, "access_token");
+      const userId = configurableString(config, "user_id");
 
-      if (!canvasId || !accessToken) {
+      if (!canvasId || !accessToken || !userId) {
         return JSON.stringify({
           error: "no_canvas_context",
           message:
@@ -26,9 +31,13 @@ export function createManipulateCanvasTool(deps: {
       }
 
       try {
-        const workspaceId = await deps.resolveWorkspaceId(accessToken);
+        const workspaceId = await deps.resolveWorkspaceId({
+          accessToken,
+          userId,
+          canvasId,
+        });
         const outcome = await deps.applyCanvasOperations(
-          { userId: "agent", workspaceId, accessToken },
+          { userId, workspaceId, accessToken },
           { canvasId, operations: input.operations },
         );
         return JSON.stringify({
@@ -69,6 +78,15 @@ export function createManipulateCanvasTool(deps: {
       schema: manipulateCanvasSchema,
     },
   );
+}
+
+function configurableString(config: unknown, key: string): string | undefined {
+  if (!config || typeof config !== "object" || !("configurable" in config))
+    return undefined;
+  const configurable = config.configurable;
+  if (!configurable || typeof configurable !== "object") return undefined;
+  const value = (configurable as Record<string, unknown>)[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function invalidOperationsResult(

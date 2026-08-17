@@ -25,6 +25,7 @@ import type { ApplyCanvasOperations } from "../application/canvas/apply-canvas-o
 import type { AttachGeneratedAsset } from "../application/canvas/attach-generated-asset.js";
 import type { SubmitGeneration } from "../application/generation/submit-generation.js";
 import type { ServerEnv } from "../config/env.js";
+import { AppError } from "../errors/app-error.js";
 import type { AgentRunMetadataService } from "../features/agent-runs/agent-run-service.js";
 import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
 import type { CreditService } from "../features/credits/credit-service.js";
@@ -294,19 +295,28 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
   const createUserClientForCanvas = options.createUserClient;
   const resolveWorkspaceId =
     options.applyCanvasOperations && createUserClientForCanvas
-      ? async (accessToken: string) => {
+      ? async (context: {
+          accessToken: string;
+          userId: string;
+          canvasId: string;
+        }) => {
           const client = createUserClientForCanvas(
-            accessToken,
+            context.accessToken,
           ) as UserSupabaseClient;
           const { data, error } = await client
-            .from("workspaces")
-            .select("id")
-            .eq("type", "personal")
-            .limit(1)
-            .single();
-          if (error || !data?.id)
-            throw new Error("No personal workspace found");
-          return data.id;
+            .from("canvases")
+            .select("id, project_id, projects!inner(workspace_id)")
+            .eq("id", context.canvasId)
+            .maybeSingle();
+          const canvas = data as unknown as {
+            id?: string;
+            projects?: { workspace_id?: string };
+          } | null;
+          const workspaceId = canvas?.projects?.workspace_id;
+          if (error || canvas?.id !== context.canvasId || !workspaceId) {
+            throw new Error("Canvas not found or access denied");
+          }
+          return workspaceId;
         }
       : undefined;
 
@@ -359,6 +369,33 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
     if (!run.controller.signal.aborted) {
       run.controller.abort();
     }
+  }
+
+  function handleBillingSubmissionError(
+    error: unknown,
+    run: RuntimeRunRecord,
+  ): void {
+    if (!(error instanceof AppError) || !isBillingErrorCode(error.code)) return;
+    const details = error.details;
+    pushBillingErrorAndAbort(
+      run,
+      run.canvasId,
+      options,
+      error.code,
+      error.expose ? error.message : "Generation request was rejected.",
+      {
+        ...(typeof details?.currentBalance === "number"
+          ? { currentBalance: details.currentBalance }
+          : {}),
+        ...(typeof details?.requiredAmount === "number"
+          ? { requiredAmount: details.requiredAmount }
+          : {}),
+        ...(typeof details?.plan === "string" ? { plan: details.plan } : {}),
+        ...(typeof details?.dailyClaimed === "boolean"
+          ? { dailyClaimed: details.dailyClaimed }
+          : {}),
+      },
+    );
   }
 
   return {
@@ -532,19 +569,28 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           };
 
           const workspaceId = ws.id;
-          const submitted = await submitGeneration(
-            { userId, workspaceId, accessToken },
-            {
-              type: "image_generation",
-              prompt: input.prompt,
-              title: input.title,
-              model: input.model,
-              aspect_ratio: input.aspectRatio,
-              ...(input.inputImages ? { input_images: input.inputImages } : {}),
-              ...(canvasId ? { canvas_id: canvasId } : {}),
-              ...(sessionId ? { session_id: sessionId } : {}),
-            },
-          );
+          let submitted: Awaited<ReturnType<SubmitGeneration>>;
+          try {
+            submitted = await submitGeneration(
+              { userId, workspaceId, accessToken },
+              {
+                type: "image_generation",
+                prompt: input.prompt,
+                title: input.title,
+                model: input.model,
+                ...(input.quality ? { quality: input.quality } : {}),
+                aspect_ratio: input.aspectRatio,
+                ...(input.inputImages
+                  ? { input_images: input.inputImages }
+                  : {}),
+                ...(canvasId ? { canvas_id: canvasId } : {}),
+                ...(sessionId ? { session_id: sessionId } : {}),
+              },
+            );
+          } catch (error) {
+            handleBillingSubmissionError(error, run);
+            throw error;
+          }
           const job = { id: submitted.jobId };
           jobLap("job_created", {
             jobId: job.id,
@@ -708,24 +754,34 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           };
 
           const workspaceId = ws.id;
-          const submitted = await submitGeneration(
-            { userId, workspaceId, accessToken },
-            {
-              type: "video_generation",
-              prompt: input.prompt,
-              model: input.model,
-              ...(input.duration != null ? { duration: input.duration } : {}),
-              ...(input.resolution ? { resolution: input.resolution } : {}),
-              ...(input.aspectRatio ? { aspect_ratio: input.aspectRatio } : {}),
-              ...(input.inputImages ? { input_images: input.inputImages } : {}),
-              ...(input.inputVideo ? { input_video: input.inputVideo } : {}),
-              ...(input.enableAudio != null
-                ? { enable_audio: input.enableAudio }
-                : {}),
-              ...(canvasId ? { canvas_id: canvasId } : {}),
-              ...(sessionId ? { session_id: sessionId } : {}),
-            },
-          );
+          let submitted: Awaited<ReturnType<SubmitGeneration>>;
+          try {
+            submitted = await submitGeneration(
+              { userId, workspaceId, accessToken },
+              {
+                type: "video_generation",
+                prompt: input.prompt,
+                model: input.model,
+                ...(input.duration != null ? { duration: input.duration } : {}),
+                ...(input.resolution ? { resolution: input.resolution } : {}),
+                ...(input.aspectRatio
+                  ? { aspect_ratio: input.aspectRatio }
+                  : {}),
+                ...(input.inputImages
+                  ? { input_images: input.inputImages }
+                  : {}),
+                ...(input.inputVideo ? { input_video: input.inputVideo } : {}),
+                ...(input.enableAudio != null
+                  ? { enable_audio: input.enableAudio }
+                  : {}),
+                ...(canvasId ? { canvas_id: canvasId } : {}),
+                ...(sessionId ? { session_id: sessionId } : {}),
+              },
+            );
+          } catch (error) {
+            handleBillingSubmissionError(error, run);
+            throw error;
+          }
           const job = { id: submitted.jobId };
           jobLap("job_created", {
             jobId: job.id,
@@ -1310,6 +1366,15 @@ function isTerminalEvent(event: StreamEvent) {
     event.type === "run.canceled" ||
     event.type === "run.completed" ||
     event.type === "run.failed"
+  );
+}
+
+function isBillingErrorCode(code: string): code is BillingErrorCode {
+  return (
+    code === "insufficient_credits" ||
+    code === "model_not_accessible" ||
+    code === "resolution_not_allowed" ||
+    code === "concurrency_limit"
   );
 }
 

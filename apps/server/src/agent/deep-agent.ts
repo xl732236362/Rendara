@@ -52,7 +52,11 @@ export type LoomicAgentFactory = (options: {
   submitVideoJob?: SubmitVideoJobFn;
   store?: BaseStore;
   workspaceSkills?: WorkspaceSkillEntry[];
-  resolveWorkspaceId?: (accessToken: string) => Promise<string>;
+  resolveWorkspaceId?: (context: {
+    accessToken: string;
+    userId: string;
+    canvasId: string;
+  }) => Promise<string>;
 }) => LoomicAgent;
 
 export function createLoomicDeepAgent(options: {
@@ -72,7 +76,11 @@ export function createLoomicDeepAgent(options: {
   submitVideoJob?: SubmitVideoJobFn;
   store?: BaseStore;
   workspaceSkills?: WorkspaceSkillEntry[];
-  resolveWorkspaceId?: (accessToken: string) => Promise<string>;
+  resolveWorkspaceId?: (context: {
+    accessToken: string;
+    userId: string;
+    canvasId: string;
+  }) => Promise<string>;
 }): LoomicAgent {
   const backendResult =
     options.backendResult ?? createAgentBackend(options.env, options.canvasId);

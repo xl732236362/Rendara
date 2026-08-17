@@ -2,6 +2,60 @@ import { describe, expect, it, vi } from "vitest";
 import { createManipulateCanvasTool } from "./manipulate-canvas.js";
 
 describe("manipulate_canvas application boundary", () => {
+  it("uses the configured user and canvas-aware workspace resolver", async () => {
+    const applyCanvasOperations = vi.fn(async () => ({
+      canvasId: "canvas-team",
+      applied: 1,
+      descriptions: ["done"],
+      createdIds: {},
+    }));
+    const resolveWorkspaceId = vi.fn(async () => "workspace-team");
+    const tool = createManipulateCanvasTool({
+      applyCanvasOperations: applyCanvasOperations as never,
+      resolveWorkspaceId,
+    });
+
+    await tool.invoke(
+      { operations: [{ action: "delete", element_id: "element-1" }] },
+      {
+        configurable: {
+          access_token: "token",
+          user_id: "user-team",
+          canvas_id: "canvas-team",
+        },
+      },
+    );
+
+    expect(resolveWorkspaceId).toHaveBeenCalledWith({
+      accessToken: "token",
+      userId: "user-team",
+      canvasId: "canvas-team",
+    });
+    expect(applyCanvasOperations).toHaveBeenCalledWith(
+      {
+        userId: "user-team",
+        workspaceId: "workspace-team",
+        accessToken: "token",
+      },
+      expect.objectContaining({ canvasId: "canvas-team" }),
+    );
+  });
+
+  it("rejects missing authenticated user context", async () => {
+    const applyCanvasOperations = vi.fn();
+    const tool = createManipulateCanvasTool({
+      applyCanvasOperations: applyCanvasOperations as never,
+      resolveWorkspaceId: vi.fn(async () => "workspace-team"),
+    });
+
+    const result = await tool.invoke(
+      { operations: [{ action: "delete", element_id: "element-1" }] },
+      { configurable: { access_token: "token", canvas_id: "canvas-team" } },
+    );
+
+    expect(JSON.parse(result)).toMatchObject({ error: "no_canvas_context" });
+    expect(applyCanvasOperations).not.toHaveBeenCalled();
+  });
   it("delegates normalized operations and preserves stable output", async () => {
     const applyCanvasOperations = vi.fn(async () => ({
       canvasId: "canvas-1",
@@ -19,10 +73,16 @@ describe("manipulate_canvas application boundary", () => {
     ];
     const raw = await tool.invoke(
       { operations },
-      { configurable: { access_token: "token", canvas_id: "canvas-1" } },
+      {
+        configurable: {
+          access_token: "token",
+          user_id: "user-1",
+          canvas_id: "canvas-1",
+        },
+      },
     );
     expect(applyCanvasOperations).toHaveBeenCalledWith(
-      { userId: "agent", workspaceId: "workspace-1", accessToken: "token" },
+      { userId: "user-1", workspaceId: "workspace-1", accessToken: "token" },
       { canvasId: "canvas-1", operations },
     );
     expect(JSON.parse(raw)).toEqual({

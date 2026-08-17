@@ -1,7 +1,6 @@
 import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
 import type { BaseLanguageModel } from "@langchain/core/language_models/base";
-import { getPlanConfig } from "@loomic/shared";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import { createApplyCanvasOperations } from "./application/canvas/apply-canvas-operations.js";
 import { createAttachGeneratedAsset } from "./application/canvas/attach-generated-asset.js";
@@ -158,10 +157,48 @@ export function getAppUseCases(app: FastifyInstance): Readonly<UseCases> {
   return useCases;
 }
 
+function snapshotUseCases(candidate: Readonly<UseCases>): Readonly<UseCases> {
+  const canvas = candidate?.canvas;
+  const skills = candidate?.skills;
+  const generation = candidate?.generation;
+  if (
+    !canvas ||
+    typeof canvas.applyOperations !== "function" ||
+    typeof canvas.attachGeneratedAsset !== "function" ||
+    !skills ||
+    typeof skills.importSkill !== "function" ||
+    (generation !== undefined &&
+      (typeof generation.cancel !== "function" ||
+        typeof generation.submit !== "function"))
+  ) {
+    throw new TypeError("Invalid injected useCases shape.");
+  }
+  return Object.freeze({
+    canvas: Object.freeze({
+      applyOperations: canvas.applyOperations,
+      attachGeneratedAsset: canvas.attachGeneratedAsset,
+    }),
+    skills: Object.freeze({ importSkill: skills.importSkill }),
+    ...(generation
+      ? {
+          generation: Object.freeze({
+            cancel: generation.cancel,
+            submit: generation.submit,
+          }),
+        }
+      : {}),
+  });
+}
+
 export function buildAppFromEnv(
   env: ServerEnv,
   options: Omit<BuildAppOptions, "env"> = {},
 ): FastifyInstance {
+  // Validate caller-owned application boundaries before registering any async
+  // plugins so a malformed composition cannot leave partially started work.
+  const injectedUseCases = options.useCases
+    ? snapshotUseCases(options.useCases)
+    : undefined;
   // Register generation providers (shared with worker.ts)
   const providerRegistry = (
     options.providerRegistry ?? registerAllProviders(env)
@@ -278,7 +315,7 @@ export function buildAppFromEnv(
     ? createJobServiceGenerationPorts({ jobService, toAuthenticatedUser })
     : undefined;
   const useCases: Readonly<UseCases> =
-    options.useCases ??
+    injectedUseCases ??
     Object.freeze({
       canvas: Object.freeze({
         applyOperations: createApplyCanvasOperations({
@@ -344,7 +381,7 @@ export function buildAppFromEnv(
                       if (request.type === "image_generation") {
                         tierGuard.checkResolution(
                           plan,
-                          getPlanConfig(plan).maxResolution,
+                          request.quality ?? "hd",
                         );
                       } else if (
                         request.resolution === "720p" ||
@@ -364,7 +401,7 @@ export function buildAppFromEnv(
                         model,
                         request.type,
                         request.type === "image_generation"
-                          ? { quality: "hd" }
+                          ? { quality: request.quality ?? "hd" }
                           : {
                               ...(request.duration !== undefined
                                 ? { duration: request.duration }
@@ -424,7 +461,16 @@ export function buildAppFromEnv(
   const connectionManager =
     options.connectionManager ?? new ConnectionManager();
   const eventBuffer = new CanvasEventBuffer();
-  setInterval(() => eventBuffer.cleanup(), 5 * 60 * 1000);
+  const eventBufferCleanupTimer = setInterval(
+    () => eventBuffer.cleanup(),
+    5 * 60 * 1000,
+  );
+  eventBufferCleanupTimer.unref?.();
+  app.addHook("onClose", async () => {
+    clearInterval(eventBufferCleanupTimer);
+    eventBuffer.dispose();
+    connectionManager.dispose();
+  });
   const agentRuns = createAgentRunService({
     applyCanvasOperations: useCases.canvas.applyOperations,
     attachGeneratedAsset: useCases.canvas.attachGeneratedAsset,

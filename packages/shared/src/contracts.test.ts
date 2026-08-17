@@ -95,6 +95,35 @@ describe("@loomic/shared contracts", () => {
     ).toThrow();
   });
 
+  it.each(["standard", "hd", "ultra"] as const)(
+    "preserves image quality %s through submission and queue contracts",
+    (quality) => {
+      const requestSchema = getExportedSchema(
+        "generationSubmissionRequestSchema",
+      );
+      const queueSchema = getExportedSchema("generationQueueEnvelopeSchema");
+      expect(
+        requestSchema.parse({
+          type: "image_generation",
+          prompt: "draw",
+          quality,
+        }),
+      ).toMatchObject({ quality });
+      expect(
+        queueSchema.parse({
+          schemaVersion: 1,
+          type: "image_generation",
+          payload: {
+            job_id: "44444444-4444-4444-8444-444444444444",
+            workspace_id: "55555555-5555-4555-8555-555555555555",
+            prompt: "draw",
+            quality,
+          },
+        }).payload,
+      ).toMatchObject({ quality });
+    },
+  );
+
   it("shares generation cancellation request and response contracts", () => {
     const requestSchema = getExportedSchema(
       "generationCancellationRequestSchema",

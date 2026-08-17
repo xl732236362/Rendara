@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { loadServerEnv } from "../config/env.js";
+import { AppError } from "../errors/app-error.js";
 import { ProviderRegistry } from "../generation/providers/registry.js";
 import { createAgentRunService } from "./runtime.js";
 import type { SubmitImageJobFn } from "./tools/image-generate.js";
@@ -8,17 +9,157 @@ import { createMainAgentTools } from "./tools/index.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
 
 describe("Agent runtime application wiring", () => {
+  it("emits billing.error and aborts the run when submission is rejected for billing", async () => {
+    let submitImageJob: SubmitImageJobFn | undefined;
+    let runtimeSignal: AbortSignal | undefined;
+    const pushToCanvas = vi.fn();
+    const service = createAgentRunService({
+      agentFactory: ((options: { submitImageJob?: SubmitImageJobFn }) => {
+        submitImageJob = options.submitImageJob;
+        return {
+          async *streamEvents(
+            _input: unknown,
+            config: { signal?: AbortSignal },
+          ) {
+            runtimeSignal = config.signal;
+            yield* [];
+          },
+          async *stream() {},
+        };
+      }) as never,
+      connectionManager: { pushToCanvas } as never,
+      createUserClient: (() => workspaceClient()) as never,
+      env: loadServerEnv(
+        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
+        {},
+      ),
+      jobService: {} as never,
+      providerRegistry: new ProviderRegistry().seal(),
+      submitGeneration: vi.fn(async () => {
+        throw new AppError({
+          code: "insufficient_credits",
+          statusCode: 402,
+          message: "Not enough credits",
+          expose: true,
+          details: {
+            currentBalance: 2,
+            requiredAmount: 7,
+            plan: "free",
+            dailyClaimed: true,
+            secret: "hidden",
+          },
+        });
+      }),
+    });
+    const run = service.createRun(
+      {
+        canvasId: "canvas-1",
+        conversationId: "conversation-1",
+        prompt: "hello",
+        sessionId: "session-1",
+      },
+      { accessToken: "token", userId: "11111111-1111-4111-8111-111111111111" },
+    );
+    for await (const _event of service.streamRun(run.runId)) {
+    }
+    if (!submitImageJob) throw new Error("Image tool was not wired");
+
+    await expect(
+      submitImageJob({
+        prompt: "image",
+        title: "Image",
+        model: "image/model",
+        aspectRatio: "1:1",
+      }),
+    ).rejects.toMatchObject({ code: "insufficient_credits" });
+    expect(pushToCanvas).toHaveBeenCalledWith(
+      "canvas-1",
+      expect.objectContaining({
+        type: "billing.error",
+        runId: run.runId,
+        code: "insufficient_credits",
+        message: "Not enough credits",
+        currentBalance: 2,
+        requiredAmount: 7,
+        plan: "free",
+        dailyClaimed: true,
+      }),
+    );
+    expect(pushToCanvas.mock.calls[0]?.[1]).not.toHaveProperty("secret");
+    expect(runtimeSignal?.aborted).toBe(true);
+  });
+
+  it("keeps non-billing submission failures as tool errors without aborting", async () => {
+    let submitImageJob: SubmitImageJobFn | undefined;
+    let runtimeSignal: AbortSignal | undefined;
+    const pushToCanvas = vi.fn();
+    const service = createAgentRunService({
+      agentFactory: ((options: { submitImageJob?: SubmitImageJobFn }) => {
+        submitImageJob = options.submitImageJob;
+        return {
+          async *streamEvents(
+            _input: unknown,
+            config: { signal?: AbortSignal },
+          ) {
+            runtimeSignal = config.signal;
+            yield* [];
+          },
+          async *stream() {},
+        };
+      }) as never,
+      connectionManager: { pushToCanvas } as never,
+      createUserClient: (() => workspaceClient()) as never,
+      env: loadServerEnv(
+        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
+        {},
+      ),
+      jobService: {} as never,
+      providerRegistry: new ProviderRegistry().seal(),
+      submitGeneration: vi.fn(async () => {
+        throw new AppError({
+          code: "application_error",
+          statusCode: 500,
+          message: "Internal failure",
+        });
+      }),
+    });
+    const run = service.createRun(
+      {
+        canvasId: "canvas-1",
+        conversationId: "conversation-1",
+        prompt: "hello",
+        sessionId: "session-1",
+      },
+      { accessToken: "token", userId: "11111111-1111-4111-8111-111111111111" },
+    );
+    for await (const _event of service.streamRun(run.runId)) {
+    }
+    if (!submitImageJob) throw new Error("Image tool was not wired");
+
+    await expect(
+      submitImageJob({
+        prompt: "image",
+        title: "Image",
+        model: "image/model",
+        aspectRatio: "1:1",
+      }),
+    ).rejects.toMatchObject({ code: "application_error" });
+    expect(pushToCanvas).not.toHaveBeenCalled();
+    expect(runtimeSignal?.aborted).toBe(false);
+  });
   it("forwards canvas application dependencies to the resolved Agent factory", async () => {
     const applyCanvasOperations = vi.fn();
     const createUserClient = vi.fn(() => ({
       from: () => ({
         select: () => ({
           eq: () => ({
-            limit: () => ({
-              single: async () => ({
-                data: { id: "workspace-1" },
-                error: null,
-              }),
+            maybeSingle: async () => ({
+              data: {
+                id: "canvas-team",
+                project_id: "project-team",
+                projects: { workspace_id: "workspace-team" },
+              },
+              error: null,
             }),
           }),
         }),
@@ -66,9 +207,26 @@ describe("Agent runtime application wiring", () => {
     expect(toolNames).toContain("manipulate_canvas");
     await expect(
       (
-        factoryOptions?.resolveWorkspaceId as (token: string) => Promise<string>
-      )("token"),
-    ).resolves.toBe("workspace-1");
+        factoryOptions?.resolveWorkspaceId as (context: {
+          accessToken: string;
+          userId: string;
+          canvasId: string;
+        }) => Promise<string>
+      )({ accessToken: "token", userId: "user-team", canvasId: "canvas-team" }),
+    ).resolves.toBe("workspace-team");
+    await expect(
+      (
+        factoryOptions?.resolveWorkspaceId as (context: {
+          accessToken: string;
+          userId: string;
+          canvasId: string;
+        }) => Promise<string>
+      )({
+        accessToken: "token",
+        userId: "user-team",
+        canvasId: "canvas-other",
+      }),
+    ).rejects.toThrow("Canvas not found or access denied");
   });
 
   it("normalizes image and video tool submissions through the injected use case", async () => {
@@ -128,6 +286,7 @@ describe("Agent runtime application wiring", () => {
       prompt: "image",
       title: "Image",
       model: "image/model",
+      quality: "ultra",
       aspectRatio: "1:1",
       inputImages: ["https://example.com/input.png"],
     });
@@ -154,6 +313,7 @@ describe("Agent runtime application wiring", () => {
         prompt: "image",
         title: "Image",
         model: "image/model",
+        quality: "ultra",
         aspect_ratio: "1:1",
         input_images: ["https://example.com/input.png"],
         session_id: "session-1",
@@ -185,6 +345,7 @@ function workspaceClient() {
     from: () => ({
       select: () => ({
         eq: () => ({
+          maybeSingle: async () => ({ data: null, error: null }),
           limit: () => ({
             single: async () => ({
               data: { id: "22222222-2222-4222-8222-222222222222" },

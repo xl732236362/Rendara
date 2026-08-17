@@ -38,6 +38,7 @@ export function createImageGenerationExecutor(
       aspect_ratio?: string;
       title?: string;
       input_images?: string[];
+      quality?: "standard" | "hd" | "ultra";
     };
 
     if (!payload.prompt)
@@ -75,6 +76,7 @@ export function createImageGenerationExecutor(
         generated = await generateImage(providerRegistry, providerName, {
           prompt: payload.prompt,
           model,
+          ...(payload.quality ? { quality: payload.quality } : {}),
           ...(payload.aspect_ratio !== undefined
             ? { aspectRatio: payload.aspect_ratio }
             : {}),

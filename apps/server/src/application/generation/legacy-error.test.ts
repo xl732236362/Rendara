@@ -45,6 +45,26 @@ describe("normalizeGenerationError", () => {
     });
   });
 
+  it("preserves only bounded safe billing metadata from a trusted legacy error", () => {
+    const legacy = Object.assign(
+      new CreditServiceError("insufficient_credits", "Insufficient", 402),
+      {
+        currentBalance: 2,
+        requiredAmount: 7,
+        plan: "free",
+        dailyClaimed: true,
+        secret: "must-not-cross",
+      },
+    );
+
+    expect(normalizeGenerationError(legacy).details).toEqual({
+      currentBalance: 2,
+      requiredAmount: 7,
+      plan: "free",
+      dailyClaimed: true,
+    });
+  });
+
   it.each([
     Object.assign(new Error("unknown"), {
       code: "not_a_boundary_code",

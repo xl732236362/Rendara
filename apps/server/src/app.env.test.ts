@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildAppFromEnv,
   buildAppWithOverrides,
   getAppUseCases,
 } from "./app.js";
 import { loadServerEnv } from "./config/env.js";
+import { AppError } from "./errors/app-error.js";
+import { TierGuardError } from "./features/credits/tier-guard.js";
 import { ProviderRegistry } from "./generation/providers/registry.js";
 
 describe("application environment composition", () => {
@@ -137,7 +139,218 @@ describe("application environment composition", () => {
     expect(factoryOptions).toBeUndefined();
     await app.close();
   });
+
+  it("unrefs and clears each event-buffer cleanup timer on close", async () => {
+    const unref = vi.fn();
+    const timer = { unref } as unknown as NodeJS.Timeout;
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockReturnValue(timer);
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+
+    const firstDispose = vi.fn();
+    const secondDispose = vi.fn();
+    const first = buildAppFromEnv(loadServerEnv({}, {}), {
+      connectionManager: { dispose: firstDispose } as never,
+    });
+    const second = buildAppFromEnv(loadServerEnv({}, {}), {
+      connectionManager: { dispose: secondDispose } as never,
+    });
+    await Promise.all([first.close(), second.close()]);
+
+    expect(unref).toHaveBeenCalledTimes(2);
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(2);
+    expect(clearIntervalSpy).toHaveBeenNthCalledWith(1, timer);
+    expect(clearIntervalSpy).toHaveBeenNthCalledWith(2, timer);
+    expect(firstDispose).toHaveBeenCalledOnce();
+    expect(secondDispose).toHaveBeenCalledOnce();
+    setIntervalSpy.mockRestore();
+    clearIntervalSpy.mockRestore();
+  });
+
+  it("rejects malformed injected use-case groups at build time", () => {
+    expect(() =>
+      buildAppFromEnv(loadServerEnv({}, {}), {
+        useCases: { canvas: {}, skills: {} } as never,
+      }),
+    ).toThrow(/Invalid injected useCases/);
+  });
+
+  it("snapshots and freezes injected use cases against retained mutation", async () => {
+    const originalImport = vi.fn(async () => {
+      throw new AppError({
+        code: "capability_disabled",
+        statusCode: 403,
+        message: "Original import boundary",
+        expose: true,
+      });
+    });
+    const injected = {
+      canvas: {
+        applyOperations: vi.fn(),
+        attachGeneratedAsset: vi.fn(),
+      },
+      skills: { importSkill: originalImport },
+    };
+    const app = buildAppFromEnv(loadServerEnv({}, {}), {
+      auth: {
+        authenticate: async () => ({
+          accessToken: "token",
+          email: "user@example.com",
+          id: "user-1",
+          userMetadata: {},
+        }),
+      },
+      useCases: injected as never,
+    });
+    injected.skills.importSkill = vi.fn(async () => {
+      throw new Error("mutated");
+    });
+
+    const snapshot = getAppUseCases(app);
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot.canvas)).toBe(true);
+    expect(Object.isFrozen(snapshot.skills)).toBe(true);
+    expect(snapshot.skills.importSkill).toBe(originalImport);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/skills/import",
+      payload: { url: "https://github.com/acme/skill" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(originalImport).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
+  it("wires requested image quality into tier authorization and cost", async () => {
+    const checkResolution = vi.fn();
+    const calculateCreditCost = vi.fn(
+      (_model: string, _type: string, params?: { quality?: string }) =>
+        ({ standard: 8, hd: 12, ultra: 20 })[params?.quality ?? "hd"] ?? 12,
+    );
+    const app = buildAppFromEnv(loadServerEnv({}, {}), {
+      creditService: {
+        getSubscription: async () => ({ plan: "ultra" }),
+        deductCredits: async () => "transaction-1",
+      } as never,
+      jobService: generationJobService() as never,
+      providerRegistry: new ProviderRegistry()
+        .registerImageProvider(
+          createImageProvider(
+            "image-provider",
+            "black-forest-labs/flux-kontext-pro",
+          ),
+        )
+        .seal(),
+      tierGuard: {
+        checkModelAccess: vi.fn(),
+        checkResolution,
+        checkVideoResolution: vi.fn(),
+        checkConcurrency: vi.fn(async () => {}),
+        calculateCreditCost,
+      },
+    });
+    await app.ready();
+    const submit = getAppUseCases(app).generation?.submit;
+    if (!submit) throw new Error("Generation use case was not composed");
+
+    for (const quality of ["standard", "hd", "ultra"] as const) {
+      await submit(
+        {
+          userId: "11111111-1111-4111-8111-111111111111",
+          workspaceId: "22222222-2222-4222-8222-222222222222",
+          accessToken: "token",
+        },
+        { type: "image_generation", prompt: "draw", quality },
+      );
+    }
+    await submit(
+      {
+        userId: "11111111-1111-4111-8111-111111111111",
+        workspaceId: "22222222-2222-4222-8222-222222222222",
+      },
+      { type: "image_generation", prompt: "draw with default quality" },
+    );
+
+    expect(checkResolution.mock.calls).toEqual([
+      ["ultra", "standard"],
+      ["ultra", "hd"],
+      ["ultra", "ultra"],
+      ["ultra", "hd"],
+    ]);
+    expect(calculateCreditCost.mock.calls.map((call) => call[2])).toEqual([
+      { quality: "standard" },
+      { quality: "hd" },
+      { quality: "ultra" },
+      { quality: "hd" },
+    ]);
+    await app.close();
+  });
+
+  it("rejects the requested quality instead of authorizing the plan maximum", async () => {
+    const checkResolution = vi.fn((_plan, quality) => {
+      if (quality === "ultra") {
+        throw new TierGuardError(
+          "resolution_not_allowed",
+          "Ultra is unavailable",
+          403,
+        );
+      }
+    });
+    const app = buildAppFromEnv(loadServerEnv({}, {}), {
+      creditService: {
+        getSubscription: async () => ({ plan: "pro" }),
+      } as never,
+      jobService: generationJobService() as never,
+      providerRegistry: new ProviderRegistry()
+        .registerImageProvider(
+          createImageProvider("image-provider", "image/model"),
+        )
+        .seal(),
+      tierGuard: {
+        checkModelAccess: vi.fn(),
+        checkResolution,
+        checkVideoResolution: vi.fn(),
+        checkConcurrency: vi.fn(async () => {}),
+        calculateCreditCost: vi.fn(() => 20),
+      },
+    });
+    await app.ready();
+    const submit = getAppUseCases(app).generation?.submit;
+    if (!submit) throw new Error("Generation use case was not composed");
+
+    await expect(
+      submit(
+        {
+          userId: "11111111-1111-4111-8111-111111111111",
+          workspaceId: "22222222-2222-4222-8222-222222222222",
+        },
+        {
+          type: "image_generation",
+          prompt: "draw",
+          model: "image/model",
+          quality: "ultra",
+        },
+      ),
+    ).rejects.toMatchObject({ code: "resolution_not_allowed" });
+    expect(checkResolution).toHaveBeenCalledWith("pro", "ultra");
+    await app.close();
+  });
 });
+
+function generationJobService() {
+  return {
+    createJob: async () => ({
+      id: "33333333-3333-4333-8333-333333333333",
+      status: "queued",
+    }),
+    setCreditsInfo: async () => {},
+    cancelJob: async () => ({
+      id: "33333333-3333-4333-8333-333333333333",
+      status: "canceled",
+    }),
+  };
+}
 
 function createImageProvider(name: string, modelId: string) {
   return {
