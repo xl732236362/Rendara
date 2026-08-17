@@ -8,6 +8,7 @@ import { createCancelGeneration } from "./application/generation/cancel-generati
 import { createSubmitGeneration } from "./application/generation/submit-generation.js";
 import { createImportSkill } from "./application/skills/import-skill.js";
 import type { UseCases } from "./application/use-cases.js";
+import { startOutboxDispatcher } from "./events/outbox-dispatcher.js";
 
 import type { LoomicAgentFactory } from "./agent/deep-agent.js";
 import {
@@ -146,6 +147,7 @@ export type BuildAppOptions = {
   threadService?: ThreadService;
   viewerService?: ViewerService;
   useCases?: Readonly<UseCases>;
+  startOutboxDispatcher?: boolean;
 };
 
 const appUseCases = new WeakMap<FastifyInstance, Readonly<UseCases>>();
@@ -452,7 +454,68 @@ export function buildAppFromEnv(
     5 * 60 * 1000,
   );
   eventBufferCleanupTimer.unref?.();
+  const outboxAbort = new AbortController();
+  const shouldStartOutbox =
+    options.startOutboxDispatcher ?? process.env.NODE_ENV !== "test";
+  const outboxTask = shouldStartOutbox
+    ? startOutboxDispatcher({
+        workerId: `api-${process.pid}`,
+        batchSize: 25,
+        idleDelayMs: 1_000,
+        signal: outboxAbort.signal,
+        claim: async (limit, workerId) => {
+          const { data, error } = await callAdminRpc(
+            getAdminClient(),
+            "claim_domain_outbox",
+            { p_limit: limit, p_worker_id: workerId },
+          );
+          if (error) throw error;
+          return data ?? [];
+        },
+        publish: async (event) => {
+          if (event.aggregate_type !== "canvas") return;
+          const streamEvent = {
+            type: "canvas.sync" as const,
+            runId: event.event_id,
+            timestamp: event.occurred_at,
+          };
+          if (
+            eventBuffer.pushDomainEvent(
+              event.aggregate_id,
+              event.event_id,
+              streamEvent,
+            )
+          ) {
+            connectionManager.pushToCanvas(event.aggregate_id, streamEvent);
+          }
+        },
+        ack: async (eventId, workerId) => {
+          const { error } = await callAdminRpc(
+            getAdminClient(),
+            "ack_domain_outbox",
+            { p_event_id: eventId, p_worker_id: workerId },
+          );
+          if (error) throw error;
+        },
+        fail: async (eventId, workerId, errorCode) => {
+          const { error } = await callAdminRpc(
+            getAdminClient(),
+            "fail_domain_outbox",
+            {
+              p_event_id: eventId,
+              p_worker_id: workerId,
+              p_error_code: errorCode,
+            },
+          );
+          if (error) throw error;
+        },
+        onError: (error) =>
+          app.log.error({ err: error }, "domain outbox dispatcher failed"),
+      })
+    : Promise.resolve();
   app.addHook("onClose", async () => {
+    outboxAbort.abort();
+    await outboxTask;
     clearInterval(eventBufferCleanupTimer);
     eventBuffer.dispose();
     connectionManager.dispose();
@@ -645,6 +708,21 @@ export function buildAppFromEnv(
   }
 
   return app;
+}
+
+async function callAdminRpc(
+  client: ReturnType<typeof createAdminSupabaseClient>,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ data: unknown; error: unknown | null }> {
+  return (
+    client as unknown as {
+      rpc(
+        name: string,
+        args: Record<string, unknown>,
+      ): Promise<{ data: unknown; error: unknown | null }>;
+    }
+  ).rpc(name, args);
 }
 
 export function buildAppWithOverrides(

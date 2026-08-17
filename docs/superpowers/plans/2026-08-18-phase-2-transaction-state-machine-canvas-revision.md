@@ -523,17 +523,17 @@ git commit -m "feat(web): surface canvas revision conflicts"
 - Modify: `apps/server/src/worker.ts`
 - Modify: `apps/server/src/ws/event-buffer.ts`
 
-- [ ] **Step 1: Write failing dispatcher tests**
+- [x] **Step 1: Write failing dispatcher tests**
 
 Test bounded claims, publish then ack, publish failure then fail/backoff, crash-after-publish duplicate delivery, and event-id inbox deduplication. Use fake timers without sleeping.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run: `pnpm --filter @loomic/server test -- src/events/outbox-dispatcher.test.ts`
 
 Expected: FAIL because no dispatcher exists.
 
-- [ ] **Step 3: Implement one-shot and loop APIs**
+- [x] **Step 3: Implement one-shot and loop APIs**
 
 Expose a deterministic unit:
 
@@ -547,17 +547,17 @@ export async function dispatchOutboxBatch(deps: OutboxDependencies): Promise<{
 
 Claim rows through the RPC, publish to the existing Canvas event adapter, then ack. On failure call the fail RPC with a sanitized error code. The loop uses an abort signal and bounded idle delay; shutdown waits for the active batch.
 
-- [ ] **Step 4: Wire only the current in-process event adapter**
+- [x] **Step 4: Wire only the current in-process event adapter**
 
 Start the dispatcher in the appropriate long-running process without introducing Redis, shared WebSocket state, CRDT, or Phase 5 replay infrastructure. Ensure direct pre-commit Canvas publication is removed.
 
-- [ ] **Step 5: Run dispatcher and WebSocket tests**
+- [x] **Step 5: Run dispatcher and WebSocket tests**
 
 Run: `pnpm --filter @loomic/server test -- src/events src/ws`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```text
 git add apps/server/src/events apps/server/src/app.ts apps/server/src/worker.ts apps/server/src/ws/event-buffer.ts

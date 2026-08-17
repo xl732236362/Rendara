@@ -16,6 +16,7 @@ export class CanvasEventBuffer {
   private readonly maxPerCanvas: number;
   private readonly ttlMs: number;
   private lastWrite = new Map<string, number>();
+  private domainEventIds = new Map<string, Set<string>>();
 
   constructor(options?: { maxPerCanvas?: number; ttlMs?: number }) {
     this.maxPerCanvas = options?.maxPerCanvas ?? 5000;
@@ -41,6 +42,19 @@ export class CanvasEventBuffer {
     this.lastWrite.set(canvasId, Date.now());
   }
 
+  pushDomainEvent(
+    canvasId: string,
+    eventId: string,
+    event: StreamEvent,
+  ): boolean {
+    const seen = this.domainEventIds.get(canvasId) ?? new Set<string>();
+    if (seen.has(eventId)) return false;
+    seen.add(eventId);
+    this.domainEventIds.set(canvasId, seen);
+    this.push(canvasId, event);
+    return true;
+  }
+
   getAfter(canvasId: string, afterSeq?: number): BufferedEvent[] {
     const buf = this.buffers.get(canvasId);
     if (!buf || buf.length === 0) return [];
@@ -59,6 +73,7 @@ export class CanvasEventBuffer {
         this.buffers.delete(canvasId);
         this.seqCounters.delete(canvasId);
         this.lastWrite.delete(canvasId);
+        this.domainEventIds.delete(canvasId);
       }
     }
   }
@@ -67,5 +82,6 @@ export class CanvasEventBuffer {
     this.buffers.clear();
     this.seqCounters.clear();
     this.lastWrite.clear();
+    this.domainEventIds.clear();
   }
 }
