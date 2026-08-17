@@ -13,6 +13,11 @@ import {
   CanvasServiceError,
 } from "../features/canvas/canvas-service.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
+import {
+  parseRequest,
+  raiseBoundaryError,
+  throwLegacyServiceError,
+} from "./route-errors.js";
 
 export async function registerCanvasRoutes(
   app: FastifyInstance,
@@ -45,7 +50,7 @@ export async function registerCanvasRoutes(
       try {
         const user = await options.auth.authenticate(request);
         if (!user) return sendUnauthorized(reply);
-        const payload = canvasSaveRequestSchema.parse(request.body);
+        const payload = parseRequest(canvasSaveRequestSchema, request.body);
         await options.canvasService.saveCanvasContent(
           user,
           request.params.canvasId,
@@ -72,7 +77,7 @@ export async function registerCanvasRoutes(
 
 function sendUnauthorized(reply: FastifyReply) {
   return reply.code(401).send(
-    unauthenticatedErrorResponseSchema.parse({
+    raiseBoundaryError({
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
@@ -82,41 +87,5 @@ function sendUnauthorized(reply: FastifyReply) {
 }
 
 function sendCanvasError(error: unknown, reply: FastifyReply) {
-  if (error instanceof CanvasServiceError) {
-    return reply.code(error.statusCode).send(
-      applicationErrorResponseSchema.parse({
-        error: {
-          code: error.code,
-          message: error.message,
-        },
-      }),
-    );
-  }
-
-  if (isZodError(error)) {
-    return reply.code(400).send({
-      issues: error.issues,
-      message: "Invalid request body",
-    });
-  }
-
-  return reply.code(500).send(
-    applicationErrorResponseSchema.parse({
-      error: {
-        code: "application_error",
-        message: "Internal server error.",
-      },
-    }),
-  );
-}
-
-function isZodError(
-  error: unknown,
-): error is { issues: unknown[]; name: string } {
-  return (
-    error instanceof Error &&
-    error.name === "ZodError" &&
-    "issues" in error &&
-    Array.isArray(error.issues)
-  );
+  throwLegacyServiceError(error);
 }

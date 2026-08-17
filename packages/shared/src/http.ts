@@ -112,15 +112,25 @@ export const applicationErrorCodeSchema = z.enum([
   "concurrency_limit",
   "variant_not_found",
   "checkout_failed",
+  "payment_not_configured",
+  "subscription_not_found",
+  "subscription_update_failed",
+  "webhook_processing_failed",
   "generation_failed",
 ]);
 
 export const boundaryErrorCodeSchema = z.union([
   z.enum([
     "unauthorized",
+    "forbidden",
     "invalid_request",
+    "rate_limited",
     "request_aborted",
     "request_timeout",
+    "unsafe_url",
+    "response_too_large",
+    "invalid_content_type",
+    "upstream_error",
   ]),
   applicationErrorCodeSchema,
 ]);

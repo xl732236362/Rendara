@@ -2,11 +2,13 @@ import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 
 import { ResourceAuthorizationError } from "../security/resource-authorization.js";
+import { registerErrorHandler } from "./error-handler.js";
 import { registerRunRoutes } from "./runs.js";
 
 describe("HTTP run authorization", () => {
   it("does not create a run when the requested canvas differs from the session", async () => {
     const app = Fastify();
+    registerErrorHandler(app);
     const agentRuns = fakeAgentRuns();
     await registerRunRoutes(app, agentRuns as never, {
       auth: { authenticate: async () => authenticatedUser },
@@ -38,6 +40,7 @@ describe("HTTP run authorization", () => {
 
   it("does not cancel a run when object authorization fails", async () => {
     const app = Fastify();
+    registerErrorHandler(app);
     const agentRuns = fakeAgentRuns();
     await registerRunRoutes(app, agentRuns as never, {
       auth: { authenticate: async () => authenticatedUser },

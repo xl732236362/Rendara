@@ -24,6 +24,7 @@ import type {
   RequestAuthenticator,
   UserSupabaseClient,
 } from "../supabase/user.js";
+import { parseRequest, raiseBoundaryError } from "./route-errors.js";
 
 /**
  * Helper to bypass Supabase generated types for tables not yet in the schema
@@ -185,7 +186,7 @@ export async function registerSkillRoutes(
       const user = await options.auth.authenticate(request);
       if (!user) return sendUnauthenticated(reply);
 
-      const payload = skillCreateRequestSchema.parse(request.body);
+      const payload = parseRequest(skillCreateRequestSchema, request.body);
       const slug = generateSlug(payload.name);
       const client = options.createUserClient(user.accessToken);
 
@@ -254,13 +255,6 @@ export async function registerSkillRoutes(
       };
       return reply.code(201).send(skillDetailResponseSchema.parse({ skill }));
     } catch (error) {
-      if (isZodError(error)) {
-        return reply.code(400).send({
-          issues: error.issues,
-          message: "Invalid request body",
-        });
-      }
-
       request.log.error({ err: error }, "skill create error");
       return sendSkillError(
         reply,
@@ -278,7 +272,7 @@ export async function registerSkillRoutes(
 
       assertSkillImportEnabled(options.allowExternalSkillImport);
 
-      const { url } = skillImportRequestSchema.parse(request.body);
+      const { url } = parseRequest(skillImportRequestSchema, request.body);
       const viewer = await options.viewerService.ensureViewer(user);
       const workspaceId = viewer.workspace.id;
       const client = options.createUserClient(user.accessToken);
@@ -379,12 +373,6 @@ export async function registerSkillRoutes(
         .code(201)
         .send(skillDetailResponseSchema.parse({ skill, requiresReview: true }));
     } catch (error) {
-      if (isZodError(error)) {
-        return reply.code(400).send({
-          issues: (error as { issues: unknown[] }).issues,
-          message: "Invalid request body",
-        });
-      }
       if (error instanceof SkillImportError) {
         request.log.warn(
           { code: error.code, message: error.message },
@@ -411,7 +399,7 @@ export async function registerSkillRoutes(
       if (!user) return sendUnauthenticated(reply);
 
       const { id } = request.params as { id: string };
-      const payload = skillUpdateRequestSchema.parse(request.body);
+      const payload = parseRequest(skillUpdateRequestSchema, request.body);
       const client = options.createUserClient(user.accessToken);
 
       // Build the update object with only provided fields
@@ -429,7 +417,7 @@ export async function registerSkillRoutes(
 
       if (Object.keys(updates).length === 0) {
         return reply.code(400).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "skill_update_failed",
               message: "No fields to update.",
@@ -474,13 +462,6 @@ export async function registerSkillRoutes(
       const skill = mapSkillDetailRow(data);
       return reply.code(200).send(skillDetailResponseSchema.parse({ skill }));
     } catch (error) {
-      if (isZodError(error)) {
-        return reply.code(400).send({
-          issues: error.issues,
-          message: "Invalid request body",
-        });
-      }
-
       request.log.error({ err: error }, "skill update error");
       return sendSkillError(
         reply,
@@ -596,7 +577,7 @@ export async function registerSkillRoutes(
       const body = request.body as { skillId?: string };
       if (!body.skillId || typeof body.skillId !== "string") {
         return reply.code(400).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "skill_install_failed",
               message: "skillId is required.",
@@ -709,7 +690,10 @@ export async function registerSkillRoutes(
       if (!user) return sendUnauthenticated(reply);
 
       const { skillId } = request.params as { skillId: string };
-      const payload = workspaceSkillToggleRequestSchema.parse(request.body);
+      const payload = parseRequest(
+        workspaceSkillToggleRequestSchema,
+        request.body,
+      );
       const viewer = await options.viewerService.ensureViewer(user);
       const workspaceId = viewer.workspace.id;
       const client = options.createUserClient(user.accessToken);
@@ -754,13 +738,6 @@ export async function registerSkillRoutes(
 
       return reply.code(204).send();
     } catch (error) {
-      if (isZodError(error)) {
-        return reply.code(400).send({
-          issues: error.issues,
-          message: "Invalid request body",
-        });
-      }
-
       request.log.error({ err: error }, "skill toggle error");
       return sendSkillError(
         reply,
@@ -860,7 +837,7 @@ function generateSlug(name: string): string {
 
 function sendUnauthenticated(reply: FastifyReply) {
   return reply.code(401).send(
-    unauthenticatedErrorResponseSchema.parse({
+    raiseBoundaryError({
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
@@ -876,19 +853,11 @@ function sendSkillError(
   statusCode = 500,
 ) {
   return reply.code(statusCode).send(
-    applicationErrorResponseSchema.parse({
-      error: { code, message },
-    }),
-  );
-}
-
-function isZodError(
-  error: unknown,
-): error is { issues: unknown[]; name: string } {
-  return (
-    error instanceof Error &&
-    error.name === "ZodError" &&
-    "issues" in error &&
-    Array.isArray(error.issues)
+    raiseBoundaryError(
+      {
+        error: { code, message },
+      },
+      statusCode,
+    ),
   );
 }

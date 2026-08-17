@@ -13,6 +13,11 @@ import {
   SettingsServiceError,
 } from "../features/settings/settings-service.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
+import {
+  parseRequest,
+  raiseBoundaryError,
+  throwLegacyServiceError,
+} from "./route-errors.js";
 
 export async function registerSettingsRoutes(
   app: FastifyInstance,
@@ -46,7 +51,10 @@ export async function registerSettingsRoutes(
       const user = await options.auth.authenticate(request);
       if (!user) return sendUnauthorized(reply);
 
-      const payload = workspaceSettingsUpdateRequestSchema.parse(request.body);
+      const payload = parseRequest(
+        workspaceSettingsUpdateRequestSchema,
+        request.body,
+      );
       const viewer = await options.viewerService.ensureViewer(user);
       const settings = await options.settingsService.updateWorkspaceSettings(
         user,
@@ -65,7 +73,7 @@ export async function registerSettingsRoutes(
 
 function sendUnauthorized(reply: FastifyReply) {
   return reply.code(401).send(
-    unauthenticatedErrorResponseSchema.parse({
+    raiseBoundaryError({
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
@@ -75,41 +83,5 @@ function sendUnauthorized(reply: FastifyReply) {
 }
 
 function sendSettingsError(error: unknown, reply: FastifyReply) {
-  if (error instanceof SettingsServiceError) {
-    return reply.code(error.statusCode).send(
-      applicationErrorResponseSchema.parse({
-        error: {
-          code: error.code,
-          message: error.message,
-        },
-      }),
-    );
-  }
-
-  if (isZodError(error)) {
-    return reply.code(400).send({
-      issues: error.issues,
-      message: "Invalid request body",
-    });
-  }
-
-  return reply.code(500).send(
-    applicationErrorResponseSchema.parse({
-      error: {
-        code: "application_error",
-        message: "Internal server error.",
-      },
-    }),
-  );
-}
-
-function isZodError(
-  error: unknown,
-): error is { issues: unknown[]; name: string } {
-  return (
-    error instanceof Error &&
-    error.name === "ZodError" &&
-    "issues" in error &&
-    Array.isArray(error.issues)
-  );
+  throwLegacyServiceError(error);
 }

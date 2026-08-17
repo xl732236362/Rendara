@@ -25,6 +25,12 @@ import {
   requireRunResourceAccess,
 } from "../security/resource-authorization.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
+import {
+  parseRequest,
+  raiseBoundaryError,
+  throwLegacyServiceError,
+  throwRouteError,
+} from "./route-errors.js";
 
 export async function registerRunRoutes(
   app: FastifyInstance,
@@ -40,7 +46,7 @@ export async function registerRunRoutes(
 ) {
   app.post("/api/agent/runs", async (request, reply) => {
     try {
-      const payload = runCreateRequestSchema.parse(request.body);
+      const payload = parseRequest(runCreateRequestSchema, request.body);
       const authenticatedUser = options.auth
         ? await options.auth.authenticate(request)
         : null;
@@ -111,35 +117,7 @@ export async function registerRunRoutes(
 
       return reply.code(202).send(response);
     } catch (error) {
-      if (error instanceof ThreadServiceError) {
-        return reply.code(error.statusCode).send(
-          applicationErrorResponseSchema.parse({
-            error: {
-              code: error.code,
-              message: error.message,
-            },
-          }),
-        );
-      }
-
-      if (error instanceof AgentRunPersistenceError) {
-        return reply.code(error.statusCode).send(
-          applicationErrorResponseSchema.parse({
-            error: {
-              code: error.code,
-              message: error.message,
-            },
-          }),
-        );
-      }
-
-      if (error instanceof ResourceAuthorizationError) {
-        return reply.code(error.statusCode).send({
-          error: { code: error.code, message: error.message },
-        });
-      }
-
-      return handleZodError(error, reply);
+      throwLegacyServiceError(error);
     }
   });
 
@@ -160,51 +138,28 @@ export async function registerRunRoutes(
       const canceledRun = agentRuns.cancelRun(runId);
 
       if (!canceledRun) {
-        return reply.code(404).send({ message: "Run not found" });
+        throwRouteError({
+          code: "application_error",
+          statusCode: 404,
+          message: "Run not found",
+        });
       }
 
       const response = runCancelResponseSchema.parse(canceledRun);
       return reply.code(202).send(response);
     } catch (error) {
-      if (error instanceof ResourceAuthorizationError) {
-        return reply.code(error.statusCode).send({
-          error: { code: error.code, message: error.message },
-        });
-      }
-      throw error;
+      throwLegacyServiceError(error);
     }
   });
 }
 
 function sendUnauthorized(reply: FastifyReply) {
   return reply.code(401).send(
-    unauthenticatedErrorResponseSchema.parse({
+    raiseBoundaryError({
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
       },
     }),
-  );
-}
-
-function handleZodError(error: unknown, reply: FastifyReply) {
-  if (isZodError(error)) {
-    return reply.code(400).send({
-      issues: error.issues,
-      message: "Invalid request body",
-    });
-  }
-
-  throw error;
-}
-
-function isZodError(
-  error: unknown,
-): error is { issues: unknown[]; name: string } {
-  return (
-    error instanceof Error &&
-    error.name === "ZodError" &&
-    "issues" in error &&
-    Array.isArray(error.issues)
   );
 }

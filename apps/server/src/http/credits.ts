@@ -17,6 +17,11 @@ import {
   CreditServiceError,
 } from "../features/credits/credit-service.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
+import {
+  parseRequest,
+  raiseBoundaryError,
+  throwLegacyServiceError,
+} from "./route-errors.js";
 
 export async function registerCreditRoutes(
   app: FastifyInstance,
@@ -119,7 +124,7 @@ export async function registerCreditRoutes(
       const user = await options.auth.authenticate(request);
       if (!user) return sendUnauthenticated(reply);
 
-      const body = setPlanRequestSchema.parse(request.body);
+      const body = parseRequest(setPlanRequestSchema, request.body);
       const viewer = await options.viewerService.ensureViewer(user);
 
       await options.creditService.updatePlan(viewer.workspace.id, body.plan);
@@ -144,11 +149,6 @@ export async function registerCreditRoutes(
         }),
       );
     } catch (error) {
-      if (isZodError(error)) {
-        return reply
-          .code(400)
-          .send({ issues: error.issues, message: "Invalid request body" });
-      }
       return sendCreditError(error, reply, "credit_plan_update_failed");
     }
   });
@@ -158,7 +158,7 @@ export async function registerCreditRoutes(
 
 function sendUnauthenticated(reply: FastifyReply) {
   return reply.code(401).send(
-    unauthenticatedErrorResponseSchema.parse({
+    raiseBoundaryError({
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
@@ -179,30 +179,5 @@ function sendCreditError(
   reply: FastifyReply,
   fallbackCode: CreditErrorFallbackCode,
 ) {
-  if (error instanceof CreditServiceError) {
-    return reply.code(error.statusCode).send(
-      applicationErrorResponseSchema.parse({
-        error: { code: error.code, message: error.message },
-      }),
-    );
-  }
-  return reply.code(500).send(
-    applicationErrorResponseSchema.parse({
-      error: {
-        code: fallbackCode,
-        message: "An unexpected error occurred.",
-      },
-    }),
-  );
-}
-
-function isZodError(
-  error: unknown,
-): error is { issues: unknown[]; name: string } {
-  return (
-    error instanceof Error &&
-    error.name === "ZodError" &&
-    "issues" in error &&
-    Array.isArray(error.issues)
-  );
+  throwLegacyServiceError(error);
 }

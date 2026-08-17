@@ -30,6 +30,11 @@ import {
   JobServiceError,
 } from "../features/jobs/job-service.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
+import {
+  parseRequest,
+  raiseBoundaryError,
+  throwLegacyServiceError,
+} from "./route-errors.js";
 
 export async function registerJobRoutes(
   app: FastifyInstance,
@@ -47,7 +52,7 @@ export async function registerJobRoutes(
       const user = await options.auth.authenticate(request);
       if (!user) return sendUnauthenticated(reply);
 
-      const payload = createImageJobRequestSchema.parse(request.body);
+      const payload = parseRequest(createImageJobRequestSchema, request.body);
       const viewer = await options.viewerService.ensureViewer(user);
 
       // Credit checks (skip if credit system not configured)
@@ -114,11 +119,6 @@ export async function registerJobRoutes(
 
       return reply.code(201).send(jobResponseSchema.parse({ job }));
     } catch (error) {
-      if (isZodError(error)) {
-        return reply
-          .code(400)
-          .send({ issues: error.issues, message: "Invalid request body" });
-      }
       return sendJobError(error, reply, "job_create_failed");
     }
   });
@@ -129,7 +129,7 @@ export async function registerJobRoutes(
       const user = await options.auth.authenticate(request);
       if (!user) return sendUnauthenticated(reply);
 
-      const payload = createVideoJobRequestSchema.parse(request.body);
+      const payload = parseRequest(createVideoJobRequestSchema, request.body);
       const viewer = await options.viewerService.ensureViewer(user);
 
       // Credit checks (skip if credit system not configured)
@@ -207,11 +207,6 @@ export async function registerJobRoutes(
 
       return reply.code(201).send(jobResponseSchema.parse({ job }));
     } catch (error) {
-      if (isZodError(error)) {
-        return reply
-          .code(400)
-          .send({ issues: error.issues, message: "Invalid request body" });
-      }
       return sendJobError(error, reply, "job_create_failed");
     }
   });
@@ -270,7 +265,7 @@ export async function registerJobRoutes(
 
 function sendUnauthenticated(reply: FastifyReply) {
   return reply.code(401).send(
-    unauthenticatedErrorResponseSchema.parse({
+    raiseBoundaryError({
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
@@ -290,44 +285,5 @@ function sendJobError(
   reply: FastifyReply,
   fallbackCode: JobErrorFallbackCode,
 ) {
-  if (error instanceof JobServiceError) {
-    return reply.code(error.statusCode).send(
-      applicationErrorResponseSchema.parse({
-        error: { code: error.code, message: error.message },
-      }),
-    );
-  }
-  if (error instanceof TierGuardError) {
-    return reply.code(error.statusCode).send(
-      applicationErrorResponseSchema.parse({
-        error: { code: error.code, message: error.message },
-      }),
-    );
-  }
-  if (error instanceof CreditServiceError) {
-    return reply.code(error.statusCode).send(
-      applicationErrorResponseSchema.parse({
-        error: { code: error.code, message: error.message },
-      }),
-    );
-  }
-  return reply.code(500).send(
-    applicationErrorResponseSchema.parse({
-      error: {
-        code: fallbackCode,
-        message: "An unexpected error occurred.",
-      },
-    }),
-  );
-}
-
-function isZodError(
-  error: unknown,
-): error is { issues: unknown[]; name: string } {
-  return (
-    error instanceof Error &&
-    error.name === "ZodError" &&
-    "issues" in error &&
-    Array.isArray(error.issues)
-  );
+  throwLegacyServiceError(error);
 }

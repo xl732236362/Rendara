@@ -17,6 +17,11 @@ import {
   BrandKitServiceError,
 } from "../features/brand-kit/brand-kit-service.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
+import {
+  parseRequest,
+  raiseBoundaryError,
+  throwLegacyServiceError,
+} from "./route-errors.js";
 
 const ALLOWED_UPLOAD_MIME_TYPES = new Set([
   "image/png",
@@ -69,18 +74,11 @@ export async function registerBrandKitRoutes(
         return sendUnauthenticated(reply);
       }
 
-      const payload = brandKitCreateRequestSchema.parse(request.body);
+      const payload = parseRequest(brandKitCreateRequestSchema, request.body);
       const kit = await options.brandKitService.createKit(user, payload);
 
       return reply.code(201).send(brandKitDetailResponseSchema.parse(kit));
     } catch (error) {
-      if (isZodError(error)) {
-        return reply.code(400).send({
-          issues: error.issues,
-          message: "Invalid request body",
-        });
-      }
-
       return sendBrandKitError(error, reply, "brand_kit_create_failed");
     }
   });
@@ -113,18 +111,11 @@ export async function registerBrandKitRoutes(
       }
 
       const { kitId } = request.params as { kitId: string };
-      const payload = brandKitUpdateRequestSchema.parse(request.body);
+      const payload = parseRequest(brandKitUpdateRequestSchema, request.body);
       const kit = await options.brandKitService.updateKit(user, kitId, payload);
 
       return reply.code(200).send(brandKitDetailResponseSchema.parse(kit));
     } catch (error) {
-      if (isZodError(error)) {
-        return reply.code(400).send({
-          issues: error.issues,
-          message: "Invalid request body",
-        });
-      }
-
       return sendBrandKitError(error, reply, "brand_kit_update_failed");
     }
   });
@@ -179,7 +170,7 @@ export async function registerBrandKitRoutes(
       const file = await request.file();
       if (!file) {
         return reply.code(400).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "brand_kit_asset_create_failed",
               message: "No file provided.",
@@ -191,7 +182,7 @@ export async function registerBrandKitRoutes(
       const mimeType = file.mimetype;
       if (!ALLOWED_UPLOAD_MIME_TYPES.has(mimeType)) {
         return reply.code(400).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "brand_kit_asset_create_failed",
               message: `Unsupported file type: ${mimeType}. Allowed: ${[...ALLOWED_UPLOAD_MIME_TYPES].join(", ")}`,
@@ -211,7 +202,7 @@ export async function registerBrandKitRoutes(
 
       if (assetType !== "logo" && assetType !== "image") {
         return reply.code(400).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "brand_kit_asset_create_failed",
               message: "asset_type must be 'logo' or 'image'.",
@@ -246,7 +237,10 @@ export async function registerBrandKitRoutes(
       }
 
       const { kitId } = request.params as { kitId: string };
-      const payload = brandKitAssetCreateRequestSchema.parse(request.body);
+      const payload = parseRequest(
+        brandKitAssetCreateRequestSchema,
+        request.body,
+      );
       const asset = await options.brandKitService.createAsset(
         user,
         kitId,
@@ -255,13 +249,6 @@ export async function registerBrandKitRoutes(
 
       return reply.code(201).send(brandKitAssetResponseSchema.parse(asset));
     } catch (error) {
-      if (isZodError(error)) {
-        return reply.code(400).send({
-          issues: error.issues,
-          message: "Invalid request body",
-        });
-      }
-
       return sendBrandKitError(error, reply, "brand_kit_asset_create_failed");
     }
   });
@@ -281,7 +268,10 @@ export async function registerBrandKitRoutes(
           kitId: string;
           assetId: string;
         };
-        const payload = brandKitAssetUpdateRequestSchema.parse(request.body);
+        const payload = parseRequest(
+          brandKitAssetUpdateRequestSchema,
+          request.body,
+        );
         const asset = await options.brandKitService.updateAsset(
           user,
           kitId,
@@ -291,13 +281,6 @@ export async function registerBrandKitRoutes(
 
         return reply.code(200).send(brandKitAssetResponseSchema.parse(asset));
       } catch (error) {
-        if (isZodError(error)) {
-          return reply.code(400).send({
-            issues: error.issues,
-            message: "Invalid request body",
-          });
-        }
-
         return sendBrandKitError(error, reply, "brand_kit_update_failed");
       }
     },
@@ -330,7 +313,7 @@ export async function registerBrandKitRoutes(
 
 function sendUnauthenticated(reply: FastifyReply) {
   return reply.code(401).send(
-    unauthenticatedErrorResponseSchema.parse({
+    raiseBoundaryError({
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
@@ -344,34 +327,5 @@ function sendBrandKitError(
   reply: FastifyReply,
   fallbackCode: BrandKitErrorFallbackCode,
 ) {
-  if (error instanceof BrandKitServiceError) {
-    return reply.code(error.statusCode).send(
-      applicationErrorResponseSchema.parse({
-        error: {
-          code: error.code,
-          message: error.message,
-        },
-      }),
-    );
-  }
-
-  return reply.code(500).send(
-    applicationErrorResponseSchema.parse({
-      error: {
-        code: fallbackCode,
-        message: "An unexpected error occurred.",
-      },
-    }),
-  );
-}
-
-function isZodError(
-  error: unknown,
-): error is { issues: unknown[]; name: string } {
-  return (
-    error instanceof Error &&
-    error.name === "ZodError" &&
-    "issues" in error &&
-    Array.isArray(error.issues)
-  );
+  throwLegacyServiceError(error);
 }

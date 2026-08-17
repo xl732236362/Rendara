@@ -2,11 +2,13 @@ import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 
 import { SafeFetchError } from "../security/safe-fetch.js";
+import { registerErrorHandler } from "./error-handler.js";
 import { registerImageProxyRoute } from "./image-proxy.js";
 
 describe("image proxy", () => {
   it("requires authentication before fetching", async () => {
     const app = Fastify();
+    registerErrorHandler(app);
     let fetched = false;
     await registerImageProxyRoute(app, {
       auth: { authenticate: async () => null },
@@ -34,6 +36,7 @@ describe("image proxy", () => {
     ["upstream_error", 502],
   ] as const)("maps %s to a stable response", async (code, statusCode) => {
     const app = Fastify();
+    registerErrorHandler(app);
     await registerImageProxyRoute(app, {
       auth: { authenticate: async () => authenticatedUser },
       safeFetch: async () => {
@@ -54,6 +57,7 @@ describe("image proxy", () => {
 
   it("preserves the validated image MIME type", async () => {
     const app = Fastify();
+    registerErrorHandler(app);
     await registerImageProxyRoute(app, {
       auth: { authenticate: async () => authenticatedUser },
       safeFetch: async () => ({

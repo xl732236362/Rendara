@@ -13,6 +13,7 @@ import {
   UploadServiceError,
 } from "../features/uploads/upload-service.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
+import { raiseBoundaryError, throwLegacyServiceError } from "./route-errors.js";
 
 const ALLOWED_MIME_TYPES = new Set([
   "image/png",
@@ -39,7 +40,7 @@ export async function registerUploadRoutes(
       const file = await request.file();
       if (!file) {
         return reply.code(400).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "upload_failed",
               message: "No file provided.",
@@ -51,7 +52,7 @@ export async function registerUploadRoutes(
       const mimeType = file.mimetype;
       if (!ALLOWED_MIME_TYPES.has(mimeType)) {
         return reply.code(400).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "upload_failed",
               message: `Unsupported file type: ${mimeType}. Allowed: ${[...ALLOWED_MIME_TYPES].join(", ")}`,
@@ -131,7 +132,7 @@ export async function registerUploadRoutes(
 
 function sendUnauthorized(reply: FastifyReply) {
   return reply.code(401).send(
-    unauthenticatedErrorResponseSchema.parse({
+    raiseBoundaryError({
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
@@ -141,23 +142,5 @@ function sendUnauthorized(reply: FastifyReply) {
 }
 
 function sendUploadError(error: unknown, reply: FastifyReply) {
-  if (error instanceof UploadServiceError) {
-    return reply.code(error.statusCode).send(
-      applicationErrorResponseSchema.parse({
-        error: {
-          code: error.code,
-          message: error.message,
-        },
-      }),
-    );
-  }
-
-  return reply.code(500).send(
-    applicationErrorResponseSchema.parse({
-      error: {
-        code: "application_error",
-        message: "Internal server error.",
-      },
-    }),
-  );
+  throwLegacyServiceError(error);
 }

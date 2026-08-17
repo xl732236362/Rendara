@@ -20,6 +20,11 @@ import type {
   RequestAuthenticator,
   UserSupabaseClient,
 } from "../supabase/user.js";
+import {
+  parseRequest,
+  raiseBoundaryError,
+  throwLegacyServiceError,
+} from "./route-errors.js";
 
 export async function registerViewerRoutes(
   app: FastifyInstance,
@@ -36,7 +41,7 @@ export async function registerViewerRoutes(
 
       if (!user) {
         return reply.code(401).send(
-          unauthenticatedErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "unauthorized",
               message: "Missing or invalid bearer token.",
@@ -100,7 +105,7 @@ export async function registerViewerRoutes(
 
       if (!user) {
         return reply.code(401).send(
-          unauthenticatedErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "unauthorized",
               message: "Missing or invalid bearer token.",
@@ -109,7 +114,7 @@ export async function registerViewerRoutes(
         );
       }
 
-      const payload = profileUpdateRequestSchema.parse(request.body);
+      const payload = parseRequest(profileUpdateRequestSchema, request.body);
       const client = options.createUserClient(user.accessToken);
       const { data, error } = await client
         .from("profiles")
@@ -120,7 +125,7 @@ export async function registerViewerRoutes(
 
       if (error || !data) {
         return reply.code(500).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "profile_update_failed",
               message: "Unable to update profile.",
@@ -140,13 +145,6 @@ export async function registerViewerRoutes(
         }),
       );
     } catch (error) {
-      if (isZodError(error)) {
-        return reply.code(400).send({
-          issues: error.issues,
-          message: "Invalid request body",
-        });
-      }
-
       return sendApplicationError(
         error,
         reply,
@@ -157,40 +155,11 @@ export async function registerViewerRoutes(
   });
 }
 
-function isZodError(
-  error: unknown,
-): error is { issues: unknown[]; name: string } {
-  return (
-    error instanceof Error &&
-    error.name === "ZodError" &&
-    "issues" in error &&
-    Array.isArray(error.issues)
-  );
-}
-
 function sendApplicationError(
   error: unknown,
   reply: FastifyReply,
   fallbackCode: "application_error" | "bootstrap_failed",
   fallbackMessage: string,
 ) {
-  if (error instanceof BootstrapError) {
-    return reply.code(error.statusCode).send(
-      applicationErrorResponseSchema.parse({
-        error: {
-          code: error.code,
-          message: error.message,
-        },
-      }),
-    );
-  }
-
-  return reply.code(500).send(
-    applicationErrorResponseSchema.parse({
-      error: {
-        code: fallbackCode,
-        message: fallbackMessage,
-      },
-    }),
-  );
+  throwLegacyServiceError(error);
 }

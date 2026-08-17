@@ -23,6 +23,7 @@ import type {
   AuthenticatedUser,
   RequestAuthenticator,
 } from "../supabase/user.js";
+import { parseRequest, raiseBoundaryError } from "./route-errors.js";
 
 const generateImageRequestSchema = z.object({
   prompt: z.string().min(1),
@@ -55,7 +56,7 @@ export async function registerGenerateRoutes(
     const user = await options.auth.authenticate(request);
     if (!user) {
       return reply.code(401).send(
-        unauthenticatedErrorResponseSchema.parse({
+        raiseBoundaryError({
           error: {
             code: "unauthorized",
             message: "Missing or invalid bearer token.",
@@ -66,10 +67,10 @@ export async function registerGenerateRoutes(
 
     let payload: z.infer<typeof generateImageRequestSchema>;
     try {
-      payload = generateImageRequestSchema.parse(request.body);
+      payload = parseRequest(generateImageRequestSchema, request.body);
     } catch {
       return reply.code(400).send(
-        applicationErrorResponseSchema.parse({
+        raiseBoundaryError({
           error: {
             code: "invalid_request",
             message: "Invalid request body.",
@@ -141,14 +142,14 @@ export async function registerGenerateRoutes(
       // Handle tier/credit errors
       if (error instanceof TierGuardError) {
         return reply.code(error.statusCode).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: { code: error.code, message: error.message },
           }),
         );
       }
       if (error instanceof CreditServiceError) {
         return reply.code(error.statusCode).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: { code: error.code, message: error.message },
           }),
         );
@@ -159,7 +160,7 @@ export async function registerGenerateRoutes(
 
       if (message.includes("No provider registered")) {
         return reply.code(400).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "provider_not_configured",
               message: "Image generation is not available.",
@@ -169,7 +170,7 @@ export async function registerGenerateRoutes(
       }
 
       return reply.code(502).send(
-        applicationErrorResponseSchema.parse({
+        raiseBoundaryError({
           error: {
             code: "generation_failed",
             message,
@@ -184,7 +185,7 @@ export async function registerGenerateRoutes(
     const user = await options.auth.authenticate(request);
     if (!user) {
       return reply.code(401).send(
-        unauthenticatedErrorResponseSchema.parse({
+        raiseBoundaryError({
           error: {
             code: "unauthorized",
             message: "Missing or invalid bearer token.",
@@ -195,10 +196,10 @@ export async function registerGenerateRoutes(
 
     let payload: z.infer<typeof generateVideoRequestSchema>;
     try {
-      payload = generateVideoRequestSchema.parse(request.body);
+      payload = parseRequest(generateVideoRequestSchema, request.body);
     } catch {
       return reply.code(400).send(
-        applicationErrorResponseSchema.parse({
+        raiseBoundaryError({
           error: {
             code: "invalid_request",
             message: "Invalid request body.",
@@ -209,7 +210,7 @@ export async function registerGenerateRoutes(
 
     if (!options.jobService) {
       return reply.code(503).send(
-        applicationErrorResponseSchema.parse({
+        raiseBoundaryError({
           error: {
             code: "service_unavailable",
             message:
@@ -295,7 +296,7 @@ export async function registerGenerateRoutes(
 
       if ("error" in result) {
         return reply.code(502).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "generation_failed",
               message: result.error,
@@ -316,21 +317,21 @@ export async function registerGenerateRoutes(
     } catch (error) {
       if (error instanceof TierGuardError) {
         return reply.code(error.statusCode).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: { code: error.code, message: error.message },
           }),
         );
       }
       if (error instanceof CreditServiceError) {
         return reply.code(error.statusCode).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: { code: error.code, message: error.message },
           }),
         );
       }
       if (error instanceof JobServiceError) {
         return reply.code(error.statusCode).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: { code: error.code, message: error.message },
           }),
         );
@@ -340,7 +341,7 @@ export async function registerGenerateRoutes(
         error instanceof Error ? error.message : "Video generation failed.";
 
       return reply.code(502).send(
-        applicationErrorResponseSchema.parse({
+        raiseBoundaryError({
           error: {
             code: "generation_failed",
             message,

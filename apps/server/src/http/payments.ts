@@ -14,6 +14,7 @@ import {
   PaymentServiceError,
 } from "../features/payments/payment-service.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
+import { raiseBoundaryError, throwLegacyServiceError } from "./route-errors.js";
 
 export async function registerPaymentRoutes(
   app: FastifyInstance,
@@ -35,7 +36,7 @@ export async function registerPaymentRoutes(
 
       if (!planParsed.success || !periodParsed.success) {
         return reply.code(400).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "invalid_request",
               message:
@@ -47,7 +48,7 @@ export async function registerPaymentRoutes(
 
       if (planParsed.data === "free") {
         return reply.code(400).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "invalid_request",
               message: "Cannot create a checkout for the free plan.",
@@ -113,7 +114,7 @@ export async function registerPaymentRoutes(
 
       if (!planParsed.success || !periodParsed.success) {
         return reply.code(400).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "invalid_request",
               message:
@@ -125,7 +126,7 @@ export async function registerPaymentRoutes(
 
       if (planParsed.data === "free") {
         return reply.code(400).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "invalid_request",
               message: "Cannot change to the free plan. Use cancel instead.",
@@ -152,7 +153,7 @@ export async function registerPaymentRoutes(
 
 function sendUnauthenticated(reply: FastifyReply) {
   return reply.code(401).send(
-    unauthenticatedErrorResponseSchema.parse({
+    raiseBoundaryError({
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
@@ -171,20 +172,5 @@ function sendPaymentError(
   reply: FastifyReply,
   fallbackCode: PaymentErrorFallbackCode,
 ) {
-  if (error instanceof PaymentServiceError) {
-    return reply.code(error.statusCode).send(
-      applicationErrorResponseSchema.parse({
-        error: { code: error.code, message: error.message },
-      }),
-    );
-  }
-  console.error("[PaymentRoutes] Unexpected error:", error);
-  return reply.code(500).send(
-    applicationErrorResponseSchema.parse({
-      error: {
-        code: fallbackCode,
-        message: "An unexpected error occurred.",
-      },
-    }),
-  );
+  throwLegacyServiceError(error);
 }

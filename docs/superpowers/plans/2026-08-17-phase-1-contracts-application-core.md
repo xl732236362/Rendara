@@ -41,10 +41,10 @@
 
 **Files:** `apps/server/src/http/*.ts`, corresponding `*.test.ts` route tests
 
-- [ ] Add representative failing tests for projects, canvases, chat, jobs, credits, skills, and payments showing identical error envelopes and status preservation.
-- [ ] Replace route-local `isZodError`, repeated unauthorized responses, and broad catch/response blocks with thrown `AppError` or service errors normalized at the boundary.
-- [ ] Keep route adapters responsible only for auth, schema parse, use-case/service call, and response schema serialization.
-- [ ] Prove by search that no route defines `isZodError` and by tests that phase 0 security error codes/statuses remain stable.
+- [x] Add representative failing tests for projects, canvases, chat, jobs, credits, skills, and payments showing identical error envelopes and status preservation.
+- [x] Replace route-local `isZodError`, repeated unauthorized responses, and broad catch/response blocks with thrown `AppError` or service errors normalized at the boundary.
+- [x] Keep route adapters responsible only for auth, schema parse, use-case/service call, and response schema serialization.
+- [x] Prove by search that no route defines `isZodError` and by tests that phase 0 security error codes/statuses remain stable.
 
 ## Task 4: Build Schema-Driven Environment Configuration
 

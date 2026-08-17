@@ -14,6 +14,11 @@ import {
   ProjectServiceError,
 } from "../features/projects/project-service.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
+import {
+  parseRequest,
+  raiseBoundaryError,
+  throwLegacyServiceError,
+} from "./route-errors.js";
 
 export async function registerProjectRoutes(
   app: FastifyInstance,
@@ -28,7 +33,7 @@ export async function registerProjectRoutes(
 
       if (!user) {
         return reply.code(401).send(
-          unauthenticatedErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "unauthorized",
               message: "Missing or invalid bearer token.",
@@ -51,7 +56,7 @@ export async function registerProjectRoutes(
 
       if (!user) {
         return reply.code(401).send(
-          unauthenticatedErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "unauthorized",
               message: "Missing or invalid bearer token.",
@@ -75,7 +80,7 @@ export async function registerProjectRoutes(
 
       if (!user) {
         return reply.code(401).send(
-          unauthenticatedErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "unauthorized",
               message: "Missing or invalid bearer token.",
@@ -98,7 +103,7 @@ export async function registerProjectRoutes(
 
       if (!user) {
         return reply.code(401).send(
-          unauthenticatedErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "unauthorized",
               message: "Missing or invalid bearer token.",
@@ -107,7 +112,7 @@ export async function registerProjectRoutes(
         );
       }
 
-      const payload = projectCreateRequestSchema.parse(request.body);
+      const payload = parseRequest(projectCreateRequestSchema, request.body);
       const project = await options.projectService.createProject(user, payload);
 
       return reply.code(201).send(
@@ -116,13 +121,6 @@ export async function registerProjectRoutes(
         }),
       );
     } catch (error) {
-      if (isZodError(error)) {
-        return reply.code(400).send({
-          issues: error.issues,
-          message: "Invalid request body",
-        });
-      }
-
       return sendProjectError(error, reply, "project_create_failed");
     }
   });
@@ -133,7 +131,7 @@ export async function registerProjectRoutes(
 
       if (!user) {
         return reply.code(401).send(
-          unauthenticatedErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "unauthorized",
               message: "Missing or invalid bearer token.",
@@ -143,18 +141,11 @@ export async function registerProjectRoutes(
       }
 
       const { projectId } = request.params as { projectId: string };
-      const payload = projectUpdateRequestSchema.parse(request.body);
+      const payload = parseRequest(projectUpdateRequestSchema, request.body);
       await options.projectService.updateProject(user, projectId, payload);
 
       return reply.code(204).send();
     } catch (error) {
-      if (isZodError(error)) {
-        return reply.code(400).send({
-          issues: error.issues,
-          message: "Invalid request body",
-        });
-      }
-
       return sendProjectError(error, reply, "project_update_failed");
     }
   });
@@ -167,7 +158,7 @@ export async function registerProjectRoutes(
         const user = await options.auth.authenticate(request);
         if (!user) {
           return reply.code(401).send(
-            unauthenticatedErrorResponseSchema.parse({
+            raiseBoundaryError({
               error: {
                 code: "unauthorized",
                 message: "Missing or invalid bearer token.",
@@ -179,7 +170,7 @@ export async function registerProjectRoutes(
         const file = await request.file();
         if (!file) {
           return reply.code(400).send(
-            applicationErrorResponseSchema.parse({
+            raiseBoundaryError({
               error: {
                 code: "upload_failed",
                 message: "No file uploaded.",
@@ -216,39 +207,5 @@ function sendProjectError(
     | "project_query_failed"
     | "project_update_failed",
 ) {
-  if (error instanceof ProjectServiceError) {
-    return reply.code(error.statusCode).send(
-      applicationErrorResponseSchema.parse({
-        error: {
-          code: error.code,
-          message: error.message,
-        },
-      }),
-    );
-  }
-
-  return reply.code(500).send(
-    applicationErrorResponseSchema.parse({
-      error: {
-        code: fallbackCode,
-        message:
-          fallbackCode === "project_query_failed"
-            ? "Unable to load projects."
-            : fallbackCode === "project_update_failed"
-              ? "Unable to update project."
-              : "Unable to create project.",
-      },
-    }),
-  );
-}
-
-function isZodError(
-  error: unknown,
-): error is { issues: unknown[]; name: string } {
-  return (
-    error instanceof Error &&
-    error.name === "ZodError" &&
-    "issues" in error &&
-    Array.isArray(error.issues)
-  );
+  throwLegacyServiceError(error);
 }

@@ -19,6 +19,7 @@ import type {
   RequestAuthenticator,
   UserSupabaseClient,
 } from "../supabase/user.js";
+import { raiseBoundaryError } from "./route-errors.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const untypedFrom = (client: UserSupabaseClient, table: string) =>
@@ -164,7 +165,7 @@ export async function registerMarketplaceRoutes(
       const { name } = request.query as { name?: string };
       if (!name) {
         return reply.code(400).send(
-          applicationErrorResponseSchema.parse({
+          raiseBoundaryError({
             error: {
               code: "marketplace_detail_failed",
               message: "Package name is required (use ?name=package-name)",
@@ -326,7 +327,7 @@ export async function registerMarketplaceRoutes(
 
 function sendUnauthenticated(reply: FastifyReply) {
   return reply.code(401).send(
-    unauthenticatedErrorResponseSchema.parse({
+    raiseBoundaryError({
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
@@ -342,7 +343,7 @@ function sendError(
   statusCode = 500,
 ) {
   return reply.code(statusCode).send(
-    applicationErrorResponseSchema.parse({
+    raiseBoundaryError({
       error: { code, message },
     }),
   );

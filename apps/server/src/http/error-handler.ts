@@ -13,6 +13,7 @@ import {
   safeRead,
   safeReadString,
 } from "../utils/safe-error-inspection.js";
+import { normalizeLegacyServiceError } from "./route-errors.js";
 
 const ABORT_CODES = new Set([
   "ABORT_ERR",
@@ -116,6 +117,16 @@ function classifyError(
       ...(appError.expose && appError.details
         ? { details: appError.details }
         : {}),
+      interrupted: false,
+    };
+  }
+
+  const legacyError = normalizeLegacyServiceError(error);
+  if (legacyError) {
+    return {
+      code: legacyError.code,
+      statusCode: legacyError.statusCode,
+      message: legacyError.message,
       interrupted: false,
     };
   }

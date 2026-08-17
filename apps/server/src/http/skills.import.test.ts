@@ -2,11 +2,13 @@ import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 
 import { SkillImportError } from "../features/skills/skill-import-service.js";
+import { registerErrorHandler } from "./error-handler.js";
 import { registerSkillRoutes } from "./skills.js";
 
 describe("skill import route", () => {
   it("rejects external imports while the capability is disabled", async () => {
     const app = Fastify();
+    registerErrorHandler(app);
     let importerCalled = false;
     await registerSkillRoutes(app, {
       allowExternalSkillImport: false,
@@ -41,6 +43,7 @@ describe("skill import route", () => {
 
   it("does not write to the database when an archive budget is exceeded", async () => {
     const app = Fastify();
+    registerErrorHandler(app);
     let databaseCalled = false;
     await registerSkillRoutes(app, {
       allowExternalSkillImport: true,
