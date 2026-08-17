@@ -72,6 +72,17 @@ export function normalizeLegacyServiceError(error: unknown): AppError | null {
   ) {
     return null;
   }
+  if ((statusCode as number) >= 500) {
+    return new AppError({
+      code: "application_error",
+      statusCode: statusCode as number,
+      message: "An unexpected error occurred",
+      cause: error,
+    });
+  }
+  if (!isApprovedLegacy4xx(parsedCode.data, statusCode as number)) {
+    return null;
+  }
   return new AppError({
     code: parsedCode.data as BoundaryErrorCode,
     statusCode: statusCode as number,
@@ -79,6 +90,22 @@ export function normalizeLegacyServiceError(error: unknown): AppError | null {
     expose: true,
     cause: error,
   });
+}
+
+function isApprovedLegacy4xx(
+  code: BoundaryErrorCode,
+  statusCode: number,
+): boolean {
+  if (code === "unauthorized") return statusCode === 401;
+  if (code === "invalid_request") return statusCode === 400;
+  if (code === "insufficient_credits") return statusCode === 402;
+  if (code === "capability_disabled" || code === "forbidden")
+    return statusCode === 403;
+  if (code.endsWith("_not_found")) return statusCode === 404;
+  if (code.endsWith("_slug_taken")) return statusCode === 409;
+  if (code === "rate_limited" || code === "concurrency_limit")
+    return statusCode === 429;
+  return statusCode >= 400 && statusCode < 500;
 }
 
 export function throwLegacyServiceError(error: unknown): never {

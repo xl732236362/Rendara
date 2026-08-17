@@ -23,7 +23,11 @@ import type {
   AuthenticatedUser,
   RequestAuthenticator,
 } from "../supabase/user.js";
-import { parseRequest, raiseBoundaryError } from "./route-errors.js";
+import {
+  parseRequest,
+  raiseBoundaryError,
+  throwRouteError,
+} from "./route-errors.js";
 
 const generateImageRequestSchema = z.object({
   prompt: z.string().min(1),
@@ -101,30 +105,54 @@ export async function registerGenerateRoutes(
       }
     }
 
-    const providerName = resolveImageProviderName(model);
-    const result = await generateImage(providerName, {
-      prompt: payload.prompt,
-      model,
-      aspectRatio: payload.aspectRatio ?? "1:1",
-      ...(payload.quality ? { quality: payload.quality } : {}),
-    });
+    let generated: Awaited<ReturnType<typeof generateImage>>;
+    try {
+      const providerName = resolveImageProviderName(model);
+      generated = await generateImage(providerName, {
+        prompt: payload.prompt,
+        model,
+        aspectRatio: payload.aspectRatio ?? "1:1",
+        ...(payload.quality ? { quality: payload.quality } : {}),
+      });
+    } catch (error) {
+      const unavailable =
+        error instanceof Error &&
+        (error.message.includes("No provider registered") ||
+          error.message.includes("No image provider registered"));
+      throwRouteError({
+        code: "generation_failed",
+        statusCode: 502,
+        message: unavailable
+          ? "Image generation is unavailable."
+          : "Image generation failed.",
+      });
+    }
 
-    // Download and persist to Supabase Storage
-    const { signedUrl, assetId } = await downloadAndUpload(
-      result.url,
-      result.mimeType,
-      payload.prompt,
-      user,
-      options,
-    );
+    let persisted: { signedUrl: string; assetId: string };
+    try {
+      persisted = await downloadAndUpload(
+        generated.url,
+        generated.mimeType,
+        payload.prompt,
+        user,
+        options,
+      );
+    } catch (error) {
+      request.log.error({ err: error }, "generated image persistence failed");
+      throwRouteError({
+        code: "generation_failed",
+        statusCode: 502,
+        message: "Generated image could not be stored.",
+      });
+    }
 
     return reply.code(200).send({
-      url: signedUrl,
-      assetId,
+      url: persisted.signedUrl,
+      assetId: persisted.assetId,
       prompt: payload.prompt,
-      mimeType: result.mimeType,
-      width: result.width,
-      height: result.height,
+      mimeType: generated.mimeType,
+      width: generated.width,
+      height: generated.height,
     });
   });
 
@@ -188,20 +216,30 @@ export async function registerGenerateRoutes(
     }
 
     // ── Create job ──
-    const job = await options.jobService.createJob(user, {
-      workspaceId,
-      jobType: "video_generation",
-      payload: {
-        prompt: payload.prompt,
-        model,
-        ...(payload.duration != null ? { duration: payload.duration } : {}),
-        ...(payload.resolution ? { resolution: payload.resolution } : {}),
-        ...(payload.aspectRatio ? { aspect_ratio: payload.aspectRatio } : {}),
-        ...(payload.inputImages?.length
-          ? { input_images: payload.inputImages }
-          : {}),
-      },
-    });
+    let job: Awaited<ReturnType<JobService["createJob"]>>;
+    try {
+      job = await options.jobService.createJob(user, {
+        workspaceId,
+        jobType: "video_generation",
+        payload: {
+          prompt: payload.prompt,
+          model,
+          ...(payload.duration != null ? { duration: payload.duration } : {}),
+          ...(payload.resolution ? { resolution: payload.resolution } : {}),
+          ...(payload.aspectRatio ? { aspect_ratio: payload.aspectRatio } : {}),
+          ...(payload.inputImages?.length
+            ? { input_images: payload.inputImages }
+            : {}),
+        },
+      });
+    } catch (error) {
+      request.log.error({ err: error }, "video generation job creation failed");
+      throwRouteError({
+        code: "generation_failed",
+        statusCode: 502,
+        message: "Video generation could not be started.",
+      });
+    }
 
     // ── Deduct credits BEFORE generation ──
     if (options.creditService && creditsCost > 0) {
@@ -224,19 +262,29 @@ export async function registerGenerateRoutes(
     const POLL_INTERVAL = 3_000;
     const MAX_WAIT = 300_000; // 5 minutes
 
-    const result = await pollJobUntilDone(
-      options.jobService,
-      job.id,
-      POLL_INTERVAL,
-      MAX_WAIT,
-    );
+    let result: PollResult;
+    try {
+      result = await pollJobUntilDone(
+        options.jobService,
+        job.id,
+        POLL_INTERVAL,
+        MAX_WAIT,
+      );
+    } catch (error) {
+      request.log.error({ err: error }, "video generation job polling failed");
+      throwRouteError({
+        code: "generation_failed",
+        statusCode: 502,
+        message: "Video generation status could not be retrieved.",
+      });
+    }
 
     if ("error" in result) {
       return raiseBoundaryError(
         {
           error: {
             code: "generation_failed",
-            message: result.error,
+            message: "Video generation failed.",
           },
         },
         502,

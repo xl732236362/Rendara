@@ -210,6 +210,42 @@ describe("Fastify error boundary", () => {
     await app.close();
   });
 
+  it("never exposes a duck-typed legacy 5xx message", async () => {
+    const app = createTestApp();
+    app.get("/legacy-secret", async () => {
+      throw Object.assign(new Error("provider-token=super-secret"), {
+        code: "generation_failed",
+        statusCode: 500,
+      });
+    });
+    const response = await app.inject({ method: "GET", url: "/legacy-secret" });
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({
+      error: {
+        code: "application_error",
+        message: "An unexpected error occurred",
+      },
+    });
+    expect(response.body).not.toContain("super-secret");
+    await app.close();
+  });
+
+  it("rejects contradictory duck-typed code and status pairs", async () => {
+    const app = createTestApp();
+    app.get("/contradictory", async () => {
+      throw Object.assign(new Error("secret contradiction"), {
+        code: "project_not_found",
+        statusCode: 409,
+      });
+    });
+    const response = await app.inject({ method: "GET", url: "/contradictory" });
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toMatchObject({
+      error: { code: "application_error" },
+    });
+    await app.close();
+  });
+
   it("contains errors whose diagnostic getters throw", async () => {
     const { app, records } = createLoggedTestApp();
     app.get("/hostile-error", async () => {
