@@ -5,6 +5,7 @@ import type {
   SubscriptionPlan,
 } from "@loomic/shared";
 import { PLAN_CONFIGS } from "@loomic/shared";
+import { z } from "zod";
 
 import type { AdminSupabaseClient } from "../../supabase/admin.js";
 
@@ -18,6 +19,7 @@ export class CreditServiceError extends Error {
     | "credit_claim_failed"
     | "credit_deduct_failed"
     | "credit_refund_failed"
+    | "compensation_conflict"
     | "credit_plan_update_failed";
 
   constructor(
@@ -59,13 +61,10 @@ export type CreditService = {
     jobId?: string,
     description?: string,
   ): Promise<string>;
-  refundCredits(
-    workspaceId: string,
-    userId: string,
-    amount: number,
-    jobId: string,
-    description?: string,
-  ): Promise<string>;
+  compensateGeneration(command: GenerationCompensationCommand): Promise<{
+    transactionId: string;
+    replayed: boolean;
+  }>;
   claimDailyCredits(
     workspaceId: string,
   ): Promise<{ success: boolean; balance?: number }>;
@@ -76,6 +75,21 @@ export type CreditService = {
   getSubscription(workspaceId: string): Promise<SubscriptionInfo>;
   updatePlan(workspaceId: string, plan: SubscriptionPlan): Promise<void>;
 };
+
+export type GenerationCompensationCommand = {
+  workspaceId: string;
+  jobId: string;
+  debitTransactionId: string;
+  compensationKey: string;
+  operatorUserId: string;
+  amount: number;
+  reason: string;
+};
+
+const compensationResultSchema = z.object({
+  transaction_id: z.string().uuid(),
+  replayed: z.boolean(),
+});
 
 // ── Factory ──────────────────────────────────────────────────
 
@@ -150,26 +164,51 @@ export function createCreditService(options: {
       return data as string;
     },
 
-    async refundCredits(workspaceId, userId, amount, jobId, description) {
+    async compensateGeneration(command) {
       const admin = options.getAdminClient();
 
-      const { data, error } = await admin.rpc("refund_credits", {
-        p_workspace_id: workspaceId,
-        p_user_id: userId,
-        p_amount: amount,
-        p_job_id: jobId ?? null,
-        p_description: description ?? null,
+      const { data, error } = await (
+        admin.rpc as unknown as (
+          name: string,
+          args: Record<string, unknown>,
+        ) => Promise<{ data: unknown; error: { details?: string } | null }>
+      )("compensate_generation_charge", {
+        p_workspace_id: command.workspaceId,
+        p_compensation_key: command.compensationKey,
+        p_job_id: command.jobId,
+        p_debit_transaction_id: command.debitTransactionId,
+        p_operator_user_id: command.operatorUserId,
+        p_amount: command.amount,
+        p_reason: command.reason,
       });
 
       if (error) {
+        if (error.details === "compensation_conflict") {
+          throw new CreditServiceError(
+            "compensation_conflict",
+            "The compensation key was already used for a different adjustment.",
+            409,
+          );
+        }
         throw new CreditServiceError(
           "credit_refund_failed",
-          `Failed to refund credits: ${error.message}`,
+          "Failed to compensate generation credits.",
           500,
         );
       }
 
-      return data as string;
+      const parsed = compensationResultSchema.safeParse(data);
+      if (!parsed.success) {
+        throw new CreditServiceError(
+          "credit_refund_failed",
+          "Failed to compensate generation credits.",
+          500,
+        );
+      }
+      return {
+        transactionId: parsed.data.transaction_id,
+        replayed: parsed.data.replayed,
+      };
     },
 
     async claimDailyCredits(workspaceId) {

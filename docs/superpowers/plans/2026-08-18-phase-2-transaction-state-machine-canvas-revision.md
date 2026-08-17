@@ -355,17 +355,17 @@ git commit -m "feat(worker): enforce leased generation state machine"
 - Modify: `apps/server/src/http/credits.ts`
 - Modify: `apps/server/src/http/credits.test.ts`
 
-- [ ] **Step 1: Write failing compensation tests**
+- [x] **Step 1: Write failing compensation tests**
 
 Assert the service requires `compensationKey`, original debit/job, operator, amount, and reason; same replay returns the original transaction; conflicting replay maps to `compensation_conflict`; no generic job failure path can call it.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run: `pnpm --filter @loomic/server test -- src/features/credits/credit-service.test.ts src/http/credits.test.ts`
 
 Expected: FAIL because the current refund method has no compensation identity or operator audit.
 
-- [ ] **Step 3: Replace generic refund API**
+- [x] **Step 3: Replace generic refund API**
 
 Expose only:
 
@@ -383,7 +383,9 @@ compensateGeneration(command: {
 
 Call `compensate_generation_charge` and parse/map its result. Keep the endpoint behind the existing administrative authority boundary; do not expose it as ordinary job cancellation.
 
-- [ ] **Step 4: Run tests and search for legacy refunds**
+Implementation note: this codebase has no trusted administrator HTTP authorization boundary (the legacy `admin/set-plan` route only requires ordinary authentication), so Phase 2 deliberately exposes compensation only through the service layer and service-role RPC. The operations runbook documents the controlled human procedure; no user-facing compensation route is added.
+
+- [x] **Step 4: Run tests and search for legacy refunds**
 
 Run: `pnpm --filter @loomic/server test -- src/features/credits src/http/credits.test.ts`
 
@@ -391,7 +393,7 @@ Run: `rg -n "refundCredits|refund_credits|Auto-refund" apps/server/src`
 
 Expected: tests PASS; search returns no automatic lifecycle invocation.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```text
 git add apps/server/src/features/credits apps/server/src/http/credits.ts apps/server/src/http/credits.test.ts
