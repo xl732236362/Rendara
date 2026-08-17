@@ -120,7 +120,7 @@ Task 8 evidence: `entrypoint-architecture.test.ts`, `jobs.application-wiring.tes
 - [x] Add the architecture test to `ci:check` through the existing workspace test command.
 - [x] Run `pnpm test:workspace`, then intentionally confirm each rule points to actionable file/line evidence before restoring green state.
 
-Verification evidence: TypeScript-AST rules cover alias/namespace and namespaced-call bypasses, ignore comments/string/template false positives, fail closed on malformed TypeScript, and report actionable file/line diagnostics. The real-source enforcement test and 37 negative fixtures run through `test:workspace` and therefore `ci:check`.
+Verification evidence: TypeScript-AST rules cover alias/namespace, wrapped type annotations, registry factories outside composition, and namespaced-call bypasses; ignore comments/string/template false positives; fail closed on malformed TypeScript; and report actionable file/line diagnostics. The real-source enforcement test and the 41 independent negative cases in `architectureBoundaryFixtures` run through the 82-test `test:workspace` suite and therefore `ci:check`.
 
 ## Task 11: Documentation And Strict Acceptance
 
@@ -132,7 +132,7 @@ Verification evidence: TypeScript-AST rules cover alias/namespace and namespaced
 - [x] Update each covered ENG item conservatively as solved/partially solved with commit and test evidence; do not close items whose target architecture belongs to later phases.
 - [x] Record exact commands, test counts, environment-independent results, known deferred items, commit SHA, and acceptance conclusion in `phase-1-verification.md`.
 
-Acceptance evidence: `docs/tech/phase-1-verification.md` records the uncached 458-test evidence, exact warning baseline, Supabase CLI 2.114.0 reset and 14 database tests, the `loomic-server:phase1` build, app-module import, and Railway entrypoint target/image-layout/syntax consistency checks, dependency audit (including the isolated `shadcn` build-tool Zod 3 graph), architecture scope, implementation SHA, and deferred Phase 2/3/4 work. These container checks do not claim that API/Worker process startup was exercised.
+Acceptance evidence: `docs/tech/phase-1-verification.md` records the 477-test evidence (including uncached package tests and the final 82-test workspace suite), exact warning baseline, Supabase CLI 2.114.0 reset and 14 database tests, the `loomic-server:phase1` build, app-module import, and Railway entrypoint target/image-layout/syntax consistency checks, dependency audit (including the isolated `shadcn` build-tool Zod 3 graph), architecture scope, final implementation/review SHA, and deferred Phase 2/3/4 work. It distinguishes DB/Docker evidence run on the `2904479` production-code baseline from the final `ci:check` on `71a5251`; these container checks do not claim that API/Worker process startup was exercised.
 
 ## Acceptance Matrix
 

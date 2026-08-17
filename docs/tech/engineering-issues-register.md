@@ -277,7 +277,7 @@
 - 证据：当前 lint/tsconfig 未定义跨层 import 规则，Agent、HTTP、Worker 和 feature 模块可以直接访问 Supabase、queue 或其他 feature 内部实现；已有多处绕过 service 的实例。
 - 影响：随着团队和功能增长，依赖方向会逐渐形成环和隐式耦合，目录分层无法阻止实现层反向依赖入口层；重构影响范围难以预测。
 - 建议方向：明确 domain/application/infrastructure/interface 的允许依赖方向，用 package exports、目录 public API、dependency-cruiser 或等价 lint 规则自动约束，并在 CI 中加入循环依赖检查。
-- 阶段 1 结果：工作区测试已用 TypeScript AST 强制本阶段关键边界：全局 registry、路由 Zod duck typing、Web 未校验 fetch/cast、适配器直接队列编排、HTTP 直调 Skill importer 及 Agent 画布写入绕行均会给出文件/行号。它已进入 `ci:check`；但完整跨层 import 图和循环依赖门禁尚未建立，因此保持“部分解决”。关联提交：`8e5656c`至 `2904479`；验证见 Workspace 63 项测试。
+- 阶段 1 结果：工作区测试已用 TypeScript AST 强制本阶段关键边界：全局 registry、路由 Zod duck typing、Web 未校验 fetch/cast、适配器直接队列编排、HTTP 直调 Skill importer 及 Agent 画布写入绕行均会给出文件/行号。它已进入 `ci:check`；但完整跨层 import 图和循环依赖门禁尚未建立，因此保持“部分解决”。关联提交：`8e5656c`至 `71a5251`；验证见 Workspace 82 项测试，其中 `architectureBoundaryFixtures` 包含 41 个独立负向用例。
 
 ### ENG-026：跨包契约使用两个 Zod 主版本
 
