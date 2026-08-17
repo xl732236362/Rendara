@@ -105,10 +105,10 @@ Task 8 evidence: `entrypoint-architecture.test.ts`, `jobs.application-wiring.tes
 
 **Files:** `apps/web/src/lib/api-client.ts`, `api-client.test.ts`, `server-api.ts`, `apps/web/test/server-api.test.ts`, shared HTTP contracts
 
-- [ ] Write failing tests for successful schema parsing, malformed JSON, structurally invalid success payloads, error-envelope parsing, 401 specialization, timeout, caller abort, and empty 204 responses.
-- [ ] Implement a typed fetcher accepting method/path/access token/request schema/response schema/timeout/signal; combine timeout and caller abort without leaking timers.
-- [ ] Migrate every `server-api.ts` helper from unchecked `response.json() as T` to the fetcher and shared schemas while preserving exported helper signatures.
-- [ ] Prove by search that `server-api.ts` contains no response type assertions and run all Web tests.
+- [x] Write failing tests for successful schema parsing, malformed JSON, structurally invalid success payloads, error-envelope parsing, 401 specialization, timeout, caller abort, and empty 204 responses.
+- [x] Implement a typed fetcher accepting method/path/access token/request schema/response schema/timeout/signal; combine timeout and caller abort without leaking timers.
+- [x] Migrate every `server-api.ts` helper from unchecked `response.json() as T` to the fetcher and shared schemas while preserving exported helper signatures.
+- [x] Prove by search that `server-api.ts` contains no response type assertions and run all Web tests.
 
 ## Task 10: Architecture And Contract Enforcement
 

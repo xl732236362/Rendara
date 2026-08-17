@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ApiApplicationError,
   createProject,
   createRun,
   fetchProjects,
@@ -10,6 +11,10 @@ import {
 
 const mockFetch = vi.fn();
 globalThis.fetch = mockFetch;
+
+function requestHeaders() {
+  return new Headers(mockFetch.mock.calls.at(-1)?.[1]?.headers);
+}
 
 describe("authenticated server API", () => {
   beforeEach(() => {
@@ -35,12 +40,10 @@ describe("authenticated server API", () => {
     });
 
     const result = await fetchViewer("token_abc");
-    expect(mockFetch).toHaveBeenCalledWith(
+    expect(mockFetch.mock.calls[0]?.[0]).toBe(
       "http://localhost:3001/api/viewer",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer token_abc" },
-      }),
     );
+    expect(requestHeaders().get("authorization")).toBe("Bearer token_abc");
     expect(result.profile.id).toBe("u1");
   });
 
@@ -65,16 +68,14 @@ describe("authenticated server API", () => {
       { accessToken: "token_abc" },
     );
 
-    expect(mockFetch).toHaveBeenCalledWith(
+    expect(mockFetch.mock.calls[0]?.[0]).toBe(
       "http://localhost:3001/api/agent/runs",
-      expect.objectContaining({
-        method: "POST",
-        headers: {
-          Authorization: "Bearer token_abc",
-          "content-type": "application/json",
-        },
-      }),
     );
+    expect(mockFetch.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(requestHeaders().get("authorization")).toBe("Bearer token_abc");
+    expect(requestHeaders().get("content-type")).toBe("application/json");
   });
 
   it("createRun keeps demo calls unauthenticated by default", async () => {
@@ -95,15 +96,11 @@ describe("authenticated server API", () => {
       prompt: "Hello",
     });
 
-    expect(mockFetch).toHaveBeenCalledWith(
+    expect(mockFetch.mock.calls[0]?.[0]).toBe(
       "http://localhost:3001/api/agent/runs",
-      expect.objectContaining({
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-      }),
     );
+    expect(requestHeaders().has("authorization")).toBe(false);
+    expect(requestHeaders().get("content-type")).toBe("application/json");
   });
 
   it("createProject sends POST with bearer token and handles 201", async () => {
@@ -126,21 +123,37 @@ describe("authenticated server API", () => {
     });
 
     const result = await createProject("token_abc", { name: "Test" });
-    expect(mockFetch).toHaveBeenCalledWith(
+    expect(mockFetch.mock.calls[0]?.[0]).toBe(
       "http://localhost:3001/api/projects",
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({
-          Authorization: "Bearer token_abc",
-          "content-type": "application/json",
-        }),
-      }),
     );
+    expect(mockFetch.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(requestHeaders().get("authorization")).toBe("Bearer token_abc");
+    expect(requestHeaders().get("content-type")).toBe("application/json");
     expect(result.project.id).toBe("p1");
   });
 
   it("fetchProjects sends bearer token and returns list", async () => {
-    const list = { projects: [{ id: "p1", name: "Test", slug: "test" }] };
+    const list = {
+      projects: [
+        {
+          id: "p1",
+          name: "Test",
+          slug: "test",
+          description: null,
+          workspace: {
+            id: "w1",
+            name: "Workspace",
+            type: "personal",
+            ownerUserId: "u1",
+          },
+          primaryCanvas: { id: "c1", name: "Main Canvas", isPrimary: true },
+          createdAt: "2026-03-23T00:00:00Z",
+          updatedAt: "2026-03-23T00:00:00Z",
+        },
+      ],
+    };
     mockFetch.mockResolvedValue({
       ok: true,
       status: 200,
@@ -148,12 +161,10 @@ describe("authenticated server API", () => {
     });
 
     const result = await fetchProjects("token_abc");
-    expect(mockFetch).toHaveBeenCalledWith(
+    expect(mockFetch.mock.calls[0]?.[0]).toBe(
       "http://localhost:3001/api/projects",
-      expect.objectContaining({
-        headers: { Authorization: "Bearer token_abc" },
-      }),
     );
+    expect(requestHeaders().get("authorization")).toBe("Bearer token_abc");
     expect(result.projects).toHaveLength(1);
   });
 
@@ -172,7 +183,10 @@ describe("authenticated server API", () => {
     try {
       await createProject("token_abc", { name: "Dup" });
     } catch (err) {
-      expect((err as any).code).toBe("project_slug_taken");
+      expect(err).toBeInstanceOf(ApiApplicationError);
+      if (err instanceof ApiApplicationError) {
+        expect(err.code).toBe("project_slug_taken");
+      }
     }
   });
 

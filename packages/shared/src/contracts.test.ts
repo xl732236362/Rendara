@@ -21,6 +21,49 @@ const databaseTypeSource = readFileSync(
 );
 
 describe("@loomic/shared contracts", () => {
+  it("exports schemas for every inline web API boundary", () => {
+    const samples: Record<string, unknown> = {
+      projectDetailResponseSchema: {
+        project: { id: "p1", name: "Project", brand_kit_id: null },
+      },
+      sessionTitleRequestSchema: { title: "New title" },
+      imageModelListResponseSchema: {
+        models: [
+          {
+            id: "image-1",
+            displayName: "Image One",
+            description: "An image model",
+            provider: "provider",
+          },
+        ],
+      },
+      videoModelListResponseSchema: { models: [] },
+      generateImageRequestSchema: { prompt: "A lighthouse" },
+      generateImageResponseSchema: {
+        url: "https://example.com/image.png",
+        assetId: "asset-1",
+        prompt: "A lighthouse",
+        mimeType: "image/png",
+        width: 1024,
+        height: 1024,
+      },
+      generateVideoRequestSchema: { prompt: "A lighthouse at dusk" },
+      generateVideoResponseSchema: {
+        url: "https://example.com/video.mp4",
+        assetId: "asset-2",
+        prompt: "A lighthouse at dusk",
+        mimeType: "video/mp4",
+        width: 1920,
+        height: 1080,
+        durationSeconds: 5,
+      },
+    };
+
+    for (const [schemaName, sample] of Object.entries(samples)) {
+      expect(getExportedSchema(schemaName).parse(sample)).toEqual(sample);
+    }
+  });
+
   it("uses one canonical envelope for unauthorized, application, and validation errors", () => {
     const schema = getExportedSchema("errorEnvelopeSchema");
 

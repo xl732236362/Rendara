@@ -96,6 +96,13 @@ export type WorkspaceSkillToggleRequest = z.infer<
   typeof workspaceSkillToggleRequestSchema
 >;
 
+export const workspaceSkillInstallRequestSchema = z.object({
+  skillId: z.string().min(1),
+});
+export type WorkspaceSkillInstallRequest = z.infer<
+  typeof workspaceSkillInstallRequestSchema
+>;
+
 export const skillImportRequestSchema = z.object({
   url: z.string().url().min(1),
 });

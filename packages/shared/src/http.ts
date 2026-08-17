@@ -7,6 +7,7 @@ import {
   chatMessageSchema,
   chatSessionSummarySchema,
   modelInfoSchema,
+  projectIdSchema,
   projectSummarySchema,
   runIdSchema,
   viewerProfileSchema,
@@ -197,6 +198,74 @@ export const modelListResponseSchema = z.object({
   models: z.array(modelInfoSchema),
 });
 
+export const projectDetailResponseSchema = z.object({
+  project: z
+    .object({
+      id: projectIdSchema,
+      name: z.string().min(1),
+      brand_kit_id: z.string().uuid().nullable(),
+    })
+    .passthrough(),
+});
+
+export const sessionTitleRequestSchema = z.object({
+  title: z.string().trim().min(1).optional(),
+});
+
+export const generationModelInfoSchema = z.object({
+  id: z.string().min(1),
+  displayName: z.string().min(1),
+  description: z.string(),
+  provider: z.string().min(1),
+  iconUrl: z.string().optional(),
+  creditCost: z.number().optional(),
+  accessible: z.boolean().optional(),
+  minTier: z.string().optional(),
+});
+
+export const imageModelListResponseSchema = z.object({
+  models: z.array(generationModelInfoSchema),
+});
+
+export const videoModelListResponseSchema = z.object({
+  models: z.array(generationModelInfoSchema),
+});
+
+export const generateImageRequestSchema = z.object({
+  prompt: z.string().min(1),
+  model: z.string().optional(),
+  aspectRatio: z.enum(["1:1", "16:9", "9:16", "4:3", "3:4"]).optional(),
+  quality: z.enum(["standard", "hd", "ultra"]).optional(),
+});
+
+export const generateImageResponseSchema = z.object({
+  url: z.string().url(),
+  assetId: z.string().min(1).optional(),
+  prompt: z.string(),
+  mimeType: z.string().min(1),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+});
+
+export const generateVideoRequestSchema = z.object({
+  prompt: z.string().min(1),
+  model: z.string().optional(),
+  duration: z.number().int().min(3).max(16).optional(),
+  resolution: z.enum(["720p", "1080p", "4k"]).optional(),
+  aspectRatio: z.enum(["16:9", "9:16"]).optional(),
+  inputImages: z.array(z.string()).max(3).optional(),
+});
+
+export const generateVideoResponseSchema = z.object({
+  url: z.string().url(),
+  assetId: z.string().min(1),
+  prompt: z.string(),
+  mimeType: z.string().min(1),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  durationSeconds: z.number().positive(),
+});
+
 export const sessionListResponseSchema = z.object({
   sessions: z.array(chatSessionSummarySchema),
 });
@@ -228,6 +297,19 @@ export type WorkspaceSettingsUpdateRequest = z.infer<
   typeof workspaceSettingsUpdateRequestSchema
 >;
 export type ModelListResponse = z.infer<typeof modelListResponseSchema>;
+export type ProjectDetailResponse = z.infer<typeof projectDetailResponseSchema>;
+export type SessionTitleRequest = z.infer<typeof sessionTitleRequestSchema>;
+export type GenerationModelInfo = z.infer<typeof generationModelInfoSchema>;
+export type ImageModelListResponse = z.infer<
+  typeof imageModelListResponseSchema
+>;
+export type VideoModelListResponse = z.infer<
+  typeof videoModelListResponseSchema
+>;
+export type GenerateImageRequest = z.infer<typeof generateImageRequestSchema>;
+export type GenerateImageResponse = z.infer<typeof generateImageResponseSchema>;
+export type GenerateVideoRequest = z.infer<typeof generateVideoRequestSchema>;
+export type GenerateVideoResponse = z.infer<typeof generateVideoResponseSchema>;
 
 export const uploadResponseSchema = z.object({
   asset: assetObjectSchema,
