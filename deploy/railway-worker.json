@@ -1,0 +1,11 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "dockerfilePath": "apps/server/Dockerfile"
+  },
+  "deploy": {
+    "startCommand": "sh -c \"if [ -n \\\"$GOOGLE_SERVICE_ACCOUNT_JSON\\\" ]; then printf '%s' \\\"$GOOGLE_SERVICE_ACCOUNT_JSON\\\" > /app/credentials/vertex-ai-service-account.json && export GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/vertex-ai-service-account.json; fi; exec node dist/worker.js\"",
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 5
+  }
+}

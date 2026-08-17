@@ -1,0 +1,40 @@
+{
+  "services": {
+    "api": {
+      "platform": "railway",
+      "configPath": "deploy/railway-api.json",
+      "binding": "Set this service's Railway Config File path to deploy/railway-api.json; variables are managed in the Railway dashboard.",
+      "variables": [
+        "LOOMIC_WEB_ORIGIN",
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_PROJECT_ID",
+        "SUPABASE_JWT_SECRET"
+      ]
+    },
+    "worker": {
+      "platform": "railway",
+      "configPath": "deploy/railway-worker.json",
+      "binding": "Set this service's Railway Config File path to deploy/railway-worker.json; variables are managed in the Railway dashboard.",
+      "variables": [
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+        "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_DB_URL",
+        "SUPABASE_PROJECT_ID",
+        "SUPABASE_JWT_SECRET"
+      ]
+    },
+    "web": {
+      "platform": "vercel",
+      "configPath": "vercel.json",
+      "binding": "Variables are managed in the Vercel project dashboard.",
+      "variables": [
+        "NEXT_PUBLIC_SERVER_BASE_URL",
+        "NEXT_PUBLIC_SUPABASE_URL",
+        "NEXT_PUBLIC_SUPABASE_ANON_KEY"
+      ]
+    }
+  }
+}

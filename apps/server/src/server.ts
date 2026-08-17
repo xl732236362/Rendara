@@ -9,13 +9,11 @@ if (process.env.GLOBAL_AGENT_HTTP_PROXY) {
   setGlobalDispatcher(new ProxyAgent(process.env.GLOBAL_AGENT_HTTP_PROXY));
 }
 
-import { buildApp } from "./app.js";
+import { buildAppFromEnv } from "./app.js";
 import { loadServerEnv } from "./config/env.js";
 
 const env = loadServerEnv();
-const app = buildApp({
-  env,
-});
+const app = buildAppFromEnv(env);
 
 const host = process.env.HOST ?? "127.0.0.1";
 

@@ -4,7 +4,7 @@ import {
   type ServerEnvironment,
   envDescriptors,
   parseServerEnvironment,
-} from "@loomic/config";
+} from "@loomic/config/server";
 
 export const DEFAULT_AGENT_BACKEND_MODE = "state";
 export const DEFAULT_AGENT_MODEL = "gpt-4.1";

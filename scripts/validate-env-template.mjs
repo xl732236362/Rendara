@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { envDescriptors } from "../packages/config/dist/env.js";
 
 const descriptorByKey = new Map(envDescriptors.map((item) => [item.key, item]));
@@ -43,6 +43,37 @@ export function validateEnvironmentContracts({
       ? deployment.metadata.processes
       : [deployment.metadata.process];
     const variables = new Set(deployment.metadata.variables ?? []);
+    const config = deployment.config;
+    if (deployment.metadata.platform === "railway") {
+      const expectedEntry =
+        deployment.metadata.process === "worker" ? "worker.js" : "server.js";
+      if (
+        !config?.$schema?.includes("railway") ||
+        !config.deploy?.startCommand?.includes(expectedEntry)
+      ) {
+        issues.push(
+          `${deployment.name}: invalid Railway ${deployment.metadata.process} service config`,
+        );
+      }
+      if (
+        deployment.metadata.process === "api" &&
+        !config?.deploy?.healthcheckPath
+      ) {
+        issues.push(
+          `${deployment.name}: API service requires a healthcheckPath`,
+        );
+      }
+    }
+    if (deployment.metadata.platform === "vercel" && config?.env) {
+      issues.push(
+        `${deployment.name}: Vercel variables must be dashboard-managed, not declared in vercel.json`,
+      );
+    }
+    if (!/dashboard/i.test(deployment.metadata.binding ?? "")) {
+      issues.push(
+        `${deployment.name}: missing dashboard variable binding instructions`,
+      );
+    }
     for (const key of variables) {
       const descriptor = descriptorByKey.get(key);
       if (!descriptor) {
@@ -84,21 +115,30 @@ export function validateEnvironmentContracts({
 
 async function main() {
   const root = new URL("../", import.meta.url);
-  const [envTemplate, railway, vercel] = await Promise.all([
+  const [envTemplate, contract, rootRailway] = await Promise.all([
     readFile(new URL(".env.example", root), "utf8"),
+    readFile(new URL("deploy/environment-contract.json", root), "utf8").then(
+      JSON.parse,
+    ),
     readFile(new URL("railway.json", root), "utf8").then(JSON.parse),
-    readFile(new URL("vercel.json", root), "utf8").then(JSON.parse),
   ]);
-  const deployments = [
-    {
-      name: "railway.json",
-      metadata: { processes: Object.keys(railway.environments ?? {}) },
+  const deployments = await Promise.all(
+    Object.entries(contract.services).map(async ([process, metadata]) => ({
+      name: metadata.configPath,
+      metadata: { ...metadata, process },
+      config: JSON.parse(
+        await readFile(new URL(metadata.configPath, root), "utf8"),
+      ),
+    })),
+  );
+  deployments.push({
+    name: "railway.json",
+    metadata: {
+      ...contract.services.api,
+      process: "api",
     },
-    {
-      name: "vercel.json",
-      metadata: { process: "web", variables: Object.keys(vercel.env ?? {}) },
-    },
-  ];
+    config: rootRailway,
+  });
   const issues = validateEnvironmentContracts({ envTemplate, deployments });
   if (issues.length > 0) {
     console.error(

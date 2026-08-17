@@ -116,6 +116,13 @@ test("environment template validator rejects drift without resolving secrets", a
           variables: ["OPENAI_API_KEY"],
         },
       },
+      {
+        name: "railway-worker.json",
+        metadata: {
+          process: "worker",
+          variables: ["SUPABASE_URL"],
+        },
+      },
     ],
     requireCompleteTemplate: false,
   });
@@ -123,6 +130,13 @@ test("environment template validator rejects drift without resolving secrets", a
   assert.ok(issues.some((issue) => issue.includes("UNKNOWN_ENV")));
   assert.ok(issues.some((issue) => issue.includes("dangerous")));
   assert.ok(issues.some((issue) => issue.includes("public/private")));
+  assert.ok(
+    issues.some(
+      (issue) =>
+        issue.includes("railway-worker.json") &&
+        issue.includes("SUPABASE_DB_URL"),
+    ),
+  );
   assert.ok(!issues.join("\n").includes("placeholder"));
 });
 
@@ -131,6 +145,37 @@ test("workspace tests run the checked-in environment contract validator", async 
 
   assert.match(manifest.scripts["validate:env"], /validate-env-template/);
   assert.match(manifest.scripts["test:workspace"], /validate:env/);
+});
+
+test("deployment contract binds real API and worker Railway configs", async () => {
+  const contract = await readJson("deploy/environment-contract.json");
+  const api = await readJson(contract.services.api.configPath);
+  const worker = await readJson(contract.services.worker.configPath);
+  const vercel = await readJson(contract.services.web.configPath);
+
+  assert.match(api.deploy.startCommand, /server\.js/);
+  assert.match(api.deploy.healthcheckPath, /health/);
+  assert.match(worker.deploy.startCommand, /worker\.js/);
+  assert.ok(contract.services.worker.variables.includes("SUPABASE_DB_URL"));
+  assert.equal(vercel.env, undefined);
+  assert.match(contract.services.worker.binding, /dashboard/i);
+});
+
+test("production server parses environment exactly once before composition", async () => {
+  const server = await readText("apps/server/src/server.ts");
+  const app = await readText("apps/server/src/app.ts");
+
+  assert.equal((server.match(/loadServerEnv\(\)/g) ?? []).length, 1);
+  assert.match(server, /buildAppFromEnv\(env\)/);
+  const productionComposition = app.slice(
+    app.indexOf("export function buildAppFromEnv"),
+    app.indexOf("export function buildAppWithOverrides"),
+  );
+  assert.doesNotMatch(productionComposition, /loadServerEnv/);
+  assert.match(
+    app,
+    /buildAppWithOverrides[\s\S]*loadServerEnv\(options\.env\)/,
+  );
 });
 
 test("vitest workspace config exists for later package-level adoption", async () => {
@@ -158,9 +203,24 @@ for (const appName of ["web", "server"]) {
 
 test("@loomic/config exports a single low-drift package contract", async () => {
   const source = await readText("packages/config/src/index.ts");
+  const manifest = await readJson("packages/config/package.json");
 
   assert.doesNotMatch(source, /apps\/\*/);
   assert.doesNotMatch(source, /packages\/\*/);
+  assert.doesNotMatch(
+    source,
+    /envDescriptors|parseServerEnvironment|serverEnvironmentSchema/,
+  );
+  assert.equal(manifest.exports["./server"].default, null);
+  assert.equal(typeof manifest.exports["./server"].node.import, "string");
+});
+
+test("web sources cannot import the server-only config boundary", async () => {
+  const files = await sourceFiles(path.join(rootDir, "apps/web"));
+  for (const file of files) {
+    const source = await readFile(file, "utf8");
+    assert.doesNotMatch(source, /@loomic\/config\/server/);
+  }
 });
 
 test("shared package placeholder exists for the upcoming contract task", async () => {

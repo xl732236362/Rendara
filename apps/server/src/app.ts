@@ -132,9 +132,10 @@ export type BuildAppOptions = {
   viewerService?: ViewerService;
 };
 
-export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
-  const env = loadServerEnv(options.env);
-
+export function buildAppFromEnv(
+  env: ServerEnv,
+  options: Omit<BuildAppOptions, "env"> = {},
+): FastifyInstance {
   // Register generation providers (shared with worker.ts)
   registerAllProviders(env);
 
@@ -413,6 +414,16 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
 
   return app;
 }
+
+export function buildAppWithOverrides(
+  options: BuildAppOptions = {},
+): FastifyInstance {
+  const env = loadServerEnv(options.env);
+  return buildAppFromEnv(env, options);
+}
+
+/** @deprecated Production composition must parse once and use buildAppFromEnv. */
+export const buildApp = buildAppWithOverrides;
 
 type CorsResult = {
   allowed: boolean;

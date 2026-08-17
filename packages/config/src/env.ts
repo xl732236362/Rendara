@@ -346,13 +346,13 @@ export const serverEnvironmentSchema = z.object({
   LEMONSQUEEZY_VARIANT_BUSINESS_YEARLY: optionalString,
 });
 
-export class EnvironmentValidationError extends Error {
+export class ConfigValidationError extends Error {
   readonly issues: readonly { key: string; message: string }[];
   constructor(issues: readonly { key: string; message: string }[]) {
     super(
       `Invalid environment configuration:\n${issues.map(({ key, message }) => `- ${key}: ${message}`).join("\n")}`,
     );
-    this.name = "EnvironmentValidationError";
+    this.name = "ConfigValidationError";
     this.issues = issues;
   }
 }
@@ -368,24 +368,31 @@ export function parseServerEnvironment(
         key: String(issue.path[0] ?? "environment"),
         message: issue.message,
       }));
-  if (!result.success) throw new EnvironmentValidationError(issues);
-  const raw = result.data;
-  if (options.process === "worker" && !raw.SUPABASE_DB_URL) {
+  const raw = result.success ? result.data : undefined;
+  const candidate = {
+    agentModel: normalizedCandidate(source.LOOMIC_AGENT_MODEL),
+    googleApiKey: normalizedCandidate(source.GOOGLE_API_KEY),
+    googleVertexLocation: normalizedCandidate(source.GOOGLE_VERTEX_LOCATION),
+    googleVertexProject: normalizedCandidate(source.GOOGLE_VERTEX_PROJECT),
+    openAIApiKey: normalizedCandidate(source.OPENAI_API_KEY),
+    supabaseDbUrl: normalizedCandidate(source.SUPABASE_DB_URL),
+  };
+  if (options.process === "worker" && !candidate.supabaseDbUrl) {
     issues.push({
       key: "SUPABASE_DB_URL",
       message: "is required for the worker process",
     });
   }
-  if (raw.LOOMIC_AGENT_MODEL?.startsWith("openai:") && !raw.OPENAI_API_KEY) {
+  if (candidate.agentModel?.startsWith("openai:") && !candidate.openAIApiKey) {
     issues.push({
       key: "OPENAI_API_KEY",
       message: "is required by the selected OpenAI model",
     });
   }
   if (
-    raw.LOOMIC_AGENT_MODEL?.startsWith("google:") &&
-    !raw.GOOGLE_API_KEY &&
-    !(raw.GOOGLE_VERTEX_PROJECT && raw.GOOGLE_VERTEX_LOCATION)
+    candidate.agentModel?.startsWith("google:") &&
+    !candidate.googleApiKey &&
+    !(candidate.googleVertexProject && candidate.googleVertexLocation)
   ) {
     issues.push({
       key: "GOOGLE_API_KEY",
@@ -393,7 +400,12 @@ export function parseServerEnvironment(
         "or complete Google Vertex configuration is required by the selected Google model",
     });
   }
-  if (issues.length > 0) throw new EnvironmentValidationError(issues);
+  if (issues.length > 0) throw new ConfigValidationError(issues);
+  if (!raw) {
+    throw new ConfigValidationError([
+      { key: "environment", message: "could not be parsed" },
+    ]);
+  }
 
   const output: Record<string, unknown> = {};
   for (const item of envDescriptors) {
@@ -408,4 +420,11 @@ export function parseServerEnvironment(
       ? "gemini-2.5-flash"
       : "gpt-4.1");
   return output as ServerEnvironment;
+}
+
+export { ConfigValidationError as EnvironmentValidationError };
+
+function normalizedCandidate(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  return value.trim() || undefined;
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  EnvironmentValidationError,
+  ConfigValidationError,
   envDescriptors,
   parseServerEnvironment,
 } from "./env.js";
@@ -111,9 +111,26 @@ describe("server environment schema", () => {
       error = caught;
     }
 
-    expect(error).toBeInstanceOf(EnvironmentValidationError);
+    expect(error).toBeInstanceOf(ConfigValidationError);
     expect(String(error)).toContain("OPENAI_API_BASE");
     expect(String(error)).toContain("LOOMIC_SERVER_PORT");
     expect(String(error)).not.toContain(secret);
+  });
+
+  it("aggregates schema, process, and provider issues before failing", () => {
+    const secret = "invalid-secret-url";
+    const source = {
+      LOOMIC_AGENT_MODEL: "openai:gpt-4.1",
+      LOOMIC_SERVER_PORT: "70000",
+      OPENAI_API_BASE: secret,
+    };
+    expect(() => parseServerEnvironment(source, { process: "worker" })).toThrow(
+      /LOOMIC_SERVER_PORT[\s\S]*OPENAI_API_BASE[\s\S]*SUPABASE_DB_URL[\s\S]*OPENAI_API_KEY/,
+    );
+    try {
+      parseServerEnvironment(source, { process: "worker" });
+    } catch (error) {
+      expect(String(error)).not.toContain(secret);
+    }
   });
 });
