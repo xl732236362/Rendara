@@ -67,7 +67,6 @@ async function main() {
   const jobService = createJobService({
     createUserClient,
     getAdminClient,
-    pgmq,
   });
   const creditService = createCreditService({ getAdminClient });
 

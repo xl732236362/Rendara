@@ -7,16 +7,14 @@ import {
 
 import { AppError } from "../../errors/app-error.js";
 import { normalizeGenerationError } from "./legacy-error.js";
-import {
-  parseCancellationOutcome,
-  parseSubmissionOutcome,
-} from "./outcome-validation.js";
+import { parseSubmissionOutcome } from "./outcome-validation.js";
 import type {
+  AtomicJobSubmissionCommand,
   GenerationApplicationPorts,
   GenerationPrincipal,
-  JobCreateCommand,
   StructuredLogger,
 } from "./ports.js";
+import { createHash } from "node:crypto";
 
 export type SubmitGeneration = (
   principal: GenerationPrincipal,
@@ -42,69 +40,28 @@ export function createSubmitGeneration(options: {
     const request = parsed.data;
     let model: string | undefined;
     let jobId: string | undefined;
+    let plan: SubscriptionPlan | undefined;
+    let creditsCost: number | undefined;
     let stage = "model_resolution";
     try {
       model = options.ports.models.resolveModel(request.type, request.model);
       stage = "tier_validation";
-      const plan = await options.ports.tiers.getPlan(principal.workspaceId);
+      plan = await options.ports.tiers.getPlan(principal.workspaceId);
       options.ports.tiers.authorizeModel(plan, model);
       options.ports.tiers.authorizeMedia(plan, request);
       await options.ports.tiers.authorizeConcurrency(
         principal.workspaceId,
         plan,
       );
-      const creditsCost = options.ports.tiers.calculateCreditCost(
-        model,
-        request,
-      );
+      creditsCost = options.ports.tiers.calculateCreditCost(model, request);
 
-      stage = "job_creation";
+      stage = "atomic_submission";
       const submission = parseSubmissionOutcome(
-        await options.ports.jobs.create(
-          toCreateCommand(principal, request, model),
+        await options.ports.jobs.submit(
+          toSubmissionCommand(principal, request, model, creditsCost),
         ),
       );
       jobId = submission.jobId;
-
-      if (options.ports.credits && creditsCost > 0) {
-        try {
-          stage = "credit_deduction";
-          const transactionId = await options.ports.credits.deduct({
-            workspaceId: principal.workspaceId,
-            userId: principal.userId,
-            amount: creditsCost,
-            jobId,
-            description: `${request.type === "image_generation" ? "Image" : "Video"} generation: ${model}`,
-          });
-          stage = "credit_attachment";
-          await options.ports.jobs.attachCredits(
-            jobId,
-            creditsCost,
-            transactionId,
-          );
-        } catch (error) {
-          await cancelAfterFailure(
-            options,
-            principal,
-            jobId,
-            model,
-            request.type,
-            stage,
-          );
-          const normalized = normalizeGenerationError(error);
-          if (normalized.code === "insufficient_credits") {
-            throw await enrichInsufficientCredits({
-              error: normalized,
-              credits: options.ports.credits,
-              creditsCost,
-              plan,
-              workspaceId: principal.workspaceId,
-              logger: options.logger,
-            });
-          }
-          throw error;
-        }
-      }
 
       options.logger.info(
         "Generation submitted",
@@ -112,7 +69,22 @@ export function createSubmitGeneration(options: {
       );
       return { jobId, status: "queued" };
     } catch (error) {
-      const normalized = normalizeGenerationError(error);
+      let normalized = normalizeGenerationError(error);
+      if (
+        normalized.code === "insufficient_credits" &&
+        options.ports.credits &&
+        plan !== undefined &&
+        creditsCost !== undefined
+      ) {
+        normalized = await enrichInsufficientCredits({
+          error: normalized,
+          credits: options.ports.credits,
+          creditsCost,
+          plan,
+          workspaceId: principal.workspaceId,
+          logger: options.logger,
+        });
+      }
       options.logger.error(
         "Generation submission failed",
         logContext(
@@ -175,13 +147,15 @@ function boundedAmount(value: number): number | undefined {
     : undefined;
 }
 
-function toCreateCommand(
+function toSubmissionCommand(
   principal: GenerationPrincipal,
   request: GenerationSubmissionRequest,
   model: string,
-): JobCreateCommand {
+  creditsCost: number,
+): AtomicJobSubmissionCommand {
   const {
     type,
+    idempotency_key,
     project_id,
     canvas_id,
     session_id,
@@ -196,35 +170,39 @@ function toCreateCommand(
     ...(session_id !== undefined ? { sessionId: session_id } : {}),
     ...(thread_id !== undefined ? { threadId: thread_id } : {}),
     jobType: type,
+    idempotencyKey: idempotency_key,
+    requestFingerprint: createRequestFingerprint({
+      type,
+      project_id,
+      canvas_id,
+      session_id,
+      thread_id,
+      ...mediaPayload,
+      model,
+    }),
+    creditsCost,
+    description: `${type === "image_generation" ? "Image" : "Video"} generation: ${model}`,
     payload: { ...mediaPayload, model },
   };
 }
 
-async function cancelAfterFailure(
-  options: { ports: GenerationApplicationPorts; logger: StructuredLogger },
-  principal: GenerationPrincipal,
-  jobId: string,
-  model: string,
-  type: GenerationSubmissionRequest["type"],
-  failedStage: string,
-) {
-  try {
-    parseCancellationOutcome(
-      await options.ports.cancellation.cancel(principal, jobId),
-      jobId,
-    );
-    options.logger.warn(
-      "Generation job canceled after submission failure",
-      logContext(principal, type, model, "cleanup_canceled", jobId),
-    );
-  } catch (cleanupError) {
-    options.logger.error("Generation job cleanup failed", {
-      ...logContext(principal, type, model, "cleanup_failed", jobId),
-      failedStage,
-      cleanupErrorName:
-        cleanupError instanceof Error ? cleanupError.name : "UnknownError",
-    });
+function createRequestFingerprint(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
   }
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, child]) => child !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function logContext(

@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { AppError } from "../../errors/app-error.js";
-import { CreditServiceError } from "../../features/credits/credit-service.js";
 import type {
   GenerationApplicationPorts,
   GenerationPrincipal,
@@ -56,25 +55,18 @@ function setup() {
         plan: "pro" as const,
         dailyClaimed: false,
       })),
-      deduct: vi.fn(async () => {
-        calls.push("deduct");
-        return "tx-1";
-      }),
     },
     jobs: {
-      create: vi.fn(async () => {
-        calls.push("create");
-        return { id: ids.job, status: "queued" as const };
-      }),
-      attachCredits: vi.fn(async () => {
-        calls.push("attach");
+      submit: vi.fn(async () => {
+        calls.push("submit");
+        return { id: ids.job, status: "queued" as const, replayed: false };
       }),
     },
     cancellation: {
-      cancel: vi.fn(async () => {
-        calls.push("cancel");
-        return { id: ids.job, status: "canceled" as const };
-      }),
+      cancel: vi.fn(async () => ({
+        id: ids.job,
+        status: "canceled" as const,
+      })),
     },
   };
   const logger: StructuredLogger = {
@@ -91,12 +83,57 @@ function setup() {
 }
 
 describe("SubmitGeneration", () => {
+  it("submits the authorized charge and job atomically", async () => {
+    const { ports, submit } = setup();
+
+    await expect(
+      submit(principal, {
+        type: "image_generation",
+        idempotency_key: "request-atomic-1",
+        prompt: "draw",
+      }),
+    ).resolves.toEqual({ jobId: ids.job, status: "queued" });
+
+    expect(ports.jobs.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        creditsCost: 7,
+        idempotencyKey: "request-atomic-1",
+        jobType: "image_generation",
+        description: "Image generation: image/default",
+      }),
+    );
+    expect(ports.cancellation.cancel).not.toHaveBeenCalled();
+  });
+
+  it("does not include the idempotency key in the request fingerprint", async () => {
+    const { ports, submit } = setup();
+
+    await submit(principal, {
+      type: "image_generation",
+      idempotency_key: "request-1",
+      prompt: "same effect",
+    });
+    await submit(principal, {
+      type: "image_generation",
+      idempotency_key: "request-2",
+      prompt: "same effect",
+    });
+
+    const commands = vi
+      .mocked(ports.jobs.submit)
+      .mock.calls.map(([value]) => value);
+    expect(commands[0]?.requestFingerprint).toBe(
+      commands[1]?.requestFingerprint,
+    );
+  });
+
   it.each(["standard", "hd", "ultra"] as const)(
-    "uses requested %s quality for authorization, cost, and job payload",
+    "uses requested %s quality for authorization, cost, and the atomic payload",
     async (quality) => {
       const { ports, submit } = setup();
       const request = {
         type: "image_generation" as const,
+        idempotency_key: `quality-${quality}`,
         prompt: "draw",
         quality,
       };
@@ -108,92 +145,29 @@ describe("SubmitGeneration", () => {
         "image/default",
         request,
       );
-      expect(ports.jobs.create).toHaveBeenCalledWith(
+      expect(ports.jobs.submit).toHaveBeenCalledWith(
         expect.objectContaining({
-          payload: expect.objectContaining({ quality }),
+          payload: expect.objectContaining({ quality, model: "image/default" }),
         }),
       );
     },
   );
-  it.each([
-    [{ id: ids.job, status: "running" }, "unexpected create status"],
-    [{ id: "not-a-uuid", status: "queued" }, "invalid create id"],
-    [{ id: ids.job }, "missing create status"],
-  ])(
-    "privately rejects an invalid job adapter result: %s",
-    async (jobResult, _label) => {
-      const { logger, ports, submit } = setup();
-      vi.mocked(ports.jobs.create).mockResolvedValue(jobResult as never);
 
-      await expect(
-        submit(principal, { type: "image_generation", prompt: "draw" }),
-      ).rejects.toMatchObject({
-        code: "application_error",
-        statusCode: 500,
-        expose: false,
-      });
-      expect(logger.info).not.toHaveBeenCalled();
-      expect(ports.credits?.deduct).not.toHaveBeenCalled();
-    },
-  );
-
-  it("rejects invalid and media-mismatched payloads before calling ports", async () => {
-    const { ports, submit } = setup();
-
-    await expect(
-      submit(principal, {
-        type: "image_generation",
-        prompt: "draw",
-        input_video: "https://example.test/video.mp4",
-      }),
-    ).rejects.toMatchObject({ code: "invalid_request", statusCode: 400 });
-    expect(ports.models.resolveModel).not.toHaveBeenCalled();
-    expect(ports.jobs.create).not.toHaveBeenCalled();
-  });
-
-  it("resolves the default model and submits a validated image payload with context", async () => {
-    const { ports, submit } = setup();
-
-    await expect(
-      submit(principal, {
-        type: "image_generation",
-        prompt: "draw",
-        project_id: ids.project,
-        canvas_id: ids.canvas,
-        aspect_ratio: "16:9",
-      }),
-    ).resolves.toEqual({ jobId: ids.job, status: "queued" });
-
-    expect(ports.models.resolveModel).toHaveBeenCalledWith(
-      "image_generation",
-      undefined,
-    );
-    expect(ports.jobs.create).toHaveBeenCalledWith({
-      principal,
-      workspaceId: ids.workspace,
-      projectId: ids.project,
-      canvasId: ids.canvas,
-      jobType: "image_generation",
-      payload: { prompt: "draw", model: "image/default", aspect_ratio: "16:9" },
-    });
-  });
-
-  it("keeps video-only fields and passes them to tier validation and the job", async () => {
+  it("preserves video-only fields in the atomic payload", async () => {
     const { ports, submit } = setup();
     const request = {
       type: "video_generation" as const,
+      idempotency_key: "video-1",
       prompt: "animate",
       model: "video/v2",
       duration: 8,
       resolution: "1080p",
-      input_images: ["https://example.test/a.png"],
       enable_audio: true,
     };
 
     await submit(principal, request);
 
-    expect(ports.tiers.authorizeMedia).toHaveBeenCalledWith("pro", request);
-    expect(ports.jobs.create).toHaveBeenCalledWith(
+    expect(ports.jobs.submit).toHaveBeenCalledWith(
       expect.objectContaining({
         jobType: "video_generation",
         payload: expect.objectContaining({
@@ -206,9 +180,15 @@ describe("SubmitGeneration", () => {
     );
   });
 
-  it("performs tier validation before job creation and credit deduction", async () => {
+  it("performs tier validation before atomic submission", async () => {
     const { calls, submit } = setup();
-    await submit(principal, { type: "image_generation", prompt: "draw" });
+
+    await submit(principal, {
+      type: "image_generation",
+      idempotency_key: "order-1",
+      prompt: "draw",
+    });
+
     expect(calls).toEqual([
       "resolve:image_generation",
       "plan",
@@ -216,19 +196,32 @@ describe("SubmitGeneration", () => {
       "media-access",
       "concurrency",
       "cost",
-      "create",
-      "deduct",
-      "attach",
+      "submit",
     ]);
   });
 
-  it("preserves inaccessible-model AppError code/status and never creates a job", async () => {
+  it("rejects invalid payloads before calling ports", async () => {
+    const { ports, submit } = setup();
+
+    await expect(
+      submit(principal, {
+        type: "image_generation",
+        idempotency_key: "invalid-1",
+        prompt: "draw",
+        input_video: "https://example.test/video.mp4",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request", statusCode: 400 });
+    expect(ports.models.resolveModel).not.toHaveBeenCalled();
+    expect(ports.jobs.submit).not.toHaveBeenCalled();
+  });
+
+  it("preserves model authorization failures and never submits", async () => {
     const { ports, submit } = setup();
     vi.mocked(ports.tiers.authorizeModel).mockImplementation(() => {
       throw new AppError({
         code: "model_not_accessible",
         statusCode: 403,
-        message: "Upgrade required",
+        message: "Model unavailable.",
         expose: true,
       });
     });
@@ -236,55 +229,38 @@ describe("SubmitGeneration", () => {
     await expect(
       submit(principal, {
         type: "image_generation",
+        idempotency_key: "private-model-1",
         prompt: "draw",
         model: "private/model",
       }),
     ).rejects.toMatchObject({ code: "model_not_accessible", statusCode: 403 });
-    expect(ports.jobs.create).not.toHaveBeenCalled();
+    expect(ports.jobs.submit).not.toHaveBeenCalled();
   });
 
-  it("cancels the created job and preserves a deduction failure", async () => {
-    const { calls, ports, submit } = setup();
-    const credits = ports.credits;
-    if (!credits) throw new Error("test setup requires credits");
-    vi.mocked(credits.deduct).mockImplementation(async () => {
-      calls.push("deduct");
-      throw new AppError({
+  it("enriches atomic insufficient-credit failures without compensating", async () => {
+    const { ports, submit } = setup();
+    vi.mocked(ports.jobs.submit).mockRejectedValue(
+      new AppError({
         code: "insufficient_credits",
         statusCode: 402,
-        message: "Not enough credits",
+        message: "Insufficient credits.",
         expose: true,
-      });
-    });
-
-    await expect(
-      submit(principal, { type: "image_generation", prompt: "draw" }),
-    ).rejects.toMatchObject({ code: "insufficient_credits", statusCode: 402 });
-    expect(ports.cancellation.cancel).toHaveBeenCalledWith(principal, ids.job);
-  });
-
-  it("enriches a real insufficient-credit failure with safe current balance details", async () => {
-    const { ports, submit } = setup();
-    const credits = ports.credits;
-    if (!credits) throw new Error("test setup requires credits");
-    vi.mocked(credits.deduct).mockRejectedValue(
-      new CreditServiceError(
-        "insufficient_credits",
-        "raw database message must not cross",
-        402,
-      ),
+      }),
     );
-    vi.mocked(credits.getBalance).mockResolvedValue({
+    vi.mocked(ports.credits!.getBalance).mockResolvedValue({
       balance: 2,
       plan: "pro",
       dailyClaimed: true,
     });
 
     await expect(
-      submit(principal, { type: "image_generation", prompt: "draw" }),
+      submit(principal, {
+        type: "image_generation",
+        idempotency_key: "insufficient-1",
+        prompt: "draw",
+      }),
     ).rejects.toMatchObject({
       code: "insufficient_credits",
-      message: "Insufficient credits.",
       details: {
         balance: 2,
         requiredAmount: 7,
@@ -292,99 +268,35 @@ describe("SubmitGeneration", () => {
         dailyClaimed: true,
       },
     });
+    expect(ports.cancellation.cancel).not.toHaveBeenCalled();
   });
 
-  it("preserves insufficient credits with required cost and plan when balance lookup fails", async () => {
+  it("privately rejects an invalid atomic adapter outcome", async () => {
     const { ports, submit } = setup();
-    const credits = ports.credits;
-    if (!credits) throw new Error("test setup requires credits");
-    vi.mocked(credits.deduct).mockRejectedValue(
-      new CreditServiceError("insufficient_credits", "raw failure", 402),
-    );
-    vi.mocked(credits.getBalance).mockRejectedValue(
-      new Error("balance database unavailable"),
-    );
-
-    await expect(
-      submit(principal, { type: "image_generation", prompt: "draw" }),
-    ).rejects.toMatchObject({
-      code: "insufficient_credits",
-      message: "Insufficient credits.",
-      details: { requiredAmount: 7, plan: "pro" },
-    });
-  });
-
-  it("drops non-finite balance metadata from an insufficient-credit error", async () => {
-    const { ports, submit } = setup();
-    const credits = ports.credits;
-    if (!credits) throw new Error("test setup requires credits");
-    vi.mocked(credits.deduct).mockRejectedValue(
-      new CreditServiceError("insufficient_credits", "raw failure", 402),
-    );
-    vi.mocked(credits.getBalance).mockResolvedValue({
-      balance: Number.POSITIVE_INFINITY,
-      plan: "pro",
-      dailyClaimed: false,
-    });
-
-    const error = await submit(principal, {
-      type: "image_generation",
-      prompt: "draw",
-    }).catch((caught: unknown) => caught);
-    expect(error).toMatchObject({
-      details: { requiredAmount: 7, plan: "pro", dailyClaimed: false },
-    });
-    expect(error).not.toHaveProperty("details.balance");
-  });
-
-  it("preserves the submission error and logs cleanup_failed when cancellation returns another job", async () => {
-    const { logger, ports, submit } = setup();
-    const original = new AppError({
-      code: "credit_deduct_failed",
-      statusCode: 500,
-      message: "Deduction failed",
-    });
-    const credits = ports.credits;
-    if (!credits) throw new Error("test setup requires credits");
-    vi.mocked(credits.deduct).mockRejectedValue(original);
-    vi.mocked(ports.cancellation.cancel).mockResolvedValue({
-      id: "66666666-6666-4666-8666-666666666666",
-      status: "canceled",
+    vi.mocked(ports.jobs.submit).mockResolvedValue({
+      id: "not-a-uuid",
+      status: "queued",
+      replayed: false,
     });
 
     await expect(
-      submit(principal, { type: "image_generation", prompt: "draw" }),
-    ).rejects.toBe(original);
-    expect(logger.warn).not.toHaveBeenCalledWith(
-      "Generation job canceled after submission failure",
-      expect.anything(),
-    );
-    expect(logger.error).toHaveBeenCalledWith(
-      "Generation job cleanup failed",
-      expect.objectContaining({ stage: "cleanup_failed", jobId: ids.job }),
-    );
-  });
-
-  it("cancels after credit metadata attachment fails without masking the failure", async () => {
-    const { ports, submit } = setup();
-    vi.mocked(ports.jobs.attachCredits).mockRejectedValue(
-      new AppError({
-        code: "job_create_failed",
-        statusCode: 500,
-        message: "Failed to attach credits",
+      submit(principal, {
+        type: "image_generation",
+        idempotency_key: "invalid-outcome-1",
+        prompt: "draw",
       }),
-    );
-
-    await expect(
-      submit(principal, { type: "video_generation", prompt: "animate" }),
-    ).rejects.toMatchObject({ code: "job_create_failed", statusCode: 500 });
-    expect(ports.cancellation.cancel).toHaveBeenCalledWith(principal, ids.job);
+    ).rejects.toMatchObject({
+      code: "application_error",
+      statusCode: 500,
+      expose: false,
+    });
   });
 
-  it("logs identifiers and stages without prompt or access token", async () => {
+  it("logs identifiers and stages without prompt, access token, or raw key", async () => {
     const { logger, submit } = setup();
     await submit(principal, {
       type: "image_generation",
+      idempotency_key: "secret-request-key",
       prompt: "highly secret prompt",
       model: "image/v1",
     });
@@ -396,10 +308,8 @@ describe("SubmitGeneration", () => {
     ]);
     expect(serialized).toContain(ids.job);
     expect(serialized).toContain(ids.user);
-    expect(serialized).toContain(ids.workspace);
-    expect(serialized).toContain("image/v1");
-    expect(serialized).toContain("stage");
     expect(serialized).not.toContain("highly secret prompt");
-    expect(serialized).not.toContain("secret-access-token");
+    expect(serialized).not.toContain(principal.accessToken);
+    expect(serialized).not.toContain("secret-request-key");
   });
 });

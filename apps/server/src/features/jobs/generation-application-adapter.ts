@@ -12,21 +12,18 @@ export function createJobServiceGenerationPorts(options: {
 }): Pick<GenerationApplicationPorts, "jobs" | "cancellation"> {
   return {
     jobs: {
-      async create(command) {
+      async submit(command) {
         const { principal, ...input } = command;
-        const job = await options.jobService.createJob(
+        const outcome = await options.jobService.submitJob(
           options.toAuthenticatedUser(principal),
           input,
         );
-        if (job.status !== "queued") throw invalidLegacyOutcome();
-        return { id: job.id, status: "queued" };
-      },
-      attachCredits(jobId, creditsCost, transactionId) {
-        return options.jobService.setCreditsInfo(
-          jobId,
-          creditsCost,
-          transactionId,
-        );
+        if (outcome.job.status !== "queued") throw invalidLegacyOutcome();
+        return {
+          id: outcome.job.id,
+          status: "queued",
+          replayed: outcome.replayed,
+        };
       },
     },
     cancellation: {
@@ -35,8 +32,12 @@ export function createJobServiceGenerationPorts(options: {
           options.toAuthenticatedUser(principal),
           jobId,
         );
-        if (job.status !== "canceled") throw invalidLegacyOutcome();
-        return { id: job.id, status: "canceled" };
+        if (job.status === "cancel_requested") {
+          return { id: job.id, status: "canceling" };
+        }
+        if (job.status === "canceled")
+          return { id: job.id, status: "canceled" };
+        throw invalidLegacyOutcome();
       },
     },
   };

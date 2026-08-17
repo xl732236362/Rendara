@@ -288,9 +288,7 @@ export function buildAppFromEnv(
     : undefined;
   const jobService =
     options.jobService ??
-    (pgmq
-      ? createJobService({ createUserClient, getAdminClient, pgmq })
-      : undefined);
+    (pgmq ? createJobService({ createUserClient, getAdminClient }) : undefined);
   const creditService =
     options.creditService ?? createCreditService({ getAdminClient });
   const tierGuard = options.tierGuard ?? createTierGuard({ getAdminClient });
@@ -418,20 +416,6 @@ export function buildAppFromEnv(
                   credits: {
                     getBalance: (workspaceId) =>
                       creditService.getBalance(workspaceId),
-                    deduct: ({
-                      workspaceId,
-                      userId,
-                      amount,
-                      jobId,
-                      description,
-                    }) =>
-                      creditService.deductCredits(
-                        workspaceId,
-                        userId,
-                        amount,
-                        jobId,
-                        description,
-                      ),
                   },
                 },
               }),

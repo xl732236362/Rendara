@@ -5,19 +5,13 @@ import type {
   Json,
 } from "@loomic/shared";
 
-import type { PgmqClient } from "../../queue/pgmq-client.js";
+import type { AtomicJobSubmissionCommand } from "../../application/generation/ports.js";
 import type { AdminSupabaseClient } from "../../supabase/admin.js";
 import type {
   AuthenticatedUser,
   UserSupabaseClient,
 } from "../../supabase/user.js";
-import { createGenerationQueueMessage } from "./queue-message.js";
-
-// Queue name mapping
-const QUEUE_MAP: Record<BackgroundJobType, string> = {
-  image_generation: "image_generation_jobs",
-  video_generation: "video_generation_jobs",
-};
+import { createJobStateRepository } from "./job-state-repository.js";
 
 export class JobServiceError extends Error {
   readonly statusCode: number;
@@ -41,21 +35,17 @@ export class JobServiceError extends Error {
   }
 }
 
-export type CreateJobInput = {
-  workspaceId: string;
-  projectId?: string;
-  canvasId?: string;
-  sessionId?: string;
-  threadId?: string;
-  jobType: BackgroundJobType;
-  payload: Record<string, unknown>;
-};
+export type SubmitJobInput = Omit<AtomicJobSubmissionCommand, "principal">;
 
 export type JobService = {
-  createJob(
+  submitJob(
     user: AuthenticatedUser,
-    input: CreateJobInput,
-  ): Promise<BackgroundJob>;
+    input: SubmitJobInput,
+  ): Promise<{
+    job: BackgroundJob;
+    debitTransactionId: string | null;
+    replayed: boolean;
+  }>;
   getJob(user: AuthenticatedUser, jobId: string): Promise<BackgroundJob>;
   listJobs(
     user: AuthenticatedUser,
@@ -65,11 +55,6 @@ export type JobService = {
   getJobAdmin(jobId: string): Promise<BackgroundJob>;
 
   // Admin-only methods (use admin client, no user auth)
-  setCreditsInfo(
-    jobId: string,
-    creditsCost: number,
-    transactionId: string,
-  ): Promise<void>;
   markRunning(jobId: string): Promise<void>;
   markSucceeded(jobId: string, result: Record<string, unknown>): Promise<void>;
   markFailed(
@@ -90,8 +75,8 @@ export type JobService = {
 export function createJobService(options: {
   createUserClient: (accessToken: string) => UserSupabaseClient;
   getAdminClient: () => AdminSupabaseClient;
-  pgmq: PgmqClient;
 }): JobService {
+  const stateRepository = createJobStateRepository(options);
   function mapJobRow(row: Record<string, unknown>): BackgroundJob {
     return {
       id: row.id as string,
@@ -109,6 +94,13 @@ export function createJobService(options: {
       error_message: (row.error_message as string) ?? null,
       attempt_count: row.attempt_count as number,
       max_attempts: row.max_attempts as number,
+      transition_version: row.transition_version as number,
+      lease_token: (row.lease_token as string) ?? null,
+      lease_owner: (row.lease_owner as string) ?? null,
+      lease_expires_at: (row.lease_expires_at as string) ?? null,
+      pgmq_message_id: (row.pgmq_message_id as number) ?? null,
+      credits_transaction_id: (row.credits_transaction_id as string) ?? null,
+      credits_cost: (row.credits_cost as number) ?? null,
       created_by: row.created_by as string,
       created_at: row.created_at as string,
       updated_at: row.updated_at as string,
@@ -120,55 +112,11 @@ export function createJobService(options: {
   }
 
   const SELECT_COLS =
-    "id, workspace_id, project_id, canvas_id, session_id, thread_id, queue_name, job_type, status, payload, result, error_code, error_message, attempt_count, max_attempts, created_by, created_at, updated_at, started_at, completed_at, failed_at, canceled_at";
+    "id, workspace_id, project_id, canvas_id, session_id, thread_id, queue_name, job_type, status, payload, result, error_code, error_message, attempt_count, max_attempts, transition_version, lease_token, lease_owner, lease_expires_at, pgmq_message_id, credits_transaction_id, credits_cost, created_by, created_at, updated_at, started_at, completed_at, failed_at, canceled_at";
 
   return {
-    async createJob(user, input) {
-      const client = options.createUserClient(user.accessToken);
-      const queueName = QUEUE_MAP[input.jobType];
-
-      const { data: job, error } = await client
-        .from("background_jobs")
-        .insert({
-          workspace_id: input.workspaceId,
-          project_id: input.projectId ?? null,
-          canvas_id: input.canvasId ?? null,
-          session_id: input.sessionId ?? null,
-          thread_id: input.threadId ?? null,
-          queue_name: queueName,
-          job_type: input.jobType,
-          payload: input.payload as Json,
-          created_by: user.id,
-        })
-        .select(SELECT_COLS)
-        .single();
-
-      if (error || !job) {
-        throw new JobServiceError(
-          "job_create_failed",
-          "Failed to create job record.",
-          500,
-        );
-      }
-
-      // Enqueue to pgmq — rollback on failure
-      try {
-        const queueMessage = createGenerationQueueMessage({
-          ...input,
-          jobId: job.id,
-        });
-        await options.pgmq.send(queueName, queueMessage);
-      } catch (enqueueErr) {
-        console.error("[job-service] pgmq.send failed:", enqueueErr);
-        await client.from("background_jobs").delete().eq("id", job.id);
-        throw new JobServiceError(
-          "job_create_failed",
-          "Failed to enqueue job.",
-          500,
-        );
-      }
-
-      return mapJobRow(job as unknown as Record<string, unknown>);
+    submitJob(user, input) {
+      return stateRepository.submit(user, input);
     },
 
     async getJob(user, jobId) {
@@ -218,30 +166,7 @@ export function createJobService(options: {
     },
 
     async cancelJob(user, jobId) {
-      const client = options.createUserClient(user.accessToken);
-      const { data: job, error } = await client
-        .from("background_jobs")
-        .update({ status: "canceled", canceled_at: new Date().toISOString() })
-        .eq("id", jobId)
-        .in("status", ["queued", "running"])
-        .select(SELECT_COLS)
-        .maybeSingle();
-
-      if (error) {
-        throw new JobServiceError(
-          "job_cancel_failed",
-          "Failed to cancel job.",
-          500,
-        );
-      }
-      if (!job) {
-        throw new JobServiceError(
-          "job_not_found",
-          "Job not found or already completed.",
-          404,
-        );
-      }
-      return mapJobRow(job as unknown as Record<string, unknown>);
+      return (await stateRepository.requestCancellation(user, jobId)).job;
     },
 
     async getJobAdmin(jobId) {
@@ -266,31 +191,6 @@ export function createJobService(options: {
     },
 
     // --- Admin-only methods (admin client, bypasses RLS) ---
-
-    async setCreditsInfo(jobId, creditsCost, transactionId) {
-      const admin = options.getAdminClient();
-      const { error } = await admin
-        .from("background_jobs")
-        .update({
-          credits_cost: creditsCost,
-          credits_transaction_id: transactionId,
-        })
-        .eq("id", jobId);
-      if (error) {
-        console.error("[job-service] setCreditsInfo update failed", {
-          event: "job_credit_attachment_failed",
-          stage: "credit_attachment",
-          jobId,
-          errorCode: sanitizeDiagnosticCode(error.code),
-        });
-        throw new JobServiceError(
-          "job_create_failed",
-          "Failed to attach credits to job.",
-          500,
-          error,
-        );
-      }
-    },
 
     // TODO(phase-2): verify affected rows and centralize transition failures
     // when job lifecycle updates move behind transactional state semantics.
@@ -370,10 +270,4 @@ export function createJobService(options: {
       return { attempt_count: 1, max_attempts: 3 };
     },
   };
-}
-
-function sanitizeDiagnosticCode(code: unknown): string {
-  return typeof code === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(code)
-    ? code
-    : "unknown";
 }

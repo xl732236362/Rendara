@@ -10,7 +10,7 @@ export type GenerationPrincipal = {
   accessToken?: string;
 };
 
-export type JobCreateCommand = {
+export type AtomicJobSubmissionCommand = {
   principal: GenerationPrincipal;
   workspaceId: string;
   projectId?: string;
@@ -18,12 +18,17 @@ export type JobCreateCommand = {
   sessionId?: string;
   threadId?: string;
   jobType: BackgroundJobType;
+  idempotencyKey: string;
+  requestFingerprint: string;
+  creditsCost: number;
+  description: string;
   payload: Record<string, unknown>;
 };
 
 export type GenerationSubmissionOutcome = {
   id: string;
   status: "queued";
+  replayed: boolean;
 };
 
 export type GenerationCancellationOutcome = {
@@ -32,12 +37,9 @@ export type GenerationCancellationOutcome = {
 };
 
 export type GenerationJobSubmissionPort = {
-  create(command: JobCreateCommand): Promise<GenerationSubmissionOutcome>;
-  attachCredits(
-    jobId: string,
-    creditsCost: number,
-    transactionId: string,
-  ): Promise<void>;
+  submit(
+    command: AtomicJobSubmissionCommand,
+  ): Promise<GenerationSubmissionOutcome>;
 };
 
 export type GenerationCancellationPort = {
@@ -70,19 +72,12 @@ export type TierAuthorizationPort = {
   ): number;
 };
 
-export type CreditDeductionPort = {
+export type CreditBalancePort = {
   getBalance(workspaceId: string): Promise<{
     balance: number;
     plan: SubscriptionPlan;
     dailyClaimed: boolean;
   }>;
-  deduct(command: {
-    workspaceId: string;
-    userId: string;
-    amount: number;
-    jobId: string;
-    description: string;
-  }): Promise<string>;
 };
 
 export type StructuredLogContext = Record<string, unknown>;
@@ -98,5 +93,5 @@ export type GenerationApplicationPorts = {
   cancellation: GenerationCancellationPort;
   models: ModelCatalogPort;
   tiers: TierAuthorizationPort;
-  credits?: CreditDeductionPort;
+  credits?: CreditBalancePort;
 };

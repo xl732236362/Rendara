@@ -220,7 +220,7 @@ git commit -m "feat(db): add transactional job and canvas primitives"
 - Modify: `apps/server/src/features/jobs/job-service.ts`
 - Modify: `apps/server/src/app.ts`
 
-- [ ] **Step 1: Write failing application tests**
+- [x] **Step 1: Write failing application tests**
 
 Replace split `create -> deduct -> attach` expectations with one `jobs.submit` call carrying cost and idempotency key. Assert same-key repository outcomes are returned unchanged, conflicting keys map to HTTP 409, and no cancellation/compensation runs after an atomic submission failure:
 
@@ -233,13 +233,13 @@ expect(ports.credits?.deduct).toBeUndefined();
 expect(ports.cancellation.cancel).not.toHaveBeenCalled();
 ```
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run: `pnpm --filter @loomic/server test -- src/application/generation/submit-generation.test.ts src/features/jobs/job-state-repository.test.ts`
 
 Expected: FAIL because `jobs.submit` and the repository do not exist.
 
-- [ ] **Step 3: Implement repository RPC mapping**
+- [x] **Step 3: Implement repository RPC mapping**
 
 Define focused types and a single adapter:
 
@@ -257,21 +257,21 @@ export type JobStateRepository = {
 
 Parse unknown RPC results with local Zod schemas. Map database detail codes to exposed `AppError`s. Hash key/fingerprint values before logging and never log payload/prompt/token.
 
-- [ ] **Step 4: Simplify SubmitGeneration**
+- [x] **Step 4: Simplify SubmitGeneration**
 
 Keep model/tier/concurrency authorization and deterministic cost calculation, then call only `ports.jobs.submit`. Remove credit deduction, credit attachment, and cleanup cancellation branches from the queued submission path.
 
-- [ ] **Step 5: Wire routes, Agent calls, and service queries**
+- [x] **Step 5: Wire routes, Agent calls, and service queries**
 
 Require or generate stable idempotency keys at every submit call site. HTTP accepts the explicit shared field; Agent tool calls derive a stable key from run/tool-call identity rather than random UUID per retry. Retain `JobService` query methods and delegate cancellation/submission mutations to `JobStateRepository`.
 
-- [ ] **Step 6: Run focused and server tests**
+- [x] **Step 6: Run focused and server tests**
 
 Run: `pnpm --filter @loomic/server test -- src/application/generation/submit-generation.test.ts src/features/jobs/job-state-repository.test.ts src/features/jobs/generation-application-adapter.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```text
 git add apps/server/src/application/generation apps/server/src/features/jobs/job-state-repository.ts apps/server/src/features/jobs/job-state-repository.test.ts apps/server/src/features/jobs/generation-application-adapter.ts apps/server/src/features/jobs/job-service.ts apps/server/src/app.ts apps/server/src/http apps/server/src/agent/runtime.ts

@@ -38,6 +38,7 @@ const generateImageRequestSchema = z.object({
 });
 
 const generateVideoRequestSchema = z.object({
+  idempotency_key: z.string().trim().min(1).max(128),
   prompt: z.string().min(1),
   model: z.string().optional(),
   duration: z.number().int().min(3).max(16).optional(),
@@ -199,6 +200,7 @@ export async function registerGenerateRoutes(
       const submitted = await options.submitGeneration(
         { userId: user.id, workspaceId, accessToken: user.accessToken },
         {
+          idempotency_key: payload.idempotency_key,
           type: "video_generation",
           prompt: payload.prompt,
           model,

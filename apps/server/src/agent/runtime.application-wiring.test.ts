@@ -446,6 +446,9 @@ describe("Agent runtime application wiring", () => {
         accessToken: "token",
       },
       {
+        idempotency_key: expect.stringMatching(
+          /^agent:[^:]+:image:[0-9a-f]{32}$/,
+        ),
         type: "image_generation",
         prompt: "image",
         title: "Image",
@@ -464,6 +467,9 @@ describe("Agent runtime application wiring", () => {
         accessToken: "token",
       },
       {
+        idempotency_key: expect.stringMatching(
+          /^agent:[^:]+:video:[0-9a-f]{32}$/,
+        ),
         type: "video_generation",
         prompt: "video",
         model: "video/model",

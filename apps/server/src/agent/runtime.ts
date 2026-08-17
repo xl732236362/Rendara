@@ -1,5 +1,5 @@
 // @credits-system — Agent tool runtime with credit checks before image/video generation
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -557,6 +557,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
             submitted = await submitGeneration(
               { userId, workspaceId, accessToken },
               {
+                idempotency_key: agentGenerationKey(runId, "image", input),
                 type: "image_generation",
                 prompt: input.prompt,
                 title: input.title,
@@ -726,6 +727,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
             submitted = await submitGeneration(
               { userId, workspaceId, accessToken },
               {
+                idempotency_key: agentGenerationKey(runId, "video", input),
                 type: "video_generation",
                 prompt: input.prompt,
                 model: input.model,
@@ -1326,6 +1328,30 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
       }
     },
   };
+}
+
+function agentGenerationKey(
+  runId: string,
+  mediaType: "image" | "video",
+  input: unknown,
+): string {
+  const digest = createHash("sha256")
+    .update(stableJson(input))
+    .digest("hex")
+    .slice(0, 32);
+  return `agent:${runId}:${mediaType}:${digest}`.slice(0, 128);
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, child]) => child !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function isTerminalEvent(event: StreamEvent) {

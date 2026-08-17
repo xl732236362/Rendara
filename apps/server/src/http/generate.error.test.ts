@@ -91,7 +91,7 @@ describe("generation route errors", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/agent/generate-video",
-      payload: { prompt: "hello" },
+      payload: { idempotency_key: "video-error-1", prompt: "hello" },
     });
     expect(response.statusCode).toBe(502);
     expect(response.json()).toEqual({
@@ -116,7 +116,7 @@ describe("generation route errors", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/agent/generate-video",
-      payload: { prompt: "hello" },
+      payload: { idempotency_key: "video-error-2", prompt: "hello" },
     });
     expect(response.statusCode).toBe(500);
     expect(response.json()).toEqual({
@@ -139,7 +139,7 @@ describe("generation route errors", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/agent/generate-video",
-      payload: { prompt: "hello" },
+      payload: { idempotency_key: "video-error-3", prompt: "hello" },
     });
     expect(response.statusCode).toBe(502);
     expect(response.json()).toEqual({
@@ -165,7 +165,7 @@ describe("generation route errors", () => {
     const response = await app.inject({
       method: "POST",
       url: "/api/agent/generate-video",
-      payload: { prompt: "hello" },
+      payload: { idempotency_key: "video-error-4", prompt: "hello" },
     });
     expect(response.statusCode).toBe(500);
     expect(response.json()).toEqual({

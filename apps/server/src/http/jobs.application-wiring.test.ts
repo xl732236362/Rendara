@@ -17,8 +17,14 @@ describe("HTTP job application wiring", () => {
   it.each([
     [
       "image-generation",
-      { prompt: "image", aspect_ratio: "1:1", quality: "standard" },
       {
+        idempotency_key: "image-request-1",
+        prompt: "image",
+        aspect_ratio: "1:1",
+        quality: "standard",
+      },
+      {
+        idempotency_key: "image-request-1",
         type: "image_generation",
         prompt: "image",
         aspect_ratio: "1:1",
@@ -27,8 +33,14 @@ describe("HTTP job application wiring", () => {
     ],
     [
       "video-generation",
-      { prompt: "video", duration: 6, enable_audio: true },
       {
+        idempotency_key: "video-request-1",
+        prompt: "video",
+        duration: 6,
+        enable_audio: true,
+      },
+      {
+        idempotency_key: "video-request-1",
         type: "video_generation",
         prompt: "video",
         duration: 6,
@@ -118,6 +130,13 @@ function backgroundJob() {
     error_message: null,
     attempt_count: 0,
     max_attempts: 3,
+    transition_version: 0,
+    lease_token: null,
+    lease_owner: null,
+    lease_expires_at: null,
+    pgmq_message_id: null,
+    credits_transaction_id: null,
+    credits_cost: 0,
     created_by: user.id,
     created_at: "2026-08-17T00:00:00.000Z",
     updated_at: "2026-08-17T00:00:00.000Z",
