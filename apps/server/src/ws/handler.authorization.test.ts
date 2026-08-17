@@ -146,6 +146,40 @@ describe("WebSocket resource commands", () => {
     socket.emit("close");
   });
 
+  it("treats agent.cancel as run cancellation and never background job cancellation", async () => {
+    const socket = new FakeSocket();
+    const agentRuns = fakeAgentRuns();
+    agentRuns.cancelRun.mockReturnValue({ runId: "run-1", status: "canceled" });
+    const cancelGeneration = vi.fn();
+
+    await bindAuthenticatedSocket(
+      socket as never,
+      "token",
+      { url: "/api/ws", headers: { host: "localhost" } } as never,
+      {
+        agentRuns: agentRuns as never,
+        authorization: fakeAuthorization("canvas-1"),
+        auth: { authenticate: async () => user },
+        cancelGeneration,
+        connectionManager: new ConnectionManager(),
+      } as never,
+    );
+
+    socket.emit(
+      "message",
+      JSON.stringify({
+        type: "command",
+        action: "agent.cancel",
+        payload: { runId: "run-1" },
+      }),
+    );
+    await nextTurn();
+
+    expect(agentRuns.cancelRun).toHaveBeenCalledWith("run-1");
+    expect(cancelGeneration).not.toHaveBeenCalled();
+    socket.emit("close");
+  });
+
   it("does not create a run when its session resources are forbidden", async () => {
     const socket = new FakeSocket();
     const agentRuns = fakeAgentRuns();

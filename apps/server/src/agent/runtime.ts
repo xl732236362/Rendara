@@ -291,6 +291,24 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
   const now = options.now ?? (() => new Date().toISOString());
   const runs = new Map<string, RuntimeRunRecord>();
   const runIdFactory = options.runIdFactory ?? (() => randomUUID());
+  const createUserClientForCanvas = options.createUserClient;
+  const resolveWorkspaceId =
+    options.applyCanvasOperations && createUserClientForCanvas
+      ? async (accessToken: string) => {
+          const client = createUserClientForCanvas(
+            accessToken,
+          ) as UserSupabaseClient;
+          const { data, error } = await client
+            .from("workspaces")
+            .select("id")
+            .eq("type", "personal")
+            .limit(1)
+            .single();
+          if (error || !data?.id)
+            throw new Error("No personal workspace found");
+          return data.id;
+        }
+      : undefined;
 
   const resolvedAgentFactory: LoomicAgentFactory =
     options.agentFactory ??
@@ -301,23 +319,10 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         ...(options.createUserClient
           ? { createUserClient: options.createUserClient }
           : {}),
-        ...(options.applyCanvasOperations && options.createUserClient
+        ...(options.applyCanvasOperations && resolveWorkspaceId
           ? {
               applyCanvasOperations: options.applyCanvasOperations,
-              resolveWorkspaceId: async (accessToken: string) => {
-                const client = options.createUserClient!(
-                  accessToken,
-                ) as UserSupabaseClient;
-                const { data, error } = await client
-                  .from("workspaces")
-                  .select("id")
-                  .eq("type", "personal")
-                  .limit(1)
-                  .single();
-                if (error || !data?.id)
-                  throw new Error("No personal workspace found");
-                return data.id;
-              },
+              resolveWorkspaceId,
             }
           : {}),
       }));
@@ -1029,6 +1034,12 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           }
 
           agent = resolvedAgentFactory({
+            ...(options.applyCanvasOperations && resolveWorkspaceId
+              ? {
+                  applyCanvasOperations: options.applyCanvasOperations,
+                  resolveWorkspaceId,
+                }
+              : {}),
             backendResult,
             ...(brandKitId ? { brandKitId } : {}),
             ...(run.canvasId ? { canvasId: run.canvasId } : {}),

@@ -93,11 +93,13 @@ Verification evidence: application and adapter tests cover ordered canvas author
 
 **Files:** `apps/server/src/app.ts`, `worker.ts`, `http/generate.ts`, `http/jobs.ts`, `http/runs.ts`, `ws/handler.ts`, `agent/runtime.ts`, `agent/tools/image-generate.ts`, `agent/tools/video-generate.ts`, generation executors, integration tests
 
-- [ ] Add failing adapter tests showing HTTP and Agent call the same `SubmitGeneration` fake and HTTP/WS call the same cancellation boundary.
-- [ ] Inject application use cases from composition roots; delete duplicated job/tier/provider orchestration from adapters.
-- [ ] Keep streaming/run lifecycle inside Agent runtime, but delegate generation submission and cancellation semantics to application use cases.
-- [ ] Ensure worker uses explicit executor/provider registries and application-owned canvas mutation interfaces.
-- [ ] Run all server tests and search for adapter-level `createJob`/`cancelJob` orchestration outside approved application/infrastructure files.
+- [x] Add adapter spy tests showing queued HTTP and Agent image/video paths call the same `SubmitGeneration` interface with shared normalized contracts; HTTP background-job cancellation calls `CancelGeneration`, while WS `agent.cancel` is explicitly tested as `runId`-scoped `AgentRunService.cancelRun` and never background-job cancellation.
+- [x] Inject independently composed read-only canvas/skill use cases from the composition root and an optional generation group; delete duplicated queued job/tier/provider orchestration from HTTP and Agent adapters. Build-app tests prove canvas/skill capabilities remain available without `SUPABASE_DB_URL` while queued generation is explicitly unavailable.
+- [x] Keep streaming and LangGraph run lifecycle inside Agent runtime, delegate queued generation submission to `SubmitGeneration`, and forward canvas application dependencies through the lazy Agent factory so `manipulate_canvas` is registered from production wiring.
+- [x] Ensure Worker retains sealed explicit executor/provider catalogs and route generated media insertion through the application-owned `AttachGeneratedAsset` boundary. ENG-017 remains partial because revision/concurrency/event publication are later work.
+- [x] Run server/shared/workspace tests, full typecheck/build/lint/diff checks, and architecture searches for adapter-level `createJob`/`cancelJob`, direct Skill importer access, direct manipulate-tool Supabase canvas access, and runtime direct media-writer access.
+
+Task 8 evidence: `entrypoint-architecture.test.ts`, `jobs.application-wiring.test.ts`, `runtime.application-wiring.test.ts`, `handler.authorization.test.ts`, and `app.env.test.ts` cover the migrated boundaries and missing-generation composition. The truly synchronous `/api/agent/generate-image` path remains deliberately separate under Task 6 scope because its immediate media result and lifecycle are incompatible with the queued submission contract; only the queued video portion of `generate.ts` migrated here.
 
 ## Task 9: Build The Web Schema-Aware Fetcher
 

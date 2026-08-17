@@ -149,6 +149,15 @@ export type BuildAppOptions = {
   useCases?: Readonly<UseCases>;
 };
 
+const appUseCases = new WeakMap<FastifyInstance, Readonly<UseCases>>();
+
+/** Read-only composition diagnostics for tests and process-level integrations. */
+export function getAppUseCases(app: FastifyInstance): Readonly<UseCases> {
+  const useCases = appUseCases.get(app);
+  if (!useCases) throw new Error("Application use cases are not composed.");
+  return useCases;
+}
+
 export function buildAppFromEnv(
   env: ServerEnv,
   options: Omit<BuildAppOptions, "env"> = {},
@@ -268,116 +277,134 @@ export function buildAppFromEnv(
   const generationPorts = jobService
     ? createJobServiceGenerationPorts({ jobService, toAuthenticatedUser })
     : undefined;
-  const useCases: Readonly<UseCases> | undefined =
+  const useCases: Readonly<UseCases> =
     options.useCases ??
-    (generationPorts
-      ? Object.freeze({
-          submitGeneration: createSubmitGeneration({
-            logger,
-            ports: {
-              ...generationPorts,
-              models: {
-                resolveModel(type, requestedModel) {
-                  const fallback =
-                    type === "image_generation"
-                      ? "black-forest-labs/flux-kontext-pro"
-                      : "wan-video/wan-2.6";
-                  const model = requestedModel ?? fallback;
-                  if (type === "image_generation")
-                    providerRegistry.resolveImageProviderName(model);
-                  else providerRegistry.resolveVideoProviderName(model);
-                  return model;
-                },
-              },
-              tiers: {
-                async getPlan(workspaceId) {
-                  return (await creditService.getSubscription(workspaceId))
-                    .plan;
-                },
-                authorizeModel: (plan, model) =>
-                  tierGuard.checkModelAccess(plan, model),
-                authorizeMedia(plan, request) {
-                  if (request.type === "image_generation") {
-                    tierGuard.checkResolution(
-                      plan,
-                      getPlanConfig(plan).maxResolution,
-                    );
-                  } else if (
-                    request.resolution === "720p" ||
-                    request.resolution === "1080p" ||
-                    request.resolution === "4k"
-                  ) {
-                    tierGuard.checkVideoResolution(plan, request.resolution);
-                  }
-                },
-                authorizeConcurrency: (workspaceId, plan) =>
-                  tierGuard.checkConcurrency(workspaceId, plan),
-                calculateCreditCost(model, request) {
-                  return tierGuard.calculateCreditCost(
-                    model,
-                    request.type,
-                    request.type === "image_generation"
-                      ? { quality: "hd" }
-                      : {
-                          ...(request.duration !== undefined
-                            ? { duration: request.duration }
-                            : {}),
-                          ...(request.resolution === "720p" ||
-                          request.resolution === "1080p" ||
-                          request.resolution === "4k"
-                            ? { resolution: request.resolution }
-                            : {}),
-                        },
-                  );
-                },
-              },
-              credits: {
-                deduct: ({ workspaceId, userId, amount, jobId, description }) =>
-                  creditService.deductCredits(
-                    workspaceId,
-                    userId,
-                    amount,
-                    jobId,
-                    description,
-                  ),
-              },
-            },
-          }),
-          cancelGeneration: createCancelGeneration({
-            jobs: generationPorts.cancellation,
-            logger,
-          }),
-          applyCanvasOperations: createApplyCanvasOperations({
-            logger,
-            ports: {
-              authorization: createCanvasAuthorizationPort({
-                authorization: resourceAuthorization,
-                toAuthenticatedUser,
-              }),
-              operations: createCanvasServiceOperationPort({
-                canvasService,
-                toAuthenticatedUser,
-              }),
-            },
-          }),
-          attachGeneratedAsset: createAttachGeneratedAsset({
+    Object.freeze({
+      canvas: Object.freeze({
+        applyOperations: createApplyCanvasOperations({
+          logger,
+          ports: {
             authorization: createCanvasAuthorizationPort({
               authorization: resourceAuthorization,
               toAuthenticatedUser,
             }),
-            assets: createGeneratedAssetPort({ createUserClient }),
+            operations: createCanvasServiceOperationPort({
+              canvasService,
+              toAuthenticatedUser,
+            }),
+          },
+        }),
+        attachGeneratedAsset: createAttachGeneratedAsset({
+          authorization: createCanvasAuthorizationPort({
+            authorization: resourceAuthorization,
+            toAuthenticatedUser,
           }),
-          importSkill: createImportSkill({
-            logger,
-            ports: {
-              capability: {
-                externalImportEnabled: () => env.allowExternalSkillImport,
-              },
-              importer: createSkillImportApplicationPort(),
+          assets: createGeneratedAssetPort({ createUserClient }),
+        }),
+      }),
+      skills: Object.freeze({
+        importSkill: createImportSkill({
+          logger,
+          ports: {
+            capability: {
+              externalImportEnabled: () => env.allowExternalSkillImport,
             },
-          }),
-        })
-      : undefined);
+            importer: createSkillImportApplicationPort(),
+          },
+        }),
+      }),
+      ...(generationPorts
+        ? {
+            generation: Object.freeze({
+              submit: createSubmitGeneration({
+                logger,
+                ports: {
+                  ...generationPorts,
+                  models: {
+                    resolveModel(type, requestedModel) {
+                      const fallback =
+                        type === "image_generation"
+                          ? "black-forest-labs/flux-kontext-pro"
+                          : "wan-video/wan-2.6";
+                      const model = requestedModel ?? fallback;
+                      if (type === "image_generation")
+                        providerRegistry.resolveImageProviderName(model);
+                      else providerRegistry.resolveVideoProviderName(model);
+                      return model;
+                    },
+                  },
+                  tiers: {
+                    async getPlan(workspaceId) {
+                      return (await creditService.getSubscription(workspaceId))
+                        .plan;
+                    },
+                    authorizeModel: (plan, model) =>
+                      tierGuard.checkModelAccess(plan, model),
+                    authorizeMedia(plan, request) {
+                      if (request.type === "image_generation") {
+                        tierGuard.checkResolution(
+                          plan,
+                          getPlanConfig(plan).maxResolution,
+                        );
+                      } else if (
+                        request.resolution === "720p" ||
+                        request.resolution === "1080p" ||
+                        request.resolution === "4k"
+                      ) {
+                        tierGuard.checkVideoResolution(
+                          plan,
+                          request.resolution,
+                        );
+                      }
+                    },
+                    authorizeConcurrency: (workspaceId, plan) =>
+                      tierGuard.checkConcurrency(workspaceId, plan),
+                    calculateCreditCost(model, request) {
+                      return tierGuard.calculateCreditCost(
+                        model,
+                        request.type,
+                        request.type === "image_generation"
+                          ? { quality: "hd" }
+                          : {
+                              ...(request.duration !== undefined
+                                ? { duration: request.duration }
+                                : {}),
+                              ...(request.resolution === "720p" ||
+                              request.resolution === "1080p" ||
+                              request.resolution === "4k"
+                                ? { resolution: request.resolution }
+                                : {}),
+                            },
+                      );
+                    },
+                  },
+                  credits: {
+                    deduct: ({
+                      workspaceId,
+                      userId,
+                      amount,
+                      jobId,
+                      description,
+                    }) =>
+                      creditService.deductCredits(
+                        workspaceId,
+                        userId,
+                        amount,
+                        jobId,
+                        description,
+                      ),
+                  },
+                },
+              }),
+              cancel: createCancelGeneration({
+                jobs: generationPorts.cancellation,
+                logger,
+              }),
+            }),
+          }
+        : {}),
+    });
+  appUseCases.set(app, useCases);
 
   // Payment service — only created when Lemon Squeezy is configured
   let paymentService: PaymentService | undefined = options.paymentService;
@@ -399,12 +426,8 @@ export function buildAppFromEnv(
   const eventBuffer = new CanvasEventBuffer();
   setInterval(() => eventBuffer.cleanup(), 5 * 60 * 1000);
   const agentRuns = createAgentRunService({
-    ...(useCases
-      ? {
-          applyCanvasOperations: useCases.applyCanvasOperations,
-          attachGeneratedAsset: useCases.attachGeneratedAsset,
-        }
-      : {}),
+    applyCanvasOperations: useCases.canvas.applyOperations,
+    attachGeneratedAsset: useCases.canvas.attachGeneratedAsset,
     agentPersistenceService,
     ...(options.agentFactory ? { agentFactory: options.agentFactory } : {}),
     agentRunMetadataService,
@@ -419,7 +442,9 @@ export function buildAppFromEnv(
     ...(jobService ? { jobService } : {}),
     creditService,
     tierGuard,
-    ...(useCases ? { submitGeneration: useCases.submitGeneration } : {}),
+    ...(useCases.generation
+      ? { submitGeneration: useCases.generation.submit }
+      : {}),
     viewerService,
   });
 
@@ -537,7 +562,9 @@ export function buildAppFromEnv(
     providerRegistry,
     uploadService,
     viewerService,
-    ...(useCases ? { submitGeneration: useCases.submitGeneration } : {}),
+    ...(useCases.generation
+      ? { submitGeneration: useCases.generation.submit }
+      : {}),
     ...(jobService ? { jobService } : {}),
     ...(tierGuard ? { tierGuard } : {}),
   });
@@ -546,10 +573,10 @@ export function buildAppFromEnv(
     void registerJobRoutes(app, {
       auth,
       jobService,
-      ...(useCases
+      ...(useCases.generation
         ? {
-            cancelGeneration: useCases.cancelGeneration,
-            submitGeneration: useCases.submitGeneration,
+            cancelGeneration: useCases.generation.cancel,
+            submitGeneration: useCases.generation.submit,
           }
         : {}),
       viewerService,
@@ -558,7 +585,7 @@ export function buildAppFromEnv(
   void registerSkillRoutes(app, {
     auth,
     createUserClient,
-    ...(useCases ? { importSkill: useCases.importSkill } : {}),
+    importSkill: useCases.skills.importSkill,
     viewerService,
   });
   void registerMarketplaceRoutes(app, {

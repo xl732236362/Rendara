@@ -181,7 +181,7 @@ export async function registerGenerateRoutes(
       return raiseBoundaryError(
         {
           error: {
-            code: "service_unavailable",
+            code: "generation_failed",
             message:
               "Video generation is not available (job service not configured).",
           },

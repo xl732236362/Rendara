@@ -6,9 +6,13 @@ import type { ImportSkill } from "./skills/import-skill.js";
 
 /** Transport-neutral application API, created once by the composition root. */
 export interface UseCases {
-  readonly applyCanvasOperations: ApplyCanvasOperations;
-  readonly attachGeneratedAsset: AttachGeneratedAsset;
-  readonly cancelGeneration: CancelGeneration;
-  readonly importSkill: ImportSkill;
-  readonly submitGeneration: SubmitGeneration;
+  readonly canvas: Readonly<{
+    applyOperations: ApplyCanvasOperations;
+    attachGeneratedAsset: AttachGeneratedAsset;
+  }>;
+  readonly skills: Readonly<{ importSkill: ImportSkill }>;
+  readonly generation?: Readonly<{
+    cancel: CancelGeneration;
+    submit: SubmitGeneration;
+  }>;
 }
