@@ -36,6 +36,7 @@ export function createCancelGeneration(options: {
     try {
       const outcome = parseCancellationOutcome(
         await options.jobs.cancel(principal, jobId),
+        jobId,
       );
       options.logger.info("Generation cancellation accepted", {
         stage: outcome.status,

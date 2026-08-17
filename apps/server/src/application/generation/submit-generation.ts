@@ -153,6 +153,7 @@ async function cancelAfterFailure(
   try {
     parseCancellationOutcome(
       await options.ports.cancellation.cancel(principal, jobId),
+      jobId,
     );
     options.logger.warn(
       "Generation job canceled after submission failure",

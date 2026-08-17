@@ -13,8 +13,27 @@ const principal: GenerationPrincipal = {
   workspaceId: "55555555-5555-4555-8555-555555555555",
 };
 const jobId = "44444444-4444-4444-8444-444444444444";
+const otherJobId = "66666666-6666-4666-8666-666666666666";
 
 describe("CancelGeneration", () => {
+  it("privately rejects a cancellation outcome for a different job without success logging", async () => {
+    const logger = silentLogger();
+    const jobs: GenerationCancellationPort = {
+      cancel: vi.fn(async () => ({
+        id: otherJobId,
+        status: "canceled" as const,
+      })),
+    };
+    const cancel = createCancelGeneration({ jobs, logger });
+
+    await expect(cancel(principal, { jobId })).rejects.toMatchObject({
+      code: "application_error",
+      statusCode: 500,
+      expose: false,
+    });
+    expect(logger.info).not.toHaveBeenCalled();
+  });
+
   it.each([
     [{ id: jobId, status: "succeeded" }, "succeeded"],
     [{ id: jobId, status: "failed" }, "failed"],

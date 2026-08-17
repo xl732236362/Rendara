@@ -24,12 +24,15 @@ export function parseSubmissionOutcome(
 
 export function parseCancellationOutcome(
   outcome: GenerationCancellationOutcome,
+  expectedJobId: string,
 ): GenerationCancellationResponse {
   const parsed = generationCancellationResponseSchema.safeParse({
     jobId: outcome.id,
     status: outcome.status,
   });
-  if (!parsed.success) throw invalidAdapterOutcome();
+  if (!parsed.success || parsed.data.jobId !== expectedJobId) {
+    throw invalidAdapterOutcome();
+  }
   return parsed.data;
 }
 

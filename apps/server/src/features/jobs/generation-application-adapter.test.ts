@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { createCancelGeneration } from "../../application/generation/cancel-generation.js";
 import type { GenerationPrincipal } from "../../application/generation/ports.js";
 import { createJobServiceGenerationPorts } from "./generation-application-adapter.js";
 import type { JobService } from "./job-service.js";
@@ -69,5 +70,29 @@ describe("createJobServiceGenerationPorts", () => {
         payload: { prompt: "draw" },
       }),
     ).rejects.toMatchObject({ code: "application_error", statusCode: 500 });
+  });
+
+  it("lets the application boundary reject a legacy cancellation result for another job", async () => {
+    const jobService = {
+      createJob: vi.fn(),
+      cancelJob: vi.fn(async () => ({
+        id: "66666666-6666-4666-8666-666666666666",
+        status: "canceled",
+      })),
+      setCreditsInfo: vi.fn(),
+    } as unknown as JobService;
+    const ports = createJobServiceGenerationPorts({
+      jobService,
+      toAuthenticatedUser: () => user,
+    });
+    const cancel = createCancelGeneration({
+      jobs: ports.cancellation,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+
+    await expect(cancel(principal, { jobId })).rejects.toMatchObject({
+      code: "application_error",
+      statusCode: 500,
+    });
   });
 });

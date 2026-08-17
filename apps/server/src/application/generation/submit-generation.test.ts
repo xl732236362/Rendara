@@ -233,6 +233,34 @@ describe("SubmitGeneration", () => {
     expect(ports.cancellation.cancel).toHaveBeenCalledWith(principal, ids.job);
   });
 
+  it("preserves the submission error and logs cleanup_failed when cancellation returns another job", async () => {
+    const { logger, ports, submit } = setup();
+    const original = new AppError({
+      code: "credit_deduct_failed",
+      statusCode: 500,
+      message: "Deduction failed",
+    });
+    const credits = ports.credits;
+    if (!credits) throw new Error("test setup requires credits");
+    vi.mocked(credits.deduct).mockRejectedValue(original);
+    vi.mocked(ports.cancellation.cancel).mockResolvedValue({
+      id: "66666666-6666-4666-8666-666666666666",
+      status: "canceled",
+    });
+
+    await expect(
+      submit(principal, { type: "image_generation", prompt: "draw" }),
+    ).rejects.toBe(original);
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      "Generation job canceled after submission failure",
+      expect.anything(),
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      "Generation job cleanup failed",
+      expect.objectContaining({ stage: "cleanup_failed", jobId: ids.job }),
+    );
+  });
+
   it("cancels after credit metadata attachment fails without masking the failure", async () => {
     const { ports, submit } = setup();
     vi.mocked(ports.jobs.attachCredits).mockRejectedValue(
