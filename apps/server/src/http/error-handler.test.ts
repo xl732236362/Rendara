@@ -1,13 +1,17 @@
-import { errorEnvelopeSchema } from "@loomic/shared";
+import { type BoundaryErrorCode, errorEnvelopeSchema } from "@loomic/shared";
 import type { FastifyBaseLogger, FastifyInstance } from "fastify";
 import Fastify from "fastify";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { z } from "zod";
 
-import { AppError } from "../errors/app-error.js";
+import { AppError, type AppErrorOptions } from "../errors/app-error.js";
 import { registerErrorHandler } from "./error-handler.js";
 
 describe("Fastify error boundary", () => {
+  it("only accepts codes registered by the shared boundary contract", () => {
+    expectTypeOf<AppErrorOptions["code"]>().toEqualTypeOf<BoundaryErrorCode>();
+  });
+
   it("maps Zod request parsing failures to a safe canonical envelope", async () => {
     const app = createTestApp();
     app.post("/zod", async (request) => {
@@ -37,6 +41,7 @@ describe("Fastify error boundary", () => {
         },
       },
     });
+    expect(() => errorEnvelopeSchema.parse(response.json())).not.toThrow();
     await app.close();
   });
 
@@ -62,6 +67,7 @@ describe("Fastify error boundary", () => {
         details: { projectId: "project-1" },
       },
     });
+    expect(() => errorEnvelopeSchema.parse(response.json())).not.toThrow();
     await app.close();
   });
 

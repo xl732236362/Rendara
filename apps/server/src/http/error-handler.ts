@@ -1,3 +1,4 @@
+import { errorEnvelopeSchema } from "@loomic/shared";
 import type { FastifyError, FastifyInstance, FastifyRequest } from "fastify";
 import { ZodError, type ZodIssue } from "zod";
 
@@ -32,13 +33,13 @@ export function registerErrorHandler(app: FastifyInstance): void {
     const classified = classifyError(error);
     logFailure(request, error, classified);
 
-    const envelope = {
+    const envelope = errorEnvelopeSchema.parse({
       error: {
         code: classified.code,
         message: classified.message,
         ...(classified.details ? { details: classified.details } : {}),
       },
-    };
+    });
 
     return reply.code(classified.statusCode).send(envelope);
   });

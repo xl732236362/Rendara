@@ -1,6 +1,6 @@
 import type { BoundaryErrorCode } from "@loomic/shared";
 
-export type AppErrorCode = BoundaryErrorCode | (string & Record<never, never>);
+export type AppErrorCode = BoundaryErrorCode;
 
 export type SafeErrorDetails = Record<string, unknown>;
 
