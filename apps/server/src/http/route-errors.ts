@@ -16,6 +16,63 @@ import type {
 } from "../supabase/user.js";
 import { safeRead } from "../utils/safe-error-inspection.js";
 
+const LEGACY_PUBLIC_ERRORS: Partial<
+  Record<BoundaryErrorCode, { statusCode: number; message: string }>
+> = {
+  unauthorized: { statusCode: 401, message: "Authentication required." },
+  invalid_request: { statusCode: 400, message: "Request validation failed." },
+  forbidden: { statusCode: 403, message: "Access denied." },
+  capability_disabled: {
+    statusCode: 403,
+    message: "This capability is disabled.",
+  },
+  insufficient_credits: { statusCode: 402, message: "Insufficient credits." },
+  project_not_found: { statusCode: 404, message: "Project not found." },
+  project_slug_taken: {
+    statusCode: 409,
+    message: "Project name is already in use.",
+  },
+  canvas_not_found: { statusCode: 404, message: "Canvas not found." },
+  session_not_found: { statusCode: 404, message: "Session not found." },
+  job_not_found: { statusCode: 404, message: "Job not found." },
+  asset_not_found: { statusCode: 404, message: "Asset not found." },
+  settings_not_found: { statusCode: 404, message: "Settings not found." },
+  brand_kit_not_found: { statusCode: 404, message: "Brand kit not found." },
+  brand_kit_asset_not_found: {
+    statusCode: 404,
+    message: "Brand kit asset not found.",
+  },
+  skill_not_found: { statusCode: 404, message: "Skill not found." },
+  variant_not_found: { statusCode: 404, message: "Payment variant not found." },
+  subscription_not_found: {
+    statusCode: 404,
+    message: "Subscription not found.",
+  },
+  model_not_accessible: {
+    statusCode: 403,
+    message: "Model is not accessible.",
+  },
+  resolution_not_allowed: {
+    statusCode: 403,
+    message: "Resolution is not allowed.",
+  },
+  concurrency_limit: { statusCode: 429, message: "Concurrency limit reached." },
+  rate_limited: { statusCode: 429, message: "Too many requests." },
+  skill_import_failed: { statusCode: 400, message: "Skill import failed." },
+  marketplace_detail_failed: {
+    statusCode: 404,
+    message: "Marketplace item not found.",
+  },
+  marketplace_search_failed: {
+    statusCode: 502,
+    message: "Marketplace search failed.",
+  },
+  marketplace_install_failed: {
+    statusCode: 502,
+    message: "Marketplace install failed.",
+  },
+};
+
 export async function authenticateOrThrow(
   auth: RequestAuthenticator,
   request: Pick<FastifyRequest, "headers">,
@@ -35,16 +92,13 @@ export async function authenticateOrThrow(
 /** Converts only the stable legacy service-error shape into an AppError. */
 export function normalizeLegacyServiceError(error: unknown): AppError | null {
   if (error instanceof SkillImportError) {
-    return new AppError({
-      code:
-        error.code === "capability_disabled"
-          ? "capability_disabled"
-          : "skill_import_failed",
-      statusCode: error.code === "capability_disabled" ? 403 : 400,
-      message: error.message,
-      expose: true,
-      cause: error,
-    });
+    return legacyAppError(
+      error.code === "capability_disabled"
+        ? "capability_disabled"
+        : "skill_import_failed",
+      error.code === "capability_disabled" ? 403 : 400,
+      error,
+    );
   }
   if (error instanceof MarketplaceError) {
     const code =
@@ -53,13 +107,11 @@ export function normalizeLegacyServiceError(error: unknown): AppError | null {
         : error.code === "package_not_found"
           ? "marketplace_detail_failed"
           : "marketplace_install_failed";
-    return new AppError({
+    return legacyAppError(
       code,
-      statusCode: error.code === "package_not_found" ? 404 : 502,
-      message: error.message,
-      expose: true,
-      cause: error,
-    });
+      error.code === "package_not_found" ? 404 : 502,
+      error,
+    );
   }
   if (!(error instanceof Error)) return null;
   const statusCode = safeRead(error, "statusCode");
@@ -72,40 +124,30 @@ export function normalizeLegacyServiceError(error: unknown): AppError | null {
   ) {
     return null;
   }
-  if ((statusCode as number) >= 500) {
-    return new AppError({
-      code: "application_error",
-      statusCode: statusCode as number,
-      message: "An unexpected error occurred",
-      cause: error,
-    });
-  }
-  if (!isApprovedLegacy4xx(parsedCode.data, statusCode as number)) {
-    return null;
-  }
-  return new AppError({
-    code: parsedCode.data as BoundaryErrorCode,
-    statusCode: statusCode as number,
-    message: error.message,
-    expose: true,
-    cause: error,
-  });
+  return legacyAppError(parsedCode.data, statusCode as number, error);
 }
 
-function isApprovedLegacy4xx(
+function legacyAppError(
   code: BoundaryErrorCode,
   statusCode: number,
-): boolean {
-  if (code === "unauthorized") return statusCode === 401;
-  if (code === "invalid_request") return statusCode === 400;
-  if (code === "insufficient_credits") return statusCode === 402;
-  if (code === "capability_disabled" || code === "forbidden")
-    return statusCode === 403;
-  if (code.endsWith("_not_found")) return statusCode === 404;
-  if (code.endsWith("_slug_taken")) return statusCode === 409;
-  if (code === "rate_limited" || code === "concurrency_limit")
-    return statusCode === 429;
-  return statusCode >= 400 && statusCode < 500;
+  cause: Error,
+): AppError {
+  const publicError = LEGACY_PUBLIC_ERRORS[code];
+  if (!publicError || publicError.statusCode !== statusCode) {
+    return new AppError({
+      code: "application_error",
+      statusCode: 500,
+      message: "An unexpected error occurred",
+      cause,
+    });
+  }
+  return new AppError({
+    code,
+    statusCode,
+    message: publicError.message,
+    expose: true,
+    cause,
+  });
 }
 
 export function throwLegacyServiceError(error: unknown): never {

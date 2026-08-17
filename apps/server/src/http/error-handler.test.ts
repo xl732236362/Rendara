@@ -246,6 +246,49 @@ describe("Fastify error boundary", () => {
     await app.close();
   });
 
+  it("uses a centralized safe message for an approved legacy 4xx pair", async () => {
+    const app = createTestApp();
+    app.get("/legacy-project", async () => {
+      throw Object.assign(new Error("token=project-secret"), {
+        code: "project_not_found",
+        statusCode: 404,
+      });
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/legacy-project",
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      error: { code: "project_not_found", message: "Project not found." },
+    });
+    expect(response.body).not.toContain("project-secret");
+    await app.close();
+  });
+
+  it("rejects generation_failed paired with a client status", async () => {
+    const app = createTestApp();
+    app.get("/legacy-generation", async () => {
+      throw Object.assign(new Error("token=generation-secret"), {
+        code: "generation_failed",
+        statusCode: 418,
+      });
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/legacy-generation",
+    });
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({
+      error: {
+        code: "application_error",
+        message: "An unexpected error occurred",
+      },
+    });
+    expect(response.body).not.toContain("generation-secret");
+    await app.close();
+  });
+
   it("contains errors whose diagnostic getters throw", async () => {
     const { app, records } = createLoggedTestApp();
     app.get("/hostile-error", async () => {

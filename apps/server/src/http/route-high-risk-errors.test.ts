@@ -74,8 +74,17 @@ describe("high-risk route error boundaries", () => {
   it("rejects an empty multipart upload canonically", async () => {
     const app = createApp();
     await app.register(multipart);
-    await registerUploadRoutes(app, { auth, uploadService: {} as never, viewerService: {} as never });
-    const response = await app.inject({ method: "POST", url: "/api/uploads", headers: { "content-type": "multipart/form-data; boundary=x" }, payload: "--x--\r\n" });
+    await registerUploadRoutes(app, {
+      auth,
+      uploadService: {} as never,
+      viewerService: {} as never,
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/uploads",
+      headers: { "content-type": "multipart/form-data; boundary=x" },
+      payload: "--x--\r\n",
+    });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: { code: "upload_failed" } });
     await app.close();
