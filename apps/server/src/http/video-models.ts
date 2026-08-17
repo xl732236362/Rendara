@@ -2,16 +2,16 @@
 import type { FastifyInstance } from "fastify";
 
 import {
-  canAccessModel,
-  getVideoCreditCost,
   MODEL_MIN_TIER,
   type SubscriptionPlan,
+  canAccessModel,
+  getVideoCreditCost,
 } from "@loomic/shared";
 
+import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
 import type { CreditService } from "../features/credits/credit-service.js";
 import { getAvailableVideoModels } from "../generation/providers/registry.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
-import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
 
 export async function registerVideoModelRoutes(
   app: FastifyInstance,

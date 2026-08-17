@@ -3,19 +3,19 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 
 import {
   PLAN_CONFIGS,
+  applicationErrorResponseSchema,
+  claimDailyResponseSchema,
   creditBalanceResponseSchema,
   creditTransactionsResponseSchema,
-  claimDailyResponseSchema,
   setPlanRequestSchema,
-  applicationErrorResponseSchema,
   unauthenticatedErrorResponseSchema,
 } from "@loomic/shared";
 
-import {
-  CreditServiceError,
-  type CreditService,
-} from "../features/credits/credit-service.js";
 import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
+import {
+  type CreditService,
+  CreditServiceError,
+} from "../features/credits/credit-service.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
 
 export async function registerCreditRoutes(
@@ -64,16 +64,18 @@ export async function registerCreditRoutes(
 
       const viewer = await options.viewerService.ensureViewer(user);
       const query = request.query as { limit?: string };
-      const limit = query.limit ? Math.min(parseInt(query.limit, 10), 100) : 20;
+      const limit = query.limit
+        ? Math.min(Number.parseInt(query.limit, 10), 100)
+        : 20;
 
       const transactions = await options.creditService.getTransactions(
         viewer.workspace.id,
         limit,
       );
 
-      return reply.code(200).send(
-        creditTransactionsResponseSchema.parse({ transactions }),
-      );
+      return reply
+        .code(200)
+        .send(creditTransactionsResponseSchema.parse({ transactions }));
     } catch (error) {
       return sendCreditError(error, reply, "credit_query_failed");
     }
@@ -94,7 +96,8 @@ export async function registerCreditRoutes(
         return reply.code(200).send(
           claimDailyResponseSchema.parse({
             success: false,
-            message: "Daily credits already claimed or not available for your plan.",
+            message:
+              "Daily credits already claimed or not available for your plan.",
           }),
         );
       }

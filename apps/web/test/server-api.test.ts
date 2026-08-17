@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  createRun,
-  fetchViewer,
-  fetchProjects,
   createProject,
+  createRun,
+  fetchProjects,
+  fetchViewer,
 } from "../src/lib/server-api";
 
 const mockFetch = vi.fn();
@@ -19,11 +19,20 @@ describe("authenticated server API", () => {
 
   it("fetchViewer sends bearer token and returns viewer response", async () => {
     const viewer = {
-      profile: { id: "u1", email: "a@b.com", displayName: "A", avatarUrl: null },
+      profile: {
+        id: "u1",
+        email: "a@b.com",
+        displayName: "A",
+        avatarUrl: null,
+      },
       workspace: { id: "w1", name: "W", type: "personal", ownerUserId: "u1" },
       membership: { workspaceId: "w1", userId: "u1", role: "owner" },
     };
-    mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => viewer });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => viewer,
+    });
 
     const result = await fetchViewer("token_abc");
     expect(mockFetch).toHaveBeenCalledWith(
@@ -100,13 +109,21 @@ describe("authenticated server API", () => {
   it("createProject sends POST with bearer token and handles 201", async () => {
     const project = {
       project: {
-        id: "p1", name: "Test", slug: "test", description: null,
+        id: "p1",
+        name: "Test",
+        slug: "test",
+        description: null,
         workspace: { id: "w1", name: "W", type: "personal", ownerUserId: "u1" },
         primaryCanvas: { id: "c1", name: "Main Canvas", isPrimary: true },
-        createdAt: "2026-03-23T00:00:00Z", updatedAt: "2026-03-23T00:00:00Z",
+        createdAt: "2026-03-23T00:00:00Z",
+        updatedAt: "2026-03-23T00:00:00Z",
       },
     };
-    mockFetch.mockResolvedValue({ ok: true, status: 201, json: async () => project });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => project,
+    });
 
     const result = await createProject("token_abc", { name: "Test" });
     expect(mockFetch).toHaveBeenCalledWith(
@@ -124,7 +141,11 @@ describe("authenticated server API", () => {
 
   it("fetchProjects sends bearer token and returns list", async () => {
     const list = { projects: [{ id: "p1", name: "Test", slug: "test" }] };
-    mockFetch.mockResolvedValue({ ok: true, status: 200, json: async () => list });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => list,
+    });
 
     const result = await fetchProjects("token_abc");
     expect(mockFetch).toHaveBeenCalledWith(

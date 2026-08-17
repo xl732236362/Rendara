@@ -128,10 +128,15 @@ export function blobToDataURL(blob: Blob): Promise<string> {
  * Fetch an image URL and convert it to a data URL string.
  * Routes through the server proxy to bypass browser CORS restrictions.
  */
-export async function fetchAsDataURL(url: string): Promise<string> {
+export async function fetchAsDataURL(
+  url: string,
+  accessToken: string,
+): Promise<string> {
   const proxyUrl = `${getServerBaseUrl()}/api/proxy-image?url=${encodeURIComponent(url)}`;
 
-  const response = await fetch(proxyUrl);
+  const response = await fetch(proxyUrl, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
   if (!response.ok) {
     throw new Error(`Failed to fetch image: ${response.status}`);
   }
@@ -155,8 +160,9 @@ export async function insertImageOnCanvas(
     }) => void;
   },
   artifact: ImageArtifact,
+  accessToken: string,
 ): Promise<void> {
-  const dataURL = await fetchAsDataURL(artifact.url);
+  const dataURL = await fetchAsDataURL(artifact.url, accessToken);
   const fileId = generateId();
 
   api.addFiles([
@@ -195,7 +201,7 @@ export async function insertImageOnCanvas(
     } else {
       // Has elements → place to the right of the rightmost element with gap
       const GAP = 40;
-      let maxRight = -Infinity;
+      let maxRight = Number.NEGATIVE_INFINITY;
       let rightEdgeY = 0;
 
       for (const el of elements) {
@@ -246,7 +252,9 @@ export async function insertVideoOnCanvas(
   artifact: VideoArtifact,
 ): Promise<void> {
   // Dynamic import — excalidraw is client-only and cannot be imported at module level
-  const { convertToExcalidrawElements } = await import("@excalidraw/excalidraw");
+  const { convertToExcalidrawElements } = await import(
+    "@excalidraw/excalidraw"
+  );
 
   let x: number;
   let y: number;
@@ -274,7 +282,7 @@ export async function insertVideoOnCanvas(
     } else {
       // Has elements -- place to the right of the rightmost element with gap
       const GAP = 40;
-      let maxRight = -Infinity;
+      let maxRight = Number.NEGATIVE_INFINITY;
       let rightEdgeY = 0;
       for (const el of elements) {
         const elRight = (el.x ?? 0) + (el.width ?? 0);
@@ -315,7 +323,6 @@ export async function insertVideoOnCanvas(
 
 function generateId(): string {
   return (
-    Math.random().toString(36).slice(2) +
-    Math.random().toString(36).slice(2)
+    Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
   ).slice(0, 20);
 }

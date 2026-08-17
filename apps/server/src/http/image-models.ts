@@ -2,16 +2,16 @@
 import type { FastifyInstance } from "fastify";
 
 import {
-  canAccessModel,
-  getImageCreditCost,
   MODEL_MIN_TIER,
   type SubscriptionPlan,
+  canAccessModel,
+  getImageCreditCost,
 } from "@loomic/shared";
 
+import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
 import type { CreditService } from "../features/credits/credit-service.js";
 import { getAvailableImageModels } from "../generation/providers/registry.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
-import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
 
 export async function registerImageModelRoutes(
   app: FastifyInstance,

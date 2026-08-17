@@ -6,7 +6,15 @@
       "**/node_modules/**",
       "**/.turbo/**",
       "**/.next/**",
+      "**/.next-e2e/**",
+      "**/.next.stale-*/**",
+      "**/coverage/**",
+      "**/playwright-report/**",
+      "**/test-results/**",
+      "**/.codex-logs/**",
+      "**/supabase/.temp/**",
       "**/dist/**",
+      "**/build/**",
       "**/out/**"
     ],
     "include": [
@@ -26,7 +34,42 @@
   "linter": {
     "enabled": true,
     "rules": {
-      "recommended": true
+      "recommended": true,
+      "a11y": {
+        "noLabelWithoutControl": "warn",
+        "noRedundantRoles": "warn",
+        "noSvgWithoutTitle": "warn",
+        "useButtonType": "warn",
+        "useKeyWithClickEvents": "warn",
+        "useMediaCaption": "warn",
+        "useSemanticElements": "warn",
+        "useValidAnchor": "warn"
+      },
+      "correctness": {
+        "noSwitchDeclarations": "warn",
+        "noUnnecessaryContinue": "warn",
+        "useExhaustiveDependencies": "warn"
+      },
+      "complexity": {
+        "noForEach": "warn",
+        "noUselessFragments": "warn",
+        "noUselessSwitchCase": "warn"
+      },
+      "style": {
+        "noNonNullAssertion": "warn",
+        "noParameterAssign": "warn",
+        "noUnusedTemplateLiteral": "warn",
+        "noUselessElse": "warn",
+        "useConst": "warn",
+        "useExponentiationOperator": "warn",
+        "useSingleVarDeclarator": "warn",
+        "useTemplate": "warn"
+      },
+      "suspicious": {
+        "noArrayIndexKey": "warn",
+        "noExplicitAny": "warn",
+        "noImplicitAnyLet": "warn"
+      }
     }
   }
 }

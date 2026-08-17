@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { WebSocket } from "ws";
 import type { StreamEvent } from "@loomic/shared";
+import type { WebSocket } from "ws";
 
 type PendingRPC = {
   resolve: (value: any) => void;
@@ -36,9 +36,13 @@ export class ConnectionManager {
    * If the same connectionId already exists (reconnect), replace only that entry
    * without closing any other connections.
    */
-  register(connectionId: string, userId: string, ws: WebSocket): void {
+  register(connectionId: string, userId: string, ws: WebSocket): boolean {
     const existing = this.connections.get(connectionId);
     if (existing) {
+      if (existing.userId !== userId) {
+        return false;
+      }
+
       // Reconnect for same connectionId: clean up old entry from indexes
       this.removeFromIndexes(connectionId, existing);
     }
@@ -52,6 +56,7 @@ export class ConnectionManager {
       this.userIndex.set(userId, userSet);
     }
     userSet.add(connectionId);
+    return true;
   }
 
   /** Remove a connection from all indexes. */
@@ -297,7 +302,10 @@ export class ConnectionManager {
   // Internal helpers
   // ---------------------------------------------------------------------------
 
-  private removeFromIndexes(connectionId: string, entry: ConnectionEntry): void {
+  private removeFromIndexes(
+    connectionId: string,
+    entry: ConnectionEntry,
+  ): void {
     // Remove from user index
     const userSet = this.userIndex.get(entry.userId);
     if (userSet) {

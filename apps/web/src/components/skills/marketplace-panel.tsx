@@ -1,6 +1,5 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowDownToLine,
@@ -11,9 +10,11 @@ import {
   Search,
   User,
 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { MarketplaceDetail, MarketplaceSkill } from "@loomic/shared";
 
+import { useToast } from "@/components/toast";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -23,7 +24,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useToast } from "@/components/toast";
 import {
   ApiApplicationError,
   getMarketplaceDetail,
@@ -237,11 +237,7 @@ function MarketplaceDetailDialog({
         )}
 
         <DialogFooter>
-          <Button
-            size="sm"
-            disabled={installing}
-            onClick={handleInstall}
-          >
+          <Button size="sm" disabled={installing} onClick={handleInstall}>
             {installing ? (
               <>
                 <Loader2 className="size-3.5 animate-spin" />
@@ -380,9 +376,7 @@ export function MarketplacePanel({
         await onInstalled();
       } catch (err) {
         const msg =
-          err instanceof ApiApplicationError
-            ? err.message
-            : "安装失败，请重试";
+          err instanceof ApiApplicationError ? err.message : "安装失败，请重试";
         showError(msg);
         console.error("[marketplace] install failed:", err);
       }
@@ -423,9 +417,7 @@ export function MarketplacePanel({
           <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-muted">
             <Package className="size-5 text-muted-foreground" />
           </div>
-          <p className="text-sm font-medium text-foreground">
-            搜索社区技能
-          </p>
+          <p className="text-sm font-medium text-foreground">搜索社区技能</p>
           <p className="mt-1 text-xs text-muted-foreground">
             输入关键词搜索 skills.sh 上的社区技能包
           </p>

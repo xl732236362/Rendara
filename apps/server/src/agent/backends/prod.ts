@@ -63,7 +63,10 @@ export function createProductionBackendFactory(
     },
   });
 
-  const skillsBackend = new FilesystemBackend({ rootDir: skillsRoot, virtualMode: true });
+  const skillsBackend = new FilesystemBackend({
+    rootDir: skillsRoot,
+    virtualMode: true,
+  });
 
   const factory: BackendFactory = (stateAndStore) => {
     const routes: Record<string, BackendProtocol> = {

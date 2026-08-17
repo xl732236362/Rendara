@@ -10,6 +10,7 @@ import {
   runCancelResponseSchema,
   runCreateRequestSchema,
   runCreateResponseSchema,
+  skillDetailResponseSchema,
   streamEventSchema,
 } from "./index.js";
 import * as sharedExports from "./index.js";
@@ -20,6 +21,10 @@ const databaseTypeSource = readFileSync(
 );
 
 describe("@loomic/shared contracts", () => {
+  it("exposes the imported skill review requirement", () => {
+    expect(skillDetailResponseSchema.shape.requiresReview).toBeDefined();
+  });
+
   it("shares the health response schema for server and web", () => {
     const parsed = healthResponseSchema.parse({
       ok: true,
@@ -74,10 +79,7 @@ describe("@loomic/shared contracts", () => {
       prompt: "Generate a campaign key visual",
       imageGenerationPreference: {
         mode: "manual",
-        models: [
-          "google/nano-banana-2",
-          "black-forest-labs/flux-kontext-pro",
-        ],
+        models: ["google/nano-banana-2", "black-forest-labs/flux-kontext-pro"],
       },
     });
 

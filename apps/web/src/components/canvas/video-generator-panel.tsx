@@ -4,14 +4,14 @@ import { Lock, Plus, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import type { VideoModelInfo } from "../../lib/server-api";
-import { fetchVideoModels, generateVideoDirect } from "../../lib/server-api";
 import { useGenerationErrorHandler } from "../../hooks/use-generation-error-handler";
 import {
-  updateVideoGeneratorElement,
-  resizeVideoGeneratorElement,
   type VideoGeneratorData,
+  resizeVideoGeneratorElement,
+  updateVideoGeneratorElement,
 } from "../../lib/canvas-video-generator";
+import type { VideoModelInfo } from "../../lib/server-api";
+import { fetchVideoModels, generateVideoDirect } from "../../lib/server-api";
 // No longer needs poster frame extraction -- videos use embeddable elements
 
 type VideoGeneratorPanelProps = {
@@ -42,9 +42,7 @@ export function VideoGeneratorPanel({
   const [duration, setDuration] = useState(data.duration);
   const [resolution, setResolution] = useState(data.resolution);
   const [loading, setLoading] = useState(data.status === "generating");
-  const [error, setError] = useState<string | null>(
-    data.errorMessage ?? null,
-  );
+  const [error, setError] = useState<string | null>(data.errorMessage ?? null);
   const [models, setModels] = useState<VideoModelInfo[]>([]);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [showParamsPopover, setShowParamsPopover] = useState(false);
@@ -77,7 +75,9 @@ export function VideoGeneratorPanel({
       .catch((err) => {
         console.warn("[video-gen] Failed to fetch models:", err);
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Close dropdowns when clicking outside the panel
@@ -110,8 +110,7 @@ export function VideoGeneratorPanel({
   // Calculate panel screen position from canvas coordinates
   const { scrollX, scrollY, zoom } = canvasScrollZoom;
   const screenX = (elementBounds.x + scrollX) * zoom;
-  const screenY =
-    (elementBounds.y + elementBounds.height + scrollY) * zoom + 8;
+  const screenY = (elementBounds.y + elementBounds.height + scrollY) * zoom + 8;
 
   const currentModel = models.find((m) => m.id === model);
 
@@ -205,7 +204,9 @@ export function VideoGeneratorPanel({
 
       // Create embeddable element for inline video playback on canvas.
       // Dynamic import -- excalidraw is client-only.
-      const { convertToExcalidrawElements } = await import("@excalidraw/excalidraw");
+      const { convertToExcalidrawElements } = await import(
+        "@excalidraw/excalidraw"
+      );
       if (controller.signal.aborted) return;
 
       const newElements = convertToExcalidrawElements([
@@ -303,9 +304,7 @@ export function VideoGeneratorPanel({
           ) : (
             <>
               <Plus className="h-4 w-4 text-muted-foreground" />
-              <span className="text-[10px] text-muted-foreground">
-                首帧
-              </span>
+              <span className="text-[10px] text-muted-foreground">首帧</span>
             </>
           )}
         </button>
@@ -332,9 +331,7 @@ export function VideoGeneratorPanel({
           ) : (
             <>
               <Plus className="h-4 w-4 text-muted-foreground" />
-              <span className="text-[10px] text-muted-foreground">
-                尾帧
-              </span>
+              <span className="text-[10px] text-muted-foreground">尾帧</span>
             </>
           )}
         </button>

@@ -6,7 +6,11 @@ import type {
   ImageProvider,
   ModelInfo,
 } from "../types.js";
-import { aspectRatioToDimensions, fetchAsBase64, GenerationError } from "../utils.js";
+import {
+  GenerationError,
+  aspectRatioToDimensions,
+  fetchAsBase64,
+} from "../utils.js";
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -23,8 +27,7 @@ const MODEL_MAP: Record<string, string> = {
   "google-vertex/gemini-2.5-flash-image": "gemini-2.5-flash-image",
   "google-vertex/gemini-3.1-flash-image-preview":
     "gemini-3.1-flash-image-preview",
-  "google-vertex/gemini-3-pro-image-preview":
-    "gemini-3-pro-image-preview",
+  "google-vertex/gemini-3-pro-image-preview": "gemini-3-pro-image-preview",
 };
 
 const GOOGLE_VERTEX_IMAGE_MODELS: readonly ModelInfo[] = [
@@ -86,7 +89,9 @@ export class GoogleVertexImageProvider implements ImageProvider {
       project: config.project,
       location: config.location,
     });
-    console.log(`[google-vertex-image] Initialized Vertex AI provider (project=${config.project}, location=${config.location})`);
+    console.log(
+      `[google-vertex-image] Initialized Vertex AI provider (project=${config.project}, location=${config.location})`,
+    );
   }
 
   async generate(params: ImageGenerateParams): Promise<GeneratedImage> {
@@ -104,8 +109,7 @@ export class GoogleVertexImageProvider implements ImageProvider {
 
     // Build content parts: text prompt + optional input images.
     const parts: Array<
-      | { text: string }
-      | { inlineData: { mimeType: string; data: string } }
+      { text: string } | { inlineData: { mimeType: string; data: string } }
     > = [{ text: params.prompt }];
 
     if (params.inputImages?.length) {
@@ -137,7 +141,10 @@ export class GoogleVertexImageProvider implements ImageProvider {
         }),
         new Promise<never>((_, reject) =>
           setTimeout(
-            () => reject(new Error("Vertex AI image generation timed out after 120s")),
+            () =>
+              reject(
+                new Error("Vertex AI image generation timed out after 120s"),
+              ),
             VERTEX_IMAGE_TIMEOUT,
           ),
         ),

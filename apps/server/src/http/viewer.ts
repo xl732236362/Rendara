@@ -3,12 +3,12 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 
 import {
   PLAN_CONFIGS,
+  type SubscriptionPlan,
   applicationErrorResponseSchema,
   profileUpdateRequestSchema,
   profileUpdateResponseSchema,
   unauthenticatedErrorResponseSchema,
   viewerResponseSchema,
-  type SubscriptionPlan,
 } from "@loomic/shared";
 
 import {

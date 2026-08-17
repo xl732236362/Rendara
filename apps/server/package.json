@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@fastify/multipart": "^9.4.0",
+    "@fastify/rate-limit": "^11.2.0",
     "@fastify/websocket": "^11.2.0",
     "@google/genai": "^1.47.0",
     "@langchain/core": "^1.1.35",
@@ -42,7 +43,7 @@
     "ws": "^8.18.1"
   },
   "scripts": {
-    "build": "node ../../scripts/validate-foundation-app.mjs build",
+    "build": "tsc -p tsconfig.build.json",
     "predev": "pnpm --filter @loomic/shared build",
     "dev": "node --watch --env-file=../../.env.local --import tsx ./src/server.ts & WORKER_ID=w1 node --watch --env-file=../../.env.local --import tsx ./src/worker.ts & wait",
     "dev:server": "node --watch --env-file=../../.env.local --import tsx ./src/server.ts",
@@ -50,6 +51,8 @@
     "dev:workers:2": "WORKER_ID=w1 node --watch --env-file=../../.env.local --import tsx ./src/worker.ts & WORKER_ID=w2 node --watch --env-file=../../.env.local --import tsx ./src/worker.ts & wait",
     "dev:workers:3": "WORKER_ID=w1 node --watch --env-file=../../.env.local --import tsx ./src/worker.ts & WORKER_ID=w2 node --watch --env-file=../../.env.local --import tsx ./src/worker.ts & WORKER_ID=w3 node --watch --env-file=../../.env.local --import tsx ./src/worker.ts & wait",
     "worker": "node --env-file=../../.env.local --import tsx ./src/worker.ts",
+    "start": "node dist/server.js",
+    "start:worker": "node dist/worker.js",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   }

@@ -1,12 +1,8 @@
 "use client";
 
-import {
-  motion,
-  type Variants,
-  type HTMLMotionProps,
-} from "framer-motion";
-import { useReducedMotion } from "framer-motion";
 import { cn } from "@/lib/utils";
+import { type HTMLMotionProps, type Variants, motion } from "framer-motion";
+import { useReducedMotion } from "framer-motion";
 
 // ---------------------------------------------------------------------------
 // Animation Variants

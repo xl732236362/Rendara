@@ -1,14 +1,14 @@
 // @credits-system — React hook for subscription status, cancellation, and plan changes
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import {
-  getSubscription,
+  type SubscriptionStatus,
   cancelSubscription as apiCancelSubscription,
   changePlan as apiChangePlan,
-  type SubscriptionStatus,
+  getSubscription,
 } from "@/lib/payments-api";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 interface UseSubscriptionReturn {
   subscription: SubscriptionStatus | null;

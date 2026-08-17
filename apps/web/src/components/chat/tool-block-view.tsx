@@ -155,13 +155,9 @@ export const ToolBlockView = React.memo(function ToolBlockView({
       ? block.outputSummary
       : config.label;
 
-  const previewLines = hasOutput
-    ? formatOutputPreview(block.output!)
-    : [];
+  const previewLines = hasOutput ? formatOutputPreview(block.output!) : [];
   const showCard =
-    config.showCard &&
-    isCompleted &&
-    (block.outputSummary || hasOutput);
+    config.showCard && isCompleted && (block.outputSummary || hasOutput);
 
   // Extract artifacts for generate_image / generate_video inline preview
   const imageArtifact = block.artifacts?.find(
@@ -172,8 +168,9 @@ export const ToolBlockView = React.memo(function ToolBlockView({
   const isMediaTool = isImageTool || isVideoTool;
   const mediaError =
     isMediaTool && isCompleted && !imageArtifact
-      ? ((block.output as Record<string, unknown> | undefined)
-          ?.error as string | undefined)
+      ? ((block.output as Record<string, unknown> | undefined)?.error as
+          | string
+          | undefined)
       : undefined;
   const inputData = block.input as Record<string, unknown> | undefined;
   const modelName = inputData?.model as string | undefined;
@@ -223,10 +220,7 @@ export const ToolBlockView = React.memo(function ToolBlockView({
 
       {/* Layer 2b-err: Media generation failed */}
       {isMediaTool && isCompleted && !imageArtifact && mediaError && (
-        <MediaErrorCard
-          isVideoTool={isVideoTool}
-          error={mediaError}
-        />
+        <MediaErrorCard isVideoTool={isVideoTool} error={mediaError} />
       )}
 
       {/* Layer 2b: Image generation card with inline preview */}
@@ -270,11 +264,7 @@ export const ToolBlockView = React.memo(function ToolBlockView({
               onClick={handleOpenPanel}
               className="mt-2 flex items-center gap-0.5 text-[12px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
             >
-              <svg
-                className="h-3 w-3"
-                viewBox="0 0 16 16"
-                fill="currentColor"
-              >
+              <svg className="h-3 w-3" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M9.78 11.78a.75.75 0 0 1-1.06 0l-3.5-3.5a.75.75 0 0 1 0-1.06l3.5-3.5a.75.75 0 0 1 1.06 1.06L6.56 8l3.22 3.22a.75.75 0 0 1 0 1.06Z" />
               </svg>
               查看详情
@@ -351,7 +341,9 @@ const MediaShimmer = React.memo(function MediaShimmer({
       </div>
       <div className="px-3 py-2">
         <div className="text-[12px] font-medium text-muted-foreground/70">
-          {isVideoTool ? "\u89c6\u9891\u751f\u6210\u4e2d..." : "\u56fe\u7247\u751f\u6210\u4e2d..."}
+          {isVideoTool
+            ? "\u89c6\u9891\u751f\u6210\u4e2d..."
+            : "\u56fe\u7247\u751f\u6210\u4e2d..."}
         </div>
         {modelName && (
           <div className="mt-0.5 text-[11px] text-muted-foreground truncate">
@@ -390,7 +382,9 @@ const MediaErrorCard = React.memo(function MediaErrorCard({
         </div>
         <div className="min-w-0 flex-1">
           <div className="text-sm font-semibold text-foreground">
-            {isVideoTool ? "\u89c6\u9891\u751f\u6210\u5931\u8d25" : "\u56fe\u7247\u751f\u6210\u5931\u8d25"}
+            {isVideoTool
+              ? "\u89c6\u9891\u751f\u6210\u5931\u8d25"
+              : "\u56fe\u7247\u751f\u6210\u5931\u8d25"}
           </div>
           <div className="mt-0.5 text-[12px] text-muted-foreground line-clamp-2">
             {error}
@@ -693,9 +687,7 @@ function ToolOutputRenderer({
   // Complex objects / arrays -- formatted JSON
   return (
     <div>
-      <div className="text-xs font-medium text-muted-foreground mb-2">
-        输出
-      </div>
+      <div className="text-xs font-medium text-muted-foreground mb-2">输出</div>
       <div className="rounded-xl bg-muted px-4 py-3 overflow-x-auto max-h-[360px] overflow-y-auto">
         <pre className="text-[12px] leading-5 text-muted-foreground whitespace-pre-wrap break-all font-mono">
           {JSON.stringify(output, null, 2)}

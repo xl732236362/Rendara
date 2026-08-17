@@ -6,7 +6,10 @@ import { createProductionBackendFactory } from "./prod.js";
 
 type AgentBackendEnv = Pick<
   ServerEnv,
-  "agentBackendMode" | "agentFilesRoot" | "skillsRoot"
+  | "agentBackendMode"
+  | "agentFilesRoot"
+  | "allowLocalAgentExecute"
+  | "skillsRoot"
 >;
 
 export type AgentBackendResult = {
@@ -24,6 +27,12 @@ export function createAgentBackend(
       ...(canvasId != null ? { canvasId } : {}),
       ...(options?.hasWorkspaceSkills ? { hasWorkspaceSkills: true } : {}),
     });
+  }
+
+  if (!env.allowLocalAgentExecute) {
+    throw new Error(
+      "Production code execution requires an isolated sandbox provider; local execute is disabled.",
+    );
   }
 
   if (!canvasId) {

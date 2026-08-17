@@ -165,8 +165,9 @@ export function useChatSessions({
         if (res.sessions.length > 0) {
           setSessions(res.sessions);
           const target = initialSessionId
-            ? (res.sessions.find((s: ChatSessionSummary) => s.id === initialSessionId) ??
-              res.sessions[0]!)
+            ? (res.sessions.find(
+                (s: ChatSessionSummary) => s.id === initialSessionId,
+              ) ?? res.sessions[0]!)
             : res.sessions[0]!;
           setActiveSessionId(target.id);
           onSessionChangeRef.current?.(target.id);
@@ -308,7 +309,9 @@ export function useChatSessions({
   // ── Reload messages (for reconnection) ──
   const reloadMessages = useCallback(async (sessionId: string) => {
     if (!sessionId) {
-      console.warn("[chat] reloadMessages called with empty sessionId, skipping");
+      console.warn(
+        "[chat] reloadMessages called with empty sessionId, skipping",
+      );
       return;
     }
     try {

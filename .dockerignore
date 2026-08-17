@@ -1,0 +1,16 @@
+.git
+.github
+.codex-logs
+.next
+**/.next*
+**/coverage
+**/dist
+**/node_modules
+**/playwright-report
+**/test-results
+.env
+.env.*
+!.env.example
+docs
+tmp
+temp

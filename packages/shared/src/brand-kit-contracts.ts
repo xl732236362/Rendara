@@ -2,7 +2,12 @@ import { z } from "zod";
 
 // === Entity Schemas ===
 
-export const brandKitAssetTypeSchema = z.enum(["color", "font", "logo", "image"]);
+export const brandKitAssetTypeSchema = z.enum([
+  "color",
+  "font",
+  "logo",
+  "image",
+]);
 export type BrandKitAssetType = z.infer<typeof brandKitAssetTypeSchema>;
 
 export const brandKitAssetSchema = z.object({
@@ -68,7 +73,9 @@ export const brandKitAssetCreateRequestSchema = z.object({
   role: z.string().nullable().optional(),
   metadata: z.record(z.unknown()).optional(),
 });
-export type BrandKitAssetCreateRequest = z.infer<typeof brandKitAssetCreateRequestSchema>;
+export type BrandKitAssetCreateRequest = z.infer<
+  typeof brandKitAssetCreateRequestSchema
+>;
 
 export const brandKitAssetUpdateRequestSchema = z.object({
   display_name: z.string().min(1).max(100).optional(),
@@ -77,7 +84,9 @@ export const brandKitAssetUpdateRequestSchema = z.object({
   sort_order: z.number().int().optional(),
   metadata: z.record(z.unknown()).optional(),
 });
-export type BrandKitAssetUpdateRequest = z.infer<typeof brandKitAssetUpdateRequestSchema>;
+export type BrandKitAssetUpdateRequest = z.infer<
+  typeof brandKitAssetUpdateRequestSchema
+>;
 
 // === Response Schemas ===
 
@@ -87,7 +96,9 @@ export const brandKitListResponseSchema = z.object({
 export type BrandKitListResponse = z.infer<typeof brandKitListResponseSchema>;
 
 export const brandKitDetailResponseSchema = brandKitDetailSchema;
-export type BrandKitDetailResponse = z.infer<typeof brandKitDetailResponseSchema>;
+export type BrandKitDetailResponse = z.infer<
+  typeof brandKitDetailResponseSchema
+>;
 
 export const brandKitAssetResponseSchema = brandKitAssetSchema;
 export type BrandKitAssetResponse = z.infer<typeof brandKitAssetResponseSchema>;

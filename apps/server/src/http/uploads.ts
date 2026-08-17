@@ -7,11 +7,11 @@ import {
   uploadResponseSchema,
 } from "@loomic/shared";
 
-import {
-  UploadServiceError,
-  type UploadService,
-} from "../features/uploads/upload-service.js";
 import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
+import {
+  type UploadService,
+  UploadServiceError,
+} from "../features/uploads/upload-service.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
 
 const ALLOWED_MIME_TYPES = new Set([
@@ -83,9 +83,7 @@ export async function registerUploadRoutes(
         ...(projectId ? { projectId } : {}),
       });
 
-      return reply
-        .code(201)
-        .send(uploadResponseSchema.parse(result));
+      return reply.code(201).send(uploadResponseSchema.parse(result));
     } catch (error) {
       return sendUploadError(error, reply);
     }
@@ -121,10 +119,7 @@ export async function registerUploadRoutes(
         const user = await options.auth.authenticate(request);
         if (!user) return sendUnauthorized(reply);
 
-        await options.uploadService.deleteAsset(
-          user,
-          request.params.assetId,
-        );
+        await options.uploadService.deleteAsset(user, request.params.assetId);
 
         return reply.code(200).send({ ok: true });
       } catch (error) {

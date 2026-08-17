@@ -9,12 +9,12 @@ import {
   createExcalidrawImageElement,
   fetchAsDataURL,
 } from "../../lib/canvas-elements";
-import { panelAnchor } from "../../lib/canvas-overlay-geometry";
 import {
   type ImageGeneratorData,
   resizeImageGeneratorElement,
   updateImageGeneratorElement,
 } from "../../lib/canvas-image-generator";
+import { panelAnchor } from "../../lib/canvas-overlay-geometry";
 import type { ImageModelInfo } from "../../lib/server-api";
 import { fetchImageModels, generateImageDirect } from "../../lib/server-api";
 
@@ -217,7 +217,7 @@ export function ImageGeneratorPanel({
       if (controller.signal.aborted) return;
 
       // Download and insert as real image element at same position
-      const dataURL = await fetchAsDataURL(result.url);
+      const dataURL = await fetchAsDataURL(result.url, accessTokenRef.current);
       if (controller.signal.aborted) return;
 
       const sceneElements = excalidrawApi.getSceneElements();

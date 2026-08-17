@@ -90,3 +90,58 @@ test("root lint baseline is wired through Biome", async () => {
   assert.equal(biomeConfig.formatter.enabled, true);
   assert.equal(biomeConfig.linter.enabled, true);
 });
+
+test("server build emits and runs production JavaScript", async () => {
+  const manifest = await readJson("apps/server/package.json");
+
+  assert.match(manifest.scripts.build, /tsc -p tsconfig\.build\.json/);
+  assert.doesNotMatch(manifest.scripts.build, /validate-foundation-app/);
+  assert.equal(manifest.scripts.start, "node dist/server.js");
+  assert.equal(manifest.scripts["start:worker"], "node dist/worker.js");
+});
+
+test("web production build does not ignore TypeScript errors", async () => {
+  const config = await readText("apps/web/next.config.ts");
+
+  assert.doesNotMatch(config, /ignoreBuildErrors\s*:\s*true/);
+});
+
+test("server image runs compiled output without tsx", async () => {
+  const dockerfile = await readText("apps/server/Dockerfile");
+
+  assert.match(dockerfile, /pnpm --filter @loomic\/server build/);
+  assert.match(dockerfile, /node dist\/server\.js/);
+  assert.doesNotMatch(dockerfile, /node --import tsx src\/server\.ts/);
+});
+
+test("root CI command includes all four quality gates", async () => {
+  const manifest = await readJson("package.json");
+
+  assert.match(manifest.scripts["ci:check"], /pnpm lint/);
+  assert.match(manifest.scripts["ci:check"], /pnpm typecheck/);
+  assert.match(manifest.scripts["ci:check"], /pnpm test/);
+  assert.match(manifest.scripts["ci:check"], /pnpm build/);
+});
+
+test("CI uses the pinned pnpm version and frozen installs", async () => {
+  const manifest = await readJson("package.json");
+  const workflow = await readText(".github/workflows/ci.yml");
+  const pnpmVersion = manifest.packageManager.split("@")[1];
+
+  assert.match(
+    workflow,
+    new RegExp(`version: ${pnpmVersion.replaceAll(".", "\\.")}`),
+  );
+  assert.match(workflow, /pnpm install --frozen-lockfile/);
+  assert.match(workflow, /pnpm ci:check/);
+  assert.match(workflow, /supabase db reset/);
+  assert.match(workflow, /docker build/);
+});
+
+test("CI runs database permission tests and a container smoke test", async () => {
+  const workflow = await readText(".github/workflows/ci.yml");
+
+  assert.match(workflow, /supabase test db/);
+  assert.match(workflow, /docker run --rm/);
+  assert.match(workflow, /app-load-ok/);
+});

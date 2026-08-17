@@ -15,7 +15,11 @@ export function registerVideoProvider(provider: VideoProvider): void {
 export function getImageProvider(name: string): ImageProvider {
   const provider = imageProviders.get(name);
   if (!provider) {
-    throw new GenerationError(name, "provider_not_found", `No image provider registered: ${name}`);
+    throw new GenerationError(
+      name,
+      "provider_not_found",
+      `No image provider registered: ${name}`,
+    );
   }
   return provider;
 }
@@ -23,7 +27,11 @@ export function getImageProvider(name: string): ImageProvider {
 export function getVideoProvider(name: string): VideoProvider {
   const provider = videoProviders.get(name);
   if (!provider) {
-    throw new GenerationError(name, "provider_not_found", `No video provider registered: ${name}`);
+    throw new GenerationError(
+      name,
+      "provider_not_found",
+      `No video provider registered: ${name}`,
+    );
   }
   return provider;
 }

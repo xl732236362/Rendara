@@ -1,7 +1,5 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, memo } from "react";
-import { createPortal } from "react-dom";
 import {
   ArrowUpRight,
   Circle,
@@ -15,24 +13,26 @@ import {
   Type,
   Video,
 } from "lucide-react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
-import {
-  createImageGeneratorElement,
-  isImageGeneratorElement,
-  getImageGeneratorData,
-  type ImageGeneratorData,
-} from "../lib/canvas-image-generator";
-import {
-  createVideoGeneratorElement,
-  isVideoGeneratorElement,
-  getVideoGeneratorData,
-  type VideoGeneratorData,
-} from "../lib/canvas-video-generator";
 import { isVideoUrl } from "../lib/canvas-elements";
+import {
+  type ImageGeneratorData,
+  createImageGeneratorElement,
+  getImageGeneratorData,
+  isImageGeneratorElement,
+} from "../lib/canvas-image-generator";
 import {
   type CanvasTransform,
   sceneRectToScreen,
 } from "../lib/canvas-overlay-geometry";
+import {
+  type VideoGeneratorData,
+  createVideoGeneratorElement,
+  getVideoGeneratorData,
+  isVideoGeneratorElement,
+} from "../lib/canvas-video-generator";
 import { ImageGeneratorPanel } from "./canvas/image-generator-panel";
 import { VideoGeneratorPanel } from "./canvas/video-generator-panel";
 import { VideoPlayerPanel } from "./canvas/video-player-panel";

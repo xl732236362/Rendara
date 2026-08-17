@@ -265,18 +265,66 @@ const DEFAULT_IMAGE_COST: ImageModelCost = {
  */
 export const VIDEO_MODEL_COSTS: Record<string, VideoModelCost> = {
   // Google Official (direct API — supports higher resolutions than Replicate)
-  "google-official/veo-3.1-generate-preview": { base: 80, perSecond: 15, multiplier1080p: 2, multiplier4k: 4 },
-  "google-official/veo-3.1-fast-generate-preview": { base: 60, perSecond: 10, multiplier1080p: 2, multiplier4k: 4 },
-  "google-official/veo-3.1-lite-generate-preview": { base: 30, perSecond: 5, multiplier1080p: 2 },
-  "google-official/veo-3.0-generate-001": { base: 70, perSecond: 12, multiplier1080p: 2, multiplier4k: 4 },
-  "google-official/veo-3.0-fast-generate-001": { base: 50, perSecond: 8, multiplier1080p: 2, multiplier4k: 4 },
+  "google-official/veo-3.1-generate-preview": {
+    base: 80,
+    perSecond: 15,
+    multiplier1080p: 2,
+    multiplier4k: 4,
+  },
+  "google-official/veo-3.1-fast-generate-preview": {
+    base: 60,
+    perSecond: 10,
+    multiplier1080p: 2,
+    multiplier4k: 4,
+  },
+  "google-official/veo-3.1-lite-generate-preview": {
+    base: 30,
+    perSecond: 5,
+    multiplier1080p: 2,
+  },
+  "google-official/veo-3.0-generate-001": {
+    base: 70,
+    perSecond: 12,
+    multiplier1080p: 2,
+    multiplier4k: 4,
+  },
+  "google-official/veo-3.0-fast-generate-001": {
+    base: 50,
+    perSecond: 8,
+    multiplier1080p: 2,
+    multiplier4k: 4,
+  },
   "google-official/veo-2.0-generate-001": { base: 20, perSecond: 3 },
   // Google Vertex AI (same pricing as google-official equivalents)
-  "google-vertex/veo-3.1-generate-001": { base: 80, perSecond: 15, multiplier1080p: 2, multiplier4k: 4 },
-  "google-vertex/veo-3.1-fast-generate-001": { base: 60, perSecond: 10, multiplier1080p: 2, multiplier4k: 4 },
-  "google-vertex/veo-3.1-lite-generate-001": { base: 30, perSecond: 5, multiplier1080p: 2 },
-  "google-vertex/veo-3.0-generate-001": { base: 70, perSecond: 12, multiplier1080p: 2, multiplier4k: 4 },
-  "google-vertex/veo-3.0-fast-generate-001": { base: 50, perSecond: 8, multiplier1080p: 2, multiplier4k: 4 },
+  "google-vertex/veo-3.1-generate-001": {
+    base: 80,
+    perSecond: 15,
+    multiplier1080p: 2,
+    multiplier4k: 4,
+  },
+  "google-vertex/veo-3.1-fast-generate-001": {
+    base: 60,
+    perSecond: 10,
+    multiplier1080p: 2,
+    multiplier4k: 4,
+  },
+  "google-vertex/veo-3.1-lite-generate-001": {
+    base: 30,
+    perSecond: 5,
+    multiplier1080p: 2,
+  },
+  "google-vertex/veo-3.0-generate-001": {
+    base: 70,
+    perSecond: 12,
+    multiplier1080p: 2,
+    multiplier4k: 4,
+  },
+  "google-vertex/veo-3.0-fast-generate-001": {
+    base: 50,
+    perSecond: 8,
+    multiplier1080p: 2,
+    multiplier4k: 4,
+  },
   "google-vertex/veo-2.0-generate-001": { base: 20, perSecond: 3 },
   // Replicate — Kling
   "kwaivgi/kling-v3-video": { base: 50, perSecond: 10 },

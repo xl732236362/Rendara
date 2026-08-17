@@ -10,6 +10,53 @@
 
 import yaml from "js-yaml";
 import { Parser as TarParser } from "tar";
+import {
+  type SafeFetchPolicy,
+  type SafeFetchResult,
+  safeFetch,
+} from "../../security/safe-fetch.js";
+
+type SkillSafeFetcher = (
+  url: string | URL,
+  policy: SafeFetchPolicy,
+) => Promise<SafeFetchResult>;
+
+export type SkillImportDependencies = {
+  safeFetch?: SkillSafeFetcher;
+};
+
+const MAX_ARCHIVE_BYTES = 10 * 1024 * 1024;
+const MAX_ARCHIVE_ENTRIES = 200;
+const MAX_ARCHIVE_FILE_BYTES = 1024 * 1024;
+const MAX_ARCHIVE_EXPANDED_BYTES = 20 * 1024 * 1024;
+const MAX_ARCHIVE_DEPTH = 8;
+
+const GITHUB_API_POLICY: SafeFetchPolicy = {
+  allowedHosts: ["api.github.com"],
+  allowedMimeTypes: [/^application\/(?:json|vnd\.github\+json)$/i],
+  maxBytes: 2 * 1024 * 1024,
+  maxRedirects: 1,
+  timeoutMs: 10_000,
+};
+
+const GITHUB_FILE_POLICY: SafeFetchPolicy = {
+  allowedHosts: ["raw.githubusercontent.com"],
+  allowedMimeTypes: [/^text\//i, /^application\/(?:json|octet-stream)$/i],
+  maxBytes: 1024 * 1024,
+  maxRedirects: 1,
+  timeoutMs: 10_000,
+};
+
+const NPM_TARBALL_POLICY: SafeFetchPolicy = {
+  allowedHosts: ["registry.npmjs.org"],
+  allowedMimeTypes: [
+    /^application\/(?:gzip|x-gzip|octet-stream)$/i,
+    /^binary\/octet-stream$/i,
+  ],
+  maxBytes: MAX_ARCHIVE_BYTES,
+  maxRedirects: 1,
+  timeoutMs: 15_000,
+};
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -51,6 +98,8 @@ export type ImportSourceType = "github" | "npm-tarball" | "zip" | "unknown";
 
 export class SkillImportError extends Error {
   readonly code:
+    | "capability_disabled"
+    | "skill_archive_limit_exceeded"
     | "manifest_not_found"
     | "manifest_parse_error"
     | "manifest_validation_error"
@@ -63,6 +112,76 @@ export class SkillImportError extends Error {
     this.name = "SkillImportError";
     this.code = code;
   }
+}
+
+export function assertSkillImportEnabled(enabled: boolean): void {
+  if (!enabled) {
+    throw new SkillImportError(
+      "capability_disabled",
+      "External skill import is disabled until an administrator enables it.",
+    );
+  }
+}
+
+export function createImportedWorkspaceSkillRow(
+  workspaceId: string,
+  skillId: string,
+  userId: string,
+) {
+  return {
+    workspace_id: workspaceId,
+    skill_id: skillId,
+    enabled: false,
+    installed_by: userId,
+  };
+}
+
+export class SkillArchiveBudget {
+  private entryCount = 0;
+  private expandedBytes = 0;
+
+  static forArchive(archiveBytes: number) {
+    if (archiveBytes > MAX_ARCHIVE_BYTES) {
+      throw archiveLimitError("Compressed archive exceeds 10 MB.");
+    }
+    return new SkillArchiveBudget();
+  }
+
+  accept(path: string, size: number): void {
+    const pathSegments = path.split("/");
+    if (
+      path.startsWith("/") ||
+      path.includes("\\") ||
+      pathSegments.some((segment) => segment === "." || segment === "..")
+    ) {
+      throw archiveLimitError("Archive contains an unsafe file path.");
+    }
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw archiveLimitError("Archive contains an invalid file size.");
+    }
+
+    this.entryCount += 1;
+    if (this.entryCount > MAX_ARCHIVE_ENTRIES) {
+      throw archiveLimitError("Archive contains more than 200 entries.");
+    }
+
+    const depth = path.split("/").filter(Boolean).length - 1;
+    if (depth > MAX_ARCHIVE_DEPTH) {
+      throw archiveLimitError("Archive path depth exceeds 8 directories.");
+    }
+    if (size > MAX_ARCHIVE_FILE_BYTES) {
+      throw archiveLimitError("Archive contains a file larger than 1 MB.");
+    }
+
+    this.expandedBytes += size;
+    if (this.expandedBytes > MAX_ARCHIVE_EXPANDED_BYTES) {
+      throw archiveLimitError("Expanded archive content exceeds 20 MB.");
+    }
+  }
+}
+
+function archiveLimitError(message: string) {
+  return new SkillImportError("skill_archive_limit_exceeded", message);
 }
 
 // ── MIME Type Detection ───────────────────────────────────────────────────
@@ -260,9 +379,6 @@ export function detectImportSource(url: string): ImportSourceType {
   if (hostname === "registry.npmjs.org") {
     return "npm-tarball";
   }
-  if (pathname.endsWith(".tgz") || pathname.endsWith(".tar.gz")) {
-    return "npm-tarball";
-  }
 
   // ZIP detection (future support)
   if (pathname.endsWith(".zip") || pathname.endsWith(".skill")) {
@@ -303,9 +419,7 @@ interface GitHubContentItem {
  */
 function parseGitHubUrl(url: string): GitHubUrlInfo {
   const parsed = new URL(url);
-  const segments = parsed.pathname
-    .split("/")
-    .filter((s) => s.length > 0);
+  const segments = parsed.pathname.split("/").filter((s) => s.length > 0);
 
   if (segments.length < 2) {
     throw new SkillImportError(
@@ -322,7 +436,10 @@ function parseGitHubUrl(url: string): GitHubUrlInfo {
   let path = "";
 
   // Handle /tree/{ref}/... or /blob/{ref}/... patterns
-  if (segments.length >= 4 && (segments[2] === "tree" || segments[2] === "blob")) {
+  if (
+    segments.length >= 4 &&
+    (segments[2] === "tree" || segments[2] === "blob")
+  ) {
     ref = segments[3]!;
     path = segments.slice(4).join("/");
   } else if (segments.length > 2) {
@@ -338,44 +455,19 @@ function parseGitHubUrl(url: string): GitHubUrlInfo {
  *
  * @throws SkillImportError on non-2xx responses
  */
-async function githubApiFetch(url: string): Promise<Response> {
+async function githubApiFetch(
+  url: string,
+  fetcher: SkillSafeFetcher,
+): Promise<SafeFetchResult> {
   console.log(`[skill-import] GitHub API request: ${url}`);
-
-  const response = await fetch(url, {
-    headers: {
-      Accept: "application/vnd.github.v3+json",
-      "User-Agent": "Loomic-Skill-Importer/1.0",
-    },
-  });
-
-  if (!response.ok) {
-    // Provide helpful messages for common error codes
-    const rateLimitRemaining = response.headers.get("x-ratelimit-remaining");
-    if (response.status === 403 && rateLimitRemaining === "0") {
-      const resetTime = response.headers.get("x-ratelimit-reset");
-      const resetDate = resetTime
-        ? new Date(Number(resetTime) * 1000).toISOString()
-        : "unknown";
-      throw new SkillImportError(
-        "github_fetch_error",
-        `GitHub API rate limit exceeded. Resets at ${resetDate}. Consider using a GitHub token.`,
-      );
-    }
-
-    if (response.status === 404) {
-      throw new SkillImportError(
-        "github_fetch_error",
-        `GitHub repository or path not found: ${url}`,
-      );
-    }
-
+  try {
+    return await fetcher(url, GITHUB_API_POLICY);
+  } catch {
     throw new SkillImportError(
       "github_fetch_error",
-      `Failed to fetch GitHub repository: HTTP ${response.status} ${response.statusText}`,
+      "Failed to fetch the GitHub repository safely.",
     );
   }
-
-  return response;
 }
 
 /**
@@ -386,15 +478,26 @@ async function listGitHubDirectory(
   repo: string,
   path: string,
   ref: string | null,
+  fetcher: SkillSafeFetcher,
 ): Promise<GitHubContentItem[]> {
-  const encodedPath = path ? `/${encodeURIComponent(path).replace(/%2F/g, "/")}` : "";
+  const encodedPath = path
+    ? `/${encodeURIComponent(path).replace(/%2F/g, "/")}`
+    : "";
   let apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents${encodedPath}`;
   if (ref) {
     apiUrl += `?ref=${encodeURIComponent(ref)}`;
   }
 
-  const response = await githubApiFetch(apiUrl);
-  const data: unknown = await response.json();
+  const response = await githubApiFetch(apiUrl, fetcher);
+  let data: unknown;
+  try {
+    data = JSON.parse(response.body.toString("utf8"));
+  } catch {
+    throw new SkillImportError(
+      "github_fetch_error",
+      "GitHub returned an invalid directory response.",
+    );
+  }
 
   if (!Array.isArray(data)) {
     // Single file response — wrap as array for consistent handling
@@ -407,19 +510,19 @@ async function listGitHubDirectory(
 /**
  * Download a file's text content from its download_url.
  */
-async function downloadGitHubFile(downloadUrl: string): Promise<string> {
-  const response = await fetch(downloadUrl, {
-    headers: { "User-Agent": "Loomic-Skill-Importer/1.0" },
-  });
-
-  if (!response.ok) {
+async function downloadGitHubFile(
+  downloadUrl: string,
+  fetcher: SkillSafeFetcher,
+): Promise<string> {
+  try {
+    const response = await fetcher(downloadUrl, GITHUB_FILE_POLICY);
+    return response.body.toString("utf8");
+  } catch {
     throw new SkillImportError(
       "github_fetch_error",
-      `Failed to download file from GitHub: HTTP ${response.status} for ${downloadUrl}`,
+      "Failed to download a GitHub file safely.",
     );
   }
-
-  return response.text();
 }
 
 /**
@@ -432,8 +535,10 @@ async function collectGitHubFiles(
   basePath: string,
   ref: string | null,
   parentRelative: string,
+  fetcher: SkillSafeFetcher,
+  budget: SkillArchiveBudget,
 ): Promise<ImportedSkillFile[]> {
-  const items = await listGitHubDirectory(owner, repo, basePath, ref);
+  const items = await listGitHubDirectory(owner, repo, basePath, ref, fetcher);
   const files: ImportedSkillFile[] = [];
 
   for (const item of items) {
@@ -444,6 +549,7 @@ async function collectGitHubFiles(
     if (item.type === "file") {
       // Skip binary files
       if (isBinaryFile(item.name)) {
+        budget.accept(relativePath, item.size);
         console.log(`[skill-import] Skipping binary file: ${relativePath}`);
         continue;
       }
@@ -453,7 +559,8 @@ async function collectGitHubFiles(
         continue;
       }
 
-      const content = await downloadGitHubFile(item.download_url);
+      const content = await downloadGitHubFile(item.download_url, fetcher);
+      budget.accept(relativePath, Buffer.byteLength(content, "utf8"));
       files.push({
         filePath: relativePath,
         content,
@@ -467,6 +574,8 @@ async function collectGitHubFiles(
         item.path,
         ref,
         relativePath,
+        fetcher,
+        budget,
       );
       files.push(...nested);
     }
@@ -485,14 +594,19 @@ async function collectGitHubFiles(
  *
  * Downloads SKILL.md and all files under scripts/, references/, assets/.
  */
-export async function importFromGitHub(repoUrl: string): Promise<ImportedSkill> {
+export async function importFromGitHub(
+  repoUrl: string,
+  dependencies: SkillImportDependencies = {},
+): Promise<ImportedSkill> {
+  const fetcher = dependencies.safeFetch ?? safeFetch;
+  const budget = SkillArchiveBudget.forArchive(0);
   const { owner, repo, path, ref } = parseGitHubUrl(repoUrl);
   console.log(
     `[skill-import] Importing from GitHub: ${owner}/${repo} path="${path}" ref="${ref ?? "default"}"`,
   );
 
   // Step 1: List the target directory contents
-  const contents = await listGitHubDirectory(owner, repo, path, ref);
+  const contents = await listGitHubDirectory(owner, repo, path, ref, fetcher);
 
   // Step 2: Find SKILL.md
   const skillMdItem = contents.find(
@@ -506,7 +620,11 @@ export async function importFromGitHub(repoUrl: string): Promise<ImportedSkill> 
     );
   }
 
-  const skillContent = await downloadGitHubFile(skillMdItem.download_url);
+  const skillContent = await downloadGitHubFile(
+    skillMdItem.download_url,
+    fetcher,
+  );
+  budget.accept("SKILL.md", Buffer.byteLength(skillContent, "utf8"));
   const manifest = parseSkillManifest(skillContent);
 
   console.log(
@@ -528,6 +646,8 @@ export async function importFromGitHub(repoUrl: string): Promise<ImportedSkill> 
       item.path,
       ref,
       item.name,
+      fetcher,
+      budget,
     );
     files.push(...dirFiles);
   }
@@ -564,11 +684,19 @@ async function extractTarballEntries(buffer: Buffer): Promise<TarballEntry[]> {
   return new Promise((resolve, reject) => {
     const entries: TarballEntry[] = [];
     let rootPrefix: string | null = null;
+    const budget = SkillArchiveBudget.forArchive(buffer.length);
 
     const parser = new TarParser({
       // Let tar auto-detect gzip compression
       onReadEntry(entry) {
         const entryPath = entry.path;
+        try {
+          budget.accept(entryPath, entry.size ?? 0);
+        } catch (error) {
+          entry.resume();
+          reject(error);
+          return;
+        }
 
         // Skip directories
         if (entry.type === "Directory") {
@@ -644,22 +772,22 @@ async function extractTarballEntries(buffer: Buffer): Promise<TarballEntry[]> {
  * Downloads the tarball, extracts SKILL.md, and collects files under
  * scripts/, references/, assets/.
  */
-export async function importFromTarballUrl(url: string): Promise<ImportedSkill> {
+export async function importFromTarballUrl(
+  url: string,
+  dependencies: SkillImportDependencies = {},
+): Promise<ImportedSkill> {
   console.log(`[skill-import] Downloading tarball: ${url}`);
-
-  const response = await fetch(url, {
-    headers: { "User-Agent": "Loomic-Skill-Importer/1.0" },
-  });
-
-  if (!response.ok) {
+  const fetcher = dependencies.safeFetch ?? safeFetch;
+  let response: SafeFetchResult;
+  try {
+    response = await fetcher(url, NPM_TARBALL_POLICY);
+  } catch {
     throw new SkillImportError(
       "tarball_extract_error",
-      `Failed to download tarball: HTTP ${response.status} ${response.statusText} for ${url}`,
+      "Failed to download the npm tarball safely.",
     );
   }
-
-  const arrayBuffer = await response.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
+  const buffer = response.body;
 
   console.log(
     `[skill-import] Tarball downloaded: ${(buffer.length / 1024).toFixed(1)} KB, extracting...`,
@@ -668,9 +796,7 @@ export async function importFromTarballUrl(url: string): Promise<ImportedSkill> 
   const entries = await extractTarballEntries(buffer);
 
   // Find SKILL.md (case-insensitive, at the root level after prefix stripping)
-  const skillMdEntry = entries.find(
-    (e) => e.path.toUpperCase() === "SKILL.MD",
-  );
+  const skillMdEntry = entries.find((e) => e.path.toUpperCase() === "SKILL.MD");
 
   // Also look for SKILL.md in subdirectories (multi-skill packages like skills/xxx/SKILL.md)
   const nestedSkillMd = !skillMdEntry
@@ -678,12 +804,8 @@ export async function importFromTarballUrl(url: string): Promise<ImportedSkill> 
     : null;
 
   // Fallback: use README.md + package.json when no SKILL.md exists
-  const readmeEntry = entries.find(
-    (e) => e.path.toUpperCase() === "README.MD",
-  );
-  const pkgJsonEntry = entries.find(
-    (e) => e.path === "package.json",
-  );
+  const readmeEntry = entries.find((e) => e.path.toUpperCase() === "README.MD");
+  const pkgJsonEntry = entries.find((e) => e.path === "package.json");
 
   const effectiveSkillMd = skillMdEntry ?? nestedSkillMd;
 
@@ -713,13 +835,16 @@ export async function importFromTarballUrl(url: string): Promise<ImportedSkill> 
     if (pkgJson.version) manifest.version = pkgJson.version as string;
     if (pkgJson.license) manifest.license = pkgJson.license as string;
     if (typeof pkgJson.author === "string") manifest.author = pkgJson.author;
-    else if (pkgJson.author && typeof (pkgJson.author as any).name === "string") {
+    else if (
+      pkgJson.author &&
+      typeof (pkgJson.author as any).name === "string"
+    ) {
       manifest.author = (pkgJson.author as any).name;
     }
 
     // Use README.md as skill content, or a minimal placeholder
-    skillContent = readmeEntry?.content
-      ?? `# ${shortName}\n\n${manifest.description}`;
+    skillContent =
+      readmeEntry?.content ?? `# ${shortName}\n\n${manifest.description}`;
 
     console.log(
       `[skill-import] No SKILL.md found, using package.json + README.md fallback for "${shortName}"`,
@@ -780,17 +905,22 @@ export async function importFromTarballUrl(url: string): Promise<ImportedSkill> 
  * console.log(skill.manifest.name); // "my-skill"
  * ```
  */
-export async function importSkillFromUrl(url: string): Promise<ImportedSkill> {
+export async function importSkillFromUrl(
+  url: string,
+  dependencies: SkillImportDependencies = {},
+): Promise<ImportedSkill> {
   const source = detectImportSource(url);
 
-  console.log(`[skill-import] Import requested: url="${url}" detected="${source}"`);
+  console.log(
+    `[skill-import] Import requested: url="${url}" detected="${source}"`,
+  );
 
   switch (source) {
     case "github":
-      return importFromGitHub(url);
+      return importFromGitHub(url, dependencies);
 
     case "npm-tarball":
-      return importFromTarballUrl(url);
+      return importFromTarballUrl(url, dependencies);
 
     case "zip":
       // TODO: Implement ZIP support when needed

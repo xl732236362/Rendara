@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { BrandKitSummary } from "@loomic/shared";
 import { fetchBrandKits } from "@/lib/brand-kit-api";
 import { updateProject } from "@/lib/server-api";
+import type { BrandKitSummary } from "@loomic/shared";
 
 interface BrandKitSelectorProps {
   accessToken: string;
@@ -105,9 +105,7 @@ export function BrandKitSelector({
             className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-muted transition-colors cursor-pointer"
           >
             <span className="h-4 w-4 shrink-0">
-              {currentBrandKitId === null && (
-                <Check className="h-4 w-4" />
-              )}
+              {currentBrandKitId === null && <Check className="h-4 w-4" />}
             </span>
             <span>无</span>
           </button>
@@ -121,9 +119,7 @@ export function BrandKitSelector({
               className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm hover:bg-muted transition-colors cursor-pointer"
             >
               <span className="h-4 w-4 shrink-0">
-                {kit.id === currentBrandKitId && (
-                  <Check className="h-4 w-4" />
-                )}
+                {kit.id === currentBrandKitId && <Check className="h-4 w-4" />}
               </span>
               <span className="truncate">{kit.name}</span>
             </button>

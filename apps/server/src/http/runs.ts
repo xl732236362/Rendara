@@ -9,16 +9,21 @@ import {
 } from "@loomic/shared";
 
 import type { AgentRunService } from "../agent/runtime.js";
+import {
+  type AgentRunMetadataService,
+  AgentRunPersistenceError,
+} from "../features/agent-runs/agent-run-service.js";
 import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
 import {
-  AgentRunPersistenceError,
-  type AgentRunMetadataService,
-} from "../features/agent-runs/agent-run-service.js";
-import {
-  ThreadServiceError,
   type ThreadService,
+  ThreadServiceError,
 } from "../features/chat/thread-service.js";
 import type { SettingsService } from "../features/settings/settings-service.js";
+import {
+  type ResourceAuthorization,
+  ResourceAuthorizationError,
+  requireRunResourceAccess,
+} from "../security/resource-authorization.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
 
 export async function registerRunRoutes(
@@ -27,6 +32,7 @@ export async function registerRunRoutes(
   options: {
     agentRunMetadataService?: AgentRunMetadataService;
     auth?: RequestAuthenticator;
+    authorization?: ResourceAuthorization;
     settingsService?: SettingsService;
     threadService?: ThreadService;
     viewerService?: ViewerService;
@@ -35,17 +41,23 @@ export async function registerRunRoutes(
   app.post("/api/agent/runs", async (request, reply) => {
     try {
       const payload = runCreateRequestSchema.parse(request.body);
-      const hasAuthorization = hasBearerAuthorization(
-        request.headers.authorization,
-      );
-      const authenticatedUser =
-        hasAuthorization && options?.auth
-          ? await options.auth.authenticate(request)
-          : null;
+      const authenticatedUser = options.auth
+        ? await options.auth.authenticate(request)
+        : null;
 
-      if (hasAuthorization && !authenticatedUser) {
+      if (!authenticatedUser) {
         return sendUnauthorized(reply);
       }
+
+      if (!options.authorization) {
+        throw new Error("Resource authorization is not configured.");
+      }
+
+      await requireRunResourceAccess(
+        options.authorization,
+        authenticatedUser,
+        payload,
+      );
 
       const sessionThread =
         authenticatedUser && options?.threadService
@@ -77,7 +89,12 @@ export async function registerRunRoutes(
 
       const response = runCreateResponseSchema.parse(
         agentRuns.createRun(payload, {
-          ...(authenticatedUser ? { accessToken: authenticatedUser.accessToken, userId: authenticatedUser.id } : {}),
+          ...(authenticatedUser
+            ? {
+                accessToken: authenticatedUser.accessToken,
+                userId: authenticatedUser.id,
+              }
+            : {}),
           ...(model ? { model } : {}),
           ...(sessionThread ? { threadId: sessionThread.threadId } : {}),
         }),
@@ -116,31 +133,47 @@ export async function registerRunRoutes(
         );
       }
 
+      if (error instanceof ResourceAuthorizationError) {
+        return reply.code(error.statusCode).send({
+          error: { code: error.code, message: error.message },
+        });
+      }
+
       return handleZodError(error, reply);
     }
   });
 
   app.post("/api/agent/runs/:runId/cancel", async (request, reply) => {
-    const { runId } = request.params as { runId: string };
-    const canceledRun = agentRuns.cancelRun(runId);
+    try {
+      const authenticatedUser = options.auth
+        ? await options.auth.authenticate(request)
+        : null;
+      if (!authenticatedUser) {
+        return sendUnauthorized(reply);
+      }
+      if (!options.authorization) {
+        throw new Error("Resource authorization is not configured.");
+      }
 
-    if (!canceledRun) {
-      return reply.code(404).send({
-        message: `Run not found: ${runId}`,
-      });
+      const { runId } = request.params as { runId: string };
+      await options.authorization.requireRunAccess(authenticatedUser, runId);
+      const canceledRun = agentRuns.cancelRun(runId);
+
+      if (!canceledRun) {
+        return reply.code(404).send({ message: "Run not found" });
+      }
+
+      const response = runCancelResponseSchema.parse(canceledRun);
+      return reply.code(202).send(response);
+    } catch (error) {
+      if (error instanceof ResourceAuthorizationError) {
+        return reply.code(error.statusCode).send({
+          error: { code: error.code, message: error.message },
+        });
+      }
+      throw error;
     }
-
-    const response = runCancelResponseSchema.parse(canceledRun);
-    return reply.code(202).send(response);
   });
-}
-
-function hasBearerAuthorization(
-  authorizationHeader: string | string[] | undefined,
-) {
-  return typeof authorizationHeader === "string"
-    ? authorizationHeader.trim().toLowerCase().startsWith("bearer ")
-    : false;
 }
 
 function sendUnauthorized(reply: FastifyReply) {

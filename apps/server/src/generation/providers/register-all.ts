@@ -46,11 +46,14 @@ export function registerAllProviders(env: ServerEnv): void {
     };
     registerImageProvider(new GoogleVertexImageProvider(vertexConfig));
 
-    const videoLocation = env.googleVertexVideoLocation ?? env.googleVertexLocation;
-    registerVideoProvider(new GoogleVertexVideoProvider({
-      project: env.googleVertexProject,
-      location: videoLocation,
-    }));
+    const videoLocation =
+      env.googleVertexVideoLocation ?? env.googleVertexLocation;
+    registerVideoProvider(
+      new GoogleVertexVideoProvider({
+        project: env.googleVertexProject,
+        location: videoLocation,
+      }),
+    );
   }
 
   // OpenAI — image only

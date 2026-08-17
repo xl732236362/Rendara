@@ -30,11 +30,14 @@ export function useChatStream(updateSessionMessages: MessageUpdater) {
   const applyStreamEvent = useCallback(
     (event: StreamEvent, assistantId: string, sessionId: string) => {
       if (!assistantId || !sessionId) {
-        console.warn("[chat-stream] applyStreamEvent called with missing ids:", {
-          assistantId,
-          sessionId,
-          eventType: event.type,
-        });
+        console.warn(
+          "[chat-stream] applyStreamEvent called with missing ids:",
+          {
+            assistantId,
+            sessionId,
+            eventType: event.type,
+          },
+        );
         return;
       }
 
@@ -98,7 +101,10 @@ export function useChatStream(updateSessionMessages: MessageUpdater) {
                 (b) => b.type === "tool" && b.toolCallId === event.toolCallId,
               );
               if (alreadyExists) {
-                console.warn("[chat-stream] duplicate tool.started for:", event.toolCallId);
+                console.warn(
+                  "[chat-stream] duplicate tool.started for:",
+                  event.toolCallId,
+                );
                 return m;
               }
               const newBlock: ToolBlock = {
@@ -152,7 +158,11 @@ export function useChatStream(updateSessionMessages: MessageUpdater) {
               // Mark all running tool blocks as completed so spinners stop
               const blocks = m.contentBlocks.map((block) =>
                 block.type === "tool" && block.status === "running"
-                  ? { ...block, status: "completed" as const, outputSummary: "\u5904\u7406\u5931\u8d25" }
+                  ? {
+                      ...block,
+                      status: "completed" as const,
+                      outputSummary: "\u5904\u7406\u5931\u8d25",
+                    }
                   : block,
               );
               const hasText = blocks.some((b) => b.type === "text");

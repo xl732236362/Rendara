@@ -1,10 +1,10 @@
 "use client";
 
-import { MessageSquare, Sparkles, Paintbrush } from "lucide-react";
-import { type LucideIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { FadeUp, StaggerContainer } from "@/components/landing/motion";
 import { SectionHeader } from "@/components/landing/section-header";
-import { StaggerContainer, FadeUp } from "@/components/landing/motion";
+import { cn } from "@/lib/utils";
+import { MessageSquare, Paintbrush, Sparkles } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Step data
@@ -37,8 +37,7 @@ const STEPS: Step[] = [
     number: "03",
     icon: Paintbrush,
     title: "精细调整",
-    description:
-      "在画布上自由编辑任何元素。满意后一键导出，支持多种格式。",
+    description: "在画布上自由编辑任何元素。满意后一键导出，支持多种格式。",
   },
 ];
 

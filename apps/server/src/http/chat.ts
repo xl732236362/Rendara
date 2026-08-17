@@ -11,8 +11,8 @@ import {
 } from "@loomic/shared";
 
 import {
-  ChatServiceError,
   type ChatService,
+  ChatServiceError,
 } from "../features/chat/chat-service.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
 
@@ -101,10 +101,7 @@ export async function registerChatRoutes(
         const user = await options.auth.authenticate(request);
         if (!user) return sendUnauthorized(reply);
 
-        await options.chatService.deleteSession(
-          user,
-          request.params.sessionId,
-        );
+        await options.chatService.deleteSession(user, request.params.sessionId);
 
         return reply.code(200).send({ ok: true });
       } catch (error) {
@@ -160,7 +157,11 @@ export async function registerChatRoutes(
         );
 
         request.log.info(
-          { sessionId: request.params.sessionId, role: input.role, messageId: message.id },
+          {
+            sessionId: request.params.sessionId,
+            role: input.role,
+            messageId: message.id,
+          },
           "chat.createMessage OK",
         );
         return reply

@@ -1,69 +1,72 @@
 import type { FastifyInstance } from "fastify";
 
-/**
- * Proxy endpoint for fetching external images server-side, bypassing browser CORS restrictions.
- * Used by the frontend to load generated images into Excalidraw canvas.
- */
-export function registerImageProxyRoute(app: FastifyInstance) {
-  // Build allowed domains list: static CDNs + dynamic Supabase host
-  const staticAllowed = [
-    "replicate.delivery",
-    "replicate.com",
-    "pbxt.replicate.delivery",
-    "supabase.co",
-  ];
+import {
+  SafeFetchError,
+  type SafeFetchResult,
+} from "../security/safe-fetch.js";
+import type { RequestAuthenticator } from "../supabase/user.js";
 
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const dynamicAllowed = supabaseUrl
-    ? (() => {
-        try {
-          return [new URL(supabaseUrl).hostname];
-        } catch {
-          return [];
-        }
-      })()
-    : [];
+export type ImageSafeFetcher = (url: string) => Promise<SafeFetchResult>;
 
-  const allowed = [...staticAllowed, ...dynamicAllowed];
-
-  app.get<{
-    Querystring: { url: string };
-  }>("/api/proxy-image", async (request, reply) => {
-    const { url } = request.query;
-
-    if (!url || typeof url !== "string") {
-      return reply.status(400).send({ error: "Missing url parameter" });
-    }
-
-    let parsedUrl: URL;
-    try {
-      parsedUrl = new URL(url);
-    } catch {
-      return reply.status(400).send({ error: "Invalid URL" });
-    }
-
-    if (!allowed.some((domain) => parsedUrl.hostname.endsWith(domain))) {
-      return reply.status(403).send({ error: "Domain not allowed" });
-    }
-
-    try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        return reply
-          .status(response.status)
-          .send({ error: "Upstream fetch failed" });
+export async function registerImageProxyRoute(
+  app: FastifyInstance,
+  options: {
+    auth: RequestAuthenticator;
+    safeFetch: ImageSafeFetcher;
+  },
+) {
+  app.get<{ Querystring: { url?: string } }>(
+    "/api/proxy-image",
+    async (request, reply) => {
+      const user = await options.auth.authenticate(request);
+      if (!user) {
+        return reply.code(401).send({
+          error: { code: "unauthorized", message: "Authentication required." },
+        });
       }
 
-      const contentType =
-        response.headers.get("content-type") ?? "application/octet-stream";
-      const buffer = Buffer.from(await response.arrayBuffer());
+      const { url } = request.query;
+      if (!url || typeof url !== "string") {
+        return reply.code(400).send({
+          error: {
+            code: "invalid_request",
+            message: "A valid URL is required.",
+          },
+        });
+      }
 
-      return reply
-        .header("content-type", contentType)
-        .header("cache-control", "public, max-age=86400")
-        .send(buffer);
-    } catch {
-      return reply.status(502).send({ error: "Failed to fetch image" });
-    }
-  });
+      try {
+        const result = await options.safeFetch(url);
+        return reply
+          .header("content-type", result.contentType)
+          .header("cache-control", "private, max-age=86400")
+          .send(result.body);
+      } catch (error) {
+        if (error instanceof SafeFetchError) {
+          return reply.code(safeFetchStatus(error.code)).send({
+            error: {
+              code: error.code,
+              message: "The requested image could not be fetched safely.",
+            },
+          });
+        }
+
+        request.log.error({ err: error }, "image proxy fetch failed");
+        return reply.code(502).send({
+          error: {
+            code: "upstream_error",
+            message: "The requested image could not be fetched.",
+          },
+        });
+      }
+    },
+  );
+}
+
+function safeFetchStatus(code: SafeFetchError["code"]) {
+  if (code === "unsafe_url") return 403;
+  if (code === "response_too_large") return 413;
+  if (code === "invalid_content_type") return 415;
+  if (code === "request_timeout") return 504;
+  return 502;
 }
