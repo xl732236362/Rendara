@@ -116,7 +116,12 @@ export const applicationErrorCodeSchema = z.enum([
 ]);
 
 export const boundaryErrorCodeSchema = z.union([
-  z.enum(["unauthorized", "invalid_request"]),
+  z.enum([
+    "unauthorized",
+    "invalid_request",
+    "request_aborted",
+    "request_timeout",
+  ]),
   applicationErrorCodeSchema,
 ]);
 

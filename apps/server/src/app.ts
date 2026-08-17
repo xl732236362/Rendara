@@ -73,6 +73,7 @@ import { registerBrandKitRoutes } from "./http/brand-kits.js";
 import { registerCanvasRoutes } from "./http/canvases.js";
 import { registerChatRoutes } from "./http/chat.js";
 import { registerCreditRoutes } from "./http/credits.js";
+import { registerErrorHandler } from "./http/error-handler.js";
 import { registerFontsRoutes } from "./http/fonts.js";
 import { registerGenerateRoutes } from "./http/generate.js";
 import { registerHealthRoutes } from "./http/health.js";
@@ -140,6 +141,7 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   const app = Fastify({
     logger: { level: "info" },
   });
+  registerErrorHandler(app);
   void app.register(multipart, {
     limits: { fileSize: 10 * 1024 * 1024 },
   });

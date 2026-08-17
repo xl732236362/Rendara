@@ -31,11 +31,11 @@
 
 **Files:** `packages/shared/src/errors.ts`, `packages/shared/src/http.ts`, `apps/server/src/errors/app-error.ts`, `apps/server/src/http/error-handler.ts`, `apps/server/src/http/error-handler.test.ts`, `apps/server/src/app.ts`
 
-- [ ] Write failing injection tests for Zod input errors (400 `invalid_request`), authenticated application errors with stable status/code, unknown errors (500 without internal detail), and request-abort errors.
-- [ ] Verify the tests fail because routes currently map errors independently.
-- [ ] Implement `AppError` with code/status/expose/details/cause, shared error-envelope serialization, and a Fastify global handler using request logging with safe structured fields.
-- [ ] Register the handler before routes and retain Fastify's validation behavior through the same envelope.
-- [ ] Run the focused tests and existing authorization/security route tests.
+- [x] Write failing injection tests for Zod input errors (400 `invalid_request`), authenticated application errors with stable status/code, unknown errors (500 without internal detail), and request-abort errors.
+- [x] Verify the tests fail because routes currently map errors independently.
+- [x] Implement `AppError` with code/status/expose/details/cause, shared error-envelope serialization, and a Fastify global handler using request logging with safe structured fields.
+- [x] Register the handler before routes and retain Fastify's validation behavior through the same envelope.
+- [x] Run the focused tests and existing authorization/security route tests.
 
 ## Task 3: Migrate Route Error Mapping
 
