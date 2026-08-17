@@ -1,14 +1,15 @@
 import { generateImage } from "../../../generation/image-generation.js";
-import { resolveImageProviderName } from "../../../generation/providers/registry.js";
+import type { ProviderRegistry } from "../../../generation/providers/registry.js";
 import { applyWatermark } from "../../credits/watermark.js";
 // @credits-system — Image generation executor: applies watermark for free-tier users
-import { type ExecutorContext, registerExecutor } from "../job-executor.js";
+import type { ExecutorContext, JobExecutor } from "../job-executor.js";
 
 import type { SubscriptionPlan } from "@loomic/shared";
 
-registerExecutor(
-  "image_generation",
-  async (jobId, _rawPayload, ctx: ExecutorContext) => {
+export function createImageGenerationExecutor(
+  providerRegistry: ProviderRegistry,
+): JobExecutor {
+  return async (jobId, _rawPayload, ctx: ExecutorContext) => {
     const t0 = Date.now();
 
     // Read the full job row including payload from the database.
@@ -47,7 +48,7 @@ registerExecutor(
 
     // Resolve provider dynamically from model ID via registry
     const model = payload.model ?? "black-forest-labs/flux-kontext-pro";
-    const providerName = resolveImageProviderName(model);
+    const providerName = providerRegistry.resolveImageProviderName(model);
 
     // Renew VT every 60s (half of the 120s image queue VT) to prevent
     // the message from becoming visible while we are still processing.
@@ -71,7 +72,7 @@ registerExecutor(
       lap(`${providerName}_call_start`);
       let generated;
       try {
-        generated = await generateImage(providerName, {
+        generated = await generateImage(providerRegistry, providerName, {
           prompt: payload.prompt,
           model,
           ...(payload.aspect_ratio !== undefined
@@ -183,5 +184,5 @@ registerExecutor(
     } finally {
       clearInterval(heartbeatTimer);
     }
-  },
-);
+  };
+}

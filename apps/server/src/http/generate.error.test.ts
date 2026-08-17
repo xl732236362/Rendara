@@ -1,18 +1,18 @@
 import Fastify from "fastify";
-import { afterEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { JobServiceError } from "../features/jobs/job-service.js";
-import {
-  clearProviders,
-  registerImageProvider,
-} from "../generation/providers/registry.js";
+import { ProviderRegistry } from "../generation/providers/registry.js";
 import { registerErrorHandler } from "./error-handler.js";
 import { registerGenerateRoutes } from "./generate.js";
 
+let providerRegistry: ProviderRegistry;
+
 describe("generation route errors", () => {
-  afterEach(() => clearProviders());
+  beforeEach(() => {
+    providerRegistry = new ProviderRegistry();
+  });
 
   it("maps an unavailable provider to a safe 502", async () => {
-    clearProviders();
     const app = await createApp();
     const response = await app.inject({
       method: "POST",
@@ -30,7 +30,7 @@ describe("generation route errors", () => {
   });
 
   it("keeps provider failures private behind generation_failed", async () => {
-    registerImageProvider({
+    providerRegistry.registerImageProvider({
       name: "test",
       models: [{ id: "test/model", displayName: "Test", description: "Test" }],
       generate: async () => {
@@ -52,7 +52,7 @@ describe("generation route errors", () => {
   });
 
   it("maps upload failures to a safe generation_failed 502", async () => {
-    registerImageProvider({
+    providerRegistry.registerImageProvider({
       name: "test",
       models: [{ id: "test/model", displayName: "Test", description: "Test" }],
       generate: async () => ({
@@ -192,6 +192,7 @@ async function createApp(uploadService: unknown = {}, jobService?: unknown) {
       }),
     },
     uploadService: uploadService as never,
+    providerRegistry: providerRegistry.seal(),
     ...(jobService ? { jobService: jobService as never } : {}),
     viewerService: {
       ensureViewer: async () => ({ workspace: { id: "w1" } }),

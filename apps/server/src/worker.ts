@@ -16,9 +16,10 @@ import {
   type CreditService,
   createCreditService,
 } from "./features/credits/credit-service.js";
-import {
-  type ExecutorContext,
-  getExecutor,
+import { registerAllExecutors } from "./features/jobs/executors/register-all.js";
+import type {
+  ExecutorContext,
+  ExecutorRegistry,
 } from "./features/jobs/job-executor.js";
 import { createJobService } from "./features/jobs/job-service.js";
 import {
@@ -28,10 +29,6 @@ import {
 import { type PgmqMessage, createPgmqClient } from "./queue/pgmq-client.js";
 import { createAdminSupabaseClient } from "./supabase/admin.js";
 import { createUserSupabaseClientFactory } from "./supabase/user.js";
-
-// Import executors to trigger registration via side effects
-import "./features/jobs/executors/image-generation.js";
-import "./features/jobs/executors/video-generation.js";
 
 // Register all image/video providers via shared helper (keeps parity with app.ts)
 import { registerAllProviders } from "./generation/providers/register-all.js";
@@ -48,7 +45,8 @@ async function main() {
   const env = loadServerEnv({}, process.env, { process: "worker" });
 
   // Register all generation providers (shared with app.ts)
-  registerAllProviders(env);
+  const providerRegistry = registerAllProviders(env);
+  const executorRegistry = registerAllExecutors(providerRegistry);
 
   const { supabaseDbUrl } = env;
   if (!supabaseDbUrl) {
@@ -165,6 +163,7 @@ async function main() {
             msg,
             ctx,
             creditService,
+            executorRegistry,
             tag,
           ).finally(() => inFlight.delete(task));
           inFlight.add(task);
@@ -181,6 +180,7 @@ async function processMessage(
   msg: PgmqMessage,
   ctx: ExecutorContext,
   creditService: CreditService,
+  executorRegistry: ExecutorRegistry,
   tag: string,
 ) {
   const resolution = await resolveGenerationQueueMessage({
@@ -220,7 +220,7 @@ async function processMessage(
     `${tag} Processing job ${jobId} (${jobType})${sessionShort ? ` session:${sessionShort}` : ""}`,
   );
 
-  const executor = getExecutor(jobType);
+  const executor = executorRegistry.get(jobType);
   if (!executor) {
     console.error(`${tag} No executor for job type: ${jobType}`);
     await ctx.jobService.markFailed(

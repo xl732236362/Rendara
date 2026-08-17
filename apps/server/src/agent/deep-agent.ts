@@ -13,6 +13,7 @@ import {
   DEFAULT_GOOGLE_AGENT_MODEL,
   type ServerEnv,
 } from "../config/env.js";
+import type { ProviderRegistry } from "../generation/providers/registry.js";
 import type { ConnectionManager } from "../ws/connection-manager.js";
 import {
   type AgentBackendResult,
@@ -43,6 +44,7 @@ export type LoomicAgentFactory = (options: {
   env: ServerEnv;
   model?: BaseLanguageModel | string;
   persistImage?: PersistImageFn;
+  providerRegistry: ProviderRegistry;
 
   submitImageJob?: SubmitImageJobFn;
   submitVideoJob?: SubmitVideoJobFn;
@@ -60,6 +62,7 @@ export function createLoomicDeepAgent(options: {
   env: ServerEnv;
   model?: BaseLanguageModel | string;
   persistImage?: PersistImageFn;
+  providerRegistry: ProviderRegistry;
 
   submitImageJob?: SubmitImageJobFn;
   submitVideoJob?: SubmitVideoJobFn;
@@ -120,10 +123,11 @@ export function createLoomicDeepAgent(options: {
     model: resolvedModel,
     name: "loomic",
     ...(options.store ? { store: options.store } : {}),
-    subagents: [createVideoSubAgent()],
+    subagents: [createVideoSubAgent(options.providerRegistry)],
     systemPrompt,
     tools: createMainAgentTools(backendResult.factory, {
       createUserClient,
+      providerRegistry: options.providerRegistry,
       ...(options.brandKitId != null ? { brandKitId: options.brandKitId } : {}),
       ...(options.connectionManager
         ? { connectionManager: options.connectionManager }

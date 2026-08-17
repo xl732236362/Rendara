@@ -1,10 +1,11 @@
-import { resolveVideoProviderName } from "../../../generation/providers/registry.js";
+import type { ProviderRegistry } from "../../../generation/providers/registry.js";
 import { generateVideo } from "../../../generation/video-generation.js";
-import { type ExecutorContext, registerExecutor } from "../job-executor.js";
+import type { ExecutorContext, JobExecutor } from "../job-executor.js";
 
-registerExecutor(
-  "video_generation",
-  async (jobId, _rawPayload, ctx: ExecutorContext) => {
+export function createVideoGenerationExecutor(
+  providerRegistry: ProviderRegistry,
+): JobExecutor {
+  return async (jobId, _rawPayload, ctx: ExecutorContext) => {
     const t0 = Date.now();
 
     const admin = ctx.getAdminClient();
@@ -42,7 +43,7 @@ registerExecutor(
     const workspaceId: string = jobRow.workspace_id ?? jobId;
 
     const model = payload.model ?? "wan-video/wan-2.6";
-    const providerName = resolveVideoProviderName(model);
+    const providerName = providerRegistry.resolveVideoProviderName(model);
 
     // Renew VT every 120s (roughly half of the 300s video queue VT) to prevent
     // the message from becoming visible during long video generation.
@@ -53,7 +54,7 @@ registerExecutor(
 
     try {
       lap("replicate_call_start");
-      const generated = await generateVideo(providerName, {
+      const generated = await generateVideo(providerRegistry, providerName, {
         prompt: payload.prompt,
         model,
         ...(payload.duration != null ? { duration: payload.duration } : {}),
@@ -153,5 +154,5 @@ registerExecutor(
     } finally {
       clearInterval(heartbeatTimer);
     }
-  },
-);
+  };
+}

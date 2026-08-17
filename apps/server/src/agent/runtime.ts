@@ -34,6 +34,7 @@ import {
   TierGuardError,
 } from "../features/credits/tier-guard.js";
 import type { JobService } from "../features/jobs/job-service.js";
+import type { ProviderRegistry } from "../generation/providers/registry.js";
 import type {
   AuthenticatedUser,
   UserSupabaseClient,
@@ -275,6 +276,7 @@ type CreateAgentRuntimeOptions = {
   eventDelayMs?: number;
   jobService?: JobService;
   model?: BaseLanguageModel | string;
+  providerRegistry: ProviderRegistry;
   now?: () => string;
   runIdFactory?: () => string;
   tierGuard?: TierGuard;
@@ -293,6 +295,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
     ((agentOptions) =>
       createLoomicDeepAgent({
         ...agentOptions,
+        providerRegistry: options.providerRegistry,
         ...(options.createUserClient
           ? { createUserClient: options.createUserClient }
           : {}),
@@ -1138,6 +1141,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               ? { connectionManager: options.connectionManager }
               : {}),
             env: options.env,
+            providerRegistry: options.providerRegistry,
             ...(resolvedModel ? { model: resolvedModel } : {}),
             ...(persistImage ? { persistImage } : {}),
             // execute 工具由 LocalShellBackend 自动提供，无需手动传递

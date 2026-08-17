@@ -62,10 +62,10 @@ Verification evidence: registered-route regression tests cover projects, canvase
 
 **Files:** `apps/server/src/generation/providers/registry.ts`, `registry.test.ts`, `register-all.ts`, `apps/server/src/features/jobs/job-executor.ts`, `job-executor.test.ts`, executors under `features/jobs/executors/`, `apps/server/src/app.ts`, `apps/server/src/worker.ts`
 
-- [ ] Write failing tests that two registry instances are isolated and duplicate provider names, duplicate model IDs (including across providers), and duplicate executor job types throw descriptive startup errors.
-- [ ] Implement immutable-after-build `ProviderRegistry` and `ExecutorRegistry` instances with typed lookup/list APIs; remove module-global Maps and import-time executor side effects.
-- [ ] Make registration functions return fully validated registries and inject them through generation services and worker context.
-- [ ] Run focused registry tests twice in one process to prove no cross-test/application contamination.
+- [x] Write failing tests that two registry instances are isolated and duplicate provider names, duplicate model IDs (including across providers), and duplicate executor job types throw descriptive startup errors.
+- [x] Implement immutable-after-build `ProviderRegistry` and `ExecutorRegistry` instances with typed lookup/list APIs; remove module-global Maps and import-time executor side effects.
+- [x] Make registration functions return fully validated registries and inject them through generation services and worker context.
+- [x] Run focused registry tests twice in one process to prove no cross-test/application contamination.
 
 ## Task 6: Add SubmitGeneration And CancelGeneration Use Cases
 

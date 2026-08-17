@@ -10,7 +10,7 @@ import {
 
 import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
 import type { CreditService } from "../features/credits/credit-service.js";
-import { getAvailableImageModels } from "../generation/providers/registry.js";
+import type { ProviderRegistry } from "../generation/providers/registry.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
 
 export async function registerImageModelRoutes(
@@ -18,11 +18,12 @@ export async function registerImageModelRoutes(
   options: {
     auth: RequestAuthenticator;
     creditService: CreditService;
+    providerRegistry: ProviderRegistry;
     viewerService: ViewerService;
   },
 ) {
   app.get("/api/image-models", async (request, reply) => {
-    const models = getAvailableImageModels();
+    const models = options.providerRegistry.getAvailableImageModels();
 
     // Try to authenticate — unauthenticated users still see models
     let userPlan: SubscriptionPlan | null = null;

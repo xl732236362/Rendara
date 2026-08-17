@@ -18,7 +18,7 @@ import type { JobService } from "../features/jobs/job-service.js";
 import { JobServiceError } from "../features/jobs/job-service.js";
 import type { UploadService } from "../features/uploads/upload-service.js";
 import { generateImage } from "../generation/image-generation.js";
-import { resolveImageProviderName } from "../generation/providers/registry.js";
+import type { ProviderRegistry } from "../generation/providers/registry.js";
 import type {
   AuthenticatedUser,
   RequestAuthenticator,
@@ -52,6 +52,7 @@ export async function registerGenerateRoutes(
     auth: RequestAuthenticator;
     creditService?: CreditService;
     jobService?: JobService;
+    providerRegistry: ProviderRegistry;
     tierGuard?: TierGuard;
     uploadService: UploadService;
     viewerService: ViewerService;
@@ -108,8 +109,9 @@ export async function registerGenerateRoutes(
 
     let generated: Awaited<ReturnType<typeof generateImage>>;
     try {
-      const providerName = resolveImageProviderName(model);
-      generated = await generateImage(providerName, {
+      const providerName =
+        options.providerRegistry.resolveImageProviderName(model);
+      generated = await generateImage(options.providerRegistry, providerName, {
         prompt: payload.prompt,
         model,
         aspectRatio: payload.aspectRatio ?? "1:1",

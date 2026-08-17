@@ -69,6 +69,7 @@ import {
   createUploadService,
 } from "./features/uploads/upload-service.js";
 import { registerAllProviders } from "./generation/providers/register-all.js";
+import type { ProviderRegistry } from "./generation/providers/registry.js";
 import { registerBrandKitRoutes } from "./http/brand-kits.js";
 import { registerCanvasRoutes } from "./http/canvases.js";
 import { registerChatRoutes } from "./http/chat.js";
@@ -126,6 +127,7 @@ export type BuildAppOptions = {
   uploadService?: UploadService;
   mockEventDelayMs?: number;
   projectService?: ProjectService;
+  providerRegistry?: ProviderRegistry;
   resourceAuthorization?: ResourceAuthorization;
   settingsService?: SettingsService;
   threadService?: ThreadService;
@@ -137,7 +139,8 @@ export function buildAppFromEnv(
   options: Omit<BuildAppOptions, "env"> = {},
 ): FastifyInstance {
   // Register generation providers (shared with worker.ts)
-  registerAllProviders(env);
+  const providerRegistry =
+    options.providerRegistry ?? registerAllProviders(env);
 
   const app = Fastify({
     logger: { level: "info" },
@@ -260,6 +263,7 @@ export function buildAppFromEnv(
       ? {}
       : { eventDelayMs: options.mockEventDelayMs }),
     env,
+    providerRegistry,
     ...(jobService ? { jobService } : {}),
     creditService,
     tierGuard,
@@ -353,8 +357,18 @@ export function buildAppFromEnv(
     viewerService,
   });
   void registerModelRoutes(app, env);
-  void registerImageModelRoutes(app, { auth, creditService, viewerService });
-  void registerVideoModelRoutes(app, { auth, creditService, viewerService });
+  void registerImageModelRoutes(app, {
+    auth,
+    creditService,
+    providerRegistry,
+    viewerService,
+  });
+  void registerVideoModelRoutes(app, {
+    auth,
+    creditService,
+    providerRegistry,
+    viewerService,
+  });
   void registerChatRoutes(app, {
     auth,
     chatService,
@@ -367,6 +381,7 @@ export function buildAppFromEnv(
   void registerGenerateRoutes(app, {
     auth,
     creditService,
+    providerRegistry,
     uploadService,
     viewerService,
     ...(jobService ? { jobService } : {}),

@@ -1,6 +1,7 @@
 import type { StructuredTool } from "@langchain/core/tools";
 import type { BackendFactory, BackendProtocol } from "deepagents";
 
+import type { ProviderRegistry } from "../../generation/providers/registry.js";
 import type { ConnectionManager } from "../../ws/connection-manager.js";
 import { createBrandKitTool } from "./brand-kit.js";
 import {
@@ -58,6 +59,7 @@ export function createMainAgentTools(
     brandKitId?: string | null;
     connectionManager?: ConnectionManager;
     persistImage?: PersistImageFn;
+    providerRegistry: ProviderRegistry;
     sandboxDir?: string;
     submitImageJob?: SubmitImageJobFn;
     submitVideoJob?: SubmitVideoJobFn;
@@ -68,10 +70,12 @@ export function createMainAgentTools(
     createInspectCanvasTool(deps),
     createManipulateCanvasTool(deps),
     createImageGenerateTool({
+      providerRegistry: deps.providerRegistry,
       ...(deps.persistImage ? { persistImage: deps.persistImage } : {}),
       ...(deps.submitImageJob ? { submitImageJob: deps.submitImageJob } : {}),
     }),
     createVideoGenerateTool({
+      providerRegistry: deps.providerRegistry,
       ...(deps.submitVideoJob ? { submitVideoJob: deps.submitVideoJob } : {}),
     }),
     createPersistSandboxFileTool({
@@ -97,10 +101,13 @@ export function createMainAgentTools(
 }
 
 /** @deprecated Use createMainAgentTools + sub-agents instead */
-export function createPhaseATools(backend: BackendProtocol | BackendFactory) {
+export function createPhaseATools(
+  backend: BackendProtocol | BackendFactory,
+  providerRegistry: ProviderRegistry,
+) {
   return [
     createProjectSearchTool(backend),
-    createImageGenerateTool(),
-    createVideoGenerateTool(),
+    createImageGenerateTool({ providerRegistry }),
+    createVideoGenerateTool({ providerRegistry }),
   ] as const;
 }

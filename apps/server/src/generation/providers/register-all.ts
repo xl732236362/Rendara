@@ -11,7 +11,7 @@ import { GoogleVertexImageProvider } from "./google-vertex-image.js";
 import { GoogleVertexVideoProvider } from "./google-vertex-video.js";
 import { GoogleVideoProvider } from "./google-video.js";
 import { OpenAIImageProvider } from "./openai-image.js";
-import { registerImageProvider, registerVideoProvider } from "./registry.js";
+import { ProviderRegistry } from "./registry.js";
 import { ReplicateImageProvider } from "./replicate-image.js";
 import { ReplicateVideoProvider } from "./replicate-video.js";
 import { VolcesImageProvider } from "./volces-image.js";
@@ -23,17 +23,22 @@ import { VolcesImageProvider } from "./volces-image.js";
  * keeping the behaviour identical to the previous inline registration while
  * ensuring every process gets the full set.
  */
-export function registerAllProviders(env: ServerEnv): void {
+export function registerAllProviders(env: ServerEnv): ProviderRegistry {
+  const registry = new ProviderRegistry();
   // Replicate — image + video
   if (env.replicateApiToken) {
-    registerImageProvider(new ReplicateImageProvider(env.replicateApiToken));
-    registerVideoProvider(new ReplicateVideoProvider(env.replicateApiToken));
+    registry.registerImageProvider(
+      new ReplicateImageProvider(env.replicateApiToken),
+    );
+    registry.registerVideoProvider(
+      new ReplicateVideoProvider(env.replicateApiToken),
+    );
   }
 
   // Google Developer API — image + video
   if (env.googleApiKey) {
-    registerImageProvider(new GoogleImageProvider(env.googleApiKey));
-    registerVideoProvider(new GoogleVideoProvider(env.googleApiKey));
+    registry.registerImageProvider(new GoogleImageProvider(env.googleApiKey));
+    registry.registerVideoProvider(new GoogleVideoProvider(env.googleApiKey));
   }
 
   // Google Vertex AI — image + video (coexists with Developer API)
@@ -44,11 +49,11 @@ export function registerAllProviders(env: ServerEnv): void {
       project: env.googleVertexProject,
       location: env.googleVertexLocation,
     };
-    registerImageProvider(new GoogleVertexImageProvider(vertexConfig));
+    registry.registerImageProvider(new GoogleVertexImageProvider(vertexConfig));
 
     const videoLocation =
       env.googleVertexVideoLocation ?? env.googleVertexLocation;
-    registerVideoProvider(
+    registry.registerVideoProvider(
       new GoogleVertexVideoProvider({
         project: env.googleVertexProject,
         location: videoLocation,
@@ -58,15 +63,17 @@ export function registerAllProviders(env: ServerEnv): void {
 
   // OpenAI — image only
   if (env.openAIApiKey) {
-    registerImageProvider(
+    registry.registerImageProvider(
       new OpenAIImageProvider(env.openAIApiKey, env.openAIApiBase),
     );
   }
 
   // Volces — image only
   if (env.volcesApiKey) {
-    registerImageProvider(
+    registry.registerImageProvider(
       new VolcesImageProvider(env.volcesApiKey, env.volcesBaseUrl),
     );
   }
+
+  return registry.seal();
 }

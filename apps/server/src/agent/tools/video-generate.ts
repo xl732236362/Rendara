@@ -1,10 +1,9 @@
 import { tool } from "langchain";
 import { z } from "zod";
 
-import {
-  type AvailableModel,
-  getAvailableVideoModels,
-  resolveVideoProviderName,
+import type {
+  AvailableModel,
+  ProviderRegistry,
 } from "../../generation/providers/registry.js";
 import { generateVideo } from "../../generation/video-generation.js";
 
@@ -159,6 +158,7 @@ type VideoGenerateResult = {
 export async function runVideoGenerate(
   input: VideoGenerateInput,
   submitVideoJob?: SubmitVideoJobFn,
+  providerRegistry?: ProviderRegistry,
 ): Promise<VideoGenerateResult> {
   const t0 = Date.now();
   const lap = (label: string, extra?: Record<string, unknown>) => {
@@ -248,9 +248,14 @@ export async function runVideoGenerate(
 
   // Direct mode: call provider directly
   try {
+    if (!providerRegistry) {
+      throw new Error(
+        "Video provider registry is required for direct generation",
+      );
+    }
     lap("direct_generate_start", { model: input.model });
-    const providerName = resolveVideoProviderName(input.model);
-    const result = await generateVideo(providerName, {
+    const providerName = providerRegistry.resolveVideoProviderName(input.model);
+    const result = await generateVideo(providerRegistry, providerName, {
       prompt: input.prompt,
       model: input.model,
       duration: input.duration,
@@ -297,8 +302,12 @@ export async function runVideoGenerate(
 export function createVideoGenerateTool(deps?: {
   submitVideoJob?: SubmitVideoJobFn;
   availableModels?: AvailableModel[];
+  providerRegistry?: ProviderRegistry;
 }) {
-  const models = deps?.availableModels ?? getAvailableVideoModels();
+  const models =
+    deps?.availableModels ??
+    deps?.providerRegistry?.getAvailableVideoModels() ??
+    [];
 
   const modelSummary = models.length
     ? models.map((m) => `${m.displayName} (${m.id})`).join(", ")
@@ -306,7 +315,11 @@ export function createVideoGenerateTool(deps?: {
 
   return tool(
     async (input: VideoGenerateInput) => {
-      return await runVideoGenerate(input, deps?.submitVideoJob);
+      return await runVideoGenerate(
+        input,
+        deps?.submitVideoJob,
+        deps?.providerRegistry,
+      );
     },
     {
       name: "generate_video",

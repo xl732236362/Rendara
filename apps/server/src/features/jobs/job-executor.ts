@@ -28,17 +28,29 @@ export type JobExecutor = (
   ctx: ExecutorContext,
 ) => Promise<Record<string, unknown>>;
 
-const executors = new Map<BackgroundJobType, JobExecutor>();
+export class ExecutorRegistry {
+  readonly #executors = new Map<BackgroundJobType, JobExecutor>();
+  #sealed = false;
 
-export function registerExecutor(
-  jobType: BackgroundJobType,
-  executor: JobExecutor,
-): void {
-  executors.set(jobType, executor);
-}
+  register(jobType: BackgroundJobType, executor: JobExecutor): this {
+    if (this.#sealed) throw new Error("Executor registry is sealed");
+    if (this.#executors.has(jobType)) {
+      throw new Error(`Duplicate executor job type: "${jobType}"`);
+    }
+    this.#executors.set(jobType, executor);
+    return this;
+  }
 
-export function getExecutor(
-  jobType: BackgroundJobType,
-): JobExecutor | undefined {
-  return executors.get(jobType);
+  get(jobType: BackgroundJobType): JobExecutor | undefined {
+    return this.#executors.get(jobType);
+  }
+
+  listJobTypes(): BackgroundJobType[] {
+    return [...this.#executors.keys()].sort();
+  }
+
+  seal(): this {
+    this.#sealed = true;
+    return this;
+  }
 }

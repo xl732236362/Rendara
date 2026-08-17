@@ -4,10 +4,9 @@ import { z } from "zod";
 import { randomUUID } from "node:crypto";
 
 import { generateImage } from "../../generation/image-generation.js";
-import {
-  type AvailableModel,
-  getAvailableImageModels,
-  resolveImageProviderName,
+import type {
+  AvailableModel,
+  ProviderRegistry,
 } from "../../generation/providers/registry.js";
 
 const DEFAULT_MODEL = "black-forest-labs/flux-kontext-pro";
@@ -159,6 +158,7 @@ export async function runImageGenerate(
   persistImage?: PersistImageFn,
   submitImageJob?: SubmitImageJobFn,
   attachmentMap?: Record<string, string>,
+  providerRegistry?: ProviderRegistry,
 ): Promise<ImageGenerateResult> {
   const t0 = Date.now();
   const lap = (label: string, extra?: Record<string, unknown>) => {
@@ -263,9 +263,14 @@ export async function runImageGenerate(
 
   // Direct generation: resolve provider from model ID via registry
   try {
+    if (!providerRegistry) {
+      throw new Error(
+        "Image provider registry is required for direct generation",
+      );
+    }
     lap("direct_generate_start", { model: input.model });
-    const providerName = resolveImageProviderName(input.model);
-    const result = await generateImage(providerName, {
+    const providerName = providerRegistry.resolveImageProviderName(input.model);
+    const result = await generateImage(providerRegistry, providerName, {
       prompt: input.prompt,
       model: input.model,
       ...(input.aspectRatio ? { aspectRatio: input.aspectRatio } : {}),
@@ -322,8 +327,12 @@ export function createImageGenerateTool(deps?: {
   submitImageJob?: SubmitImageJobFn;
   /** Override for testing — defaults to querying the provider registry. */
   availableModels?: AvailableModel[];
+  providerRegistry?: ProviderRegistry;
 }) {
-  const models = deps?.availableModels ?? getAvailableImageModels();
+  const models =
+    deps?.availableModels ??
+    deps?.providerRegistry?.getAvailableImageModels() ??
+    [];
 
   const modelSummary = models.length
     ? models.map((m) => `${m.displayName} (${m.id})`).join(", ")
@@ -338,6 +347,7 @@ export function createImageGenerateTool(deps?: {
         deps?.persistImage,
         deps?.submitImageJob,
         attachmentMap,
+        deps?.providerRegistry,
       );
     },
     {
