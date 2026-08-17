@@ -210,7 +210,7 @@ export const strictCanvasOperationSchema = z
     z
       .object({
         action: z.literal("add_line"),
-        line_type: z.enum(["line", "arrow"]),
+        line_type: z.enum(["line", "arrow"]).default("arrow"),
         points: z
           .array(
             z.object({ x: coordinateSchema, y: coordinateSchema }).strict(),

@@ -62,4 +62,29 @@ describe("canvas operation engine contract", () => {
     expect(outcome.content).not.toBe(input);
     expect(outcome.content.elements[0]).not.toBe(input.elements[0]);
   });
+
+  it("normalizes an omitted line type to the existing arrow default", () => {
+    const operations = parseCanvasOperations([
+      {
+        action: "add_line",
+        points: [
+          { x: 0, y: 0 },
+          { x: 100, y: 100 },
+        ],
+      },
+    ]);
+
+    expect(operations[0]).toMatchObject({
+      action: "add_line",
+      line_type: "arrow",
+    });
+    const outcome = applyCanvasOperations(
+      { elements: [], appState: {}, files: {} },
+      operations,
+    );
+    expect(outcome.content.elements[0]).toMatchObject({
+      type: "arrow",
+      endArrowhead: "arrow",
+    });
+  });
 });

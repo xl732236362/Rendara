@@ -1,6 +1,8 @@
 import { tool } from "langchain";
 
 import {
+  type CanvasOperationEngineResult,
+  CanvasOperationError,
   applyCanvasOperations,
   manipulateCanvasSchema,
   measureTextWidth,
@@ -37,13 +39,17 @@ export function createManipulateCanvasTool(deps: {
         });
       }
 
-      const outcome = applyCanvasOperations(data.content, input.operations);
+      let outcome: CanvasOperationEngineResult;
+      try {
+        outcome = applyCanvasOperations(data.content, input.operations);
+      } catch (error) {
+        if (error instanceof CanvasOperationError) {
+          return invalidOperationsResult(error.issues);
+        }
+        throw error;
+      }
       if (outcome.issues.length > 0) {
-        return JSON.stringify({
-          error: "invalid_operations",
-          message: "Canvas operations were not applied.",
-          issues: outcome.issues,
-        });
+        return invalidOperationsResult(outcome.issues);
       }
       const { error: writeError } = await client
         .from("canvases")
@@ -73,4 +79,14 @@ export function createManipulateCanvasTool(deps: {
       schema: manipulateCanvasSchema,
     },
   );
+}
+
+function invalidOperationsResult(
+  issues: Array<{ index: number; message: string }>,
+): string {
+  return JSON.stringify({
+    error: "invalid_operations",
+    message: "Canvas operations were not applied.",
+    issues,
+  });
 }

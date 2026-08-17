@@ -96,4 +96,87 @@ describe("manipulate_canvas operation engine parity", () => {
     expect(writeCount).toBe(0);
     expect(JSON.parse(result)).toMatchObject({ error: "invalid_operations" });
   });
+
+  it("returns a stable result for strict parse failures from loose tool input", async () => {
+    let writeCount = 0;
+    const canvasTool = createManipulateCanvasTool({
+      createUserClient: () => ({
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              single: async () => ({
+                data: { content: { elements: [], appState: {}, files: {} } },
+                error: null,
+              }),
+            }),
+          }),
+          update: () => {
+            writeCount += 1;
+            return { eq: async () => ({ error: null }) };
+          },
+        }),
+      }),
+    });
+
+    const result = await canvasTool.invoke(
+      { operations: [{ action: "move", element_id: "element-1" }] },
+      { configurable: { access_token: "token", canvas_id: "canvas-1" } },
+    );
+
+    expect(writeCount).toBe(0);
+    const parsed = JSON.parse(result) as {
+      error: string;
+      message: string;
+      issues: Array<{ index: number; message: string }>;
+    };
+    expect(parsed).toMatchObject({
+      error: "invalid_operations",
+      message: "Canvas operations were not applied.",
+    });
+    expect(parsed.issues.length).toBeGreaterThan(0);
+    expect(parsed.issues.length).toBeLessThanOrEqual(20);
+    expect(parsed.issues.every((issue) => issue.index === 0)).toBe(true);
+  });
+
+  it("preserves the omitted line type arrow default through the Agent wrapper", async () => {
+    let saved: { elements?: Array<Record<string, unknown>> } | undefined;
+    const canvasTool = createManipulateCanvasTool({
+      createUserClient: () => ({
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              single: async () => ({
+                data: { content: { elements: [], appState: {}, files: {} } },
+                error: null,
+              }),
+            }),
+          }),
+          update: (value: { content: typeof saved }) => {
+            saved = value.content;
+            return { eq: async () => ({ error: null }) };
+          },
+        }),
+      }),
+    });
+
+    await canvasTool.invoke(
+      {
+        operations: [
+          {
+            action: "add_line",
+            points: [
+              { x: 0, y: 0 },
+              { x: 100, y: 100 },
+            ],
+          },
+        ],
+      },
+      { configurable: { access_token: "token", canvas_id: "canvas-1" } },
+    );
+
+    expect(saved?.elements?.[0]).toMatchObject({
+      type: "arrow",
+      endArrowhead: "arrow",
+    });
+  });
 });
