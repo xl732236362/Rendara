@@ -123,6 +123,12 @@ test("root CI command includes all four quality gates", async () => {
   assert.match(manifest.scripts["ci:check"], /pnpm build/);
 });
 
+test("typecheck builds workspace dependencies in a clean checkout", async () => {
+  const turbo = await readJson("turbo.json");
+
+  assert.ok(turbo.tasks.typecheck.dependsOn.includes("^build"));
+});
+
 test("CI uses the pinned pnpm version and frozen installs", async () => {
   const manifest = await readJson("package.json");
   const workflow = await readText(".github/workflows/ci.yml");
