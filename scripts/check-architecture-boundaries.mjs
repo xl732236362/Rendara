@@ -1,5 +1,6 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import ts from "typescript";
 
 const serverSource = "apps/server/src";
 
@@ -10,10 +11,7 @@ const rules = [
       "provider and executor registries must be instance-owned and composed explicitly",
     pathPattern:
       /^apps\/server\/src\/(?:app|worker|generation\/providers\/(?:registry|register-all)|features\/jobs\/(?:job-executor|executors\/register-all))\.ts$/,
-    patterns: [
-      /^(?:export\s+)?const\s+\w+\s*=\s*new\s+Map\b/gm,
-      /^(?:export\s+)?const\s+\w+\s*=\s*new\s+(?:Provider|Executor)Registry\b/gm,
-    ],
+    scanner: scanTopLevelRegistries,
   },
   {
     id: "shared-zod-boundary",
@@ -37,7 +35,6 @@ const rules = [
       /\bfetch\s*\(/g,
       /\.json\s*\(/g,
       /\bresponse\s+as\s+(?:unknown\s+as\s+)?[A-Z][\w<>{}\[\]|, ]*/g,
-      /await\s+[^;\n]*\.json\s*\(\s*\)\s*\)?\s+as\s+/g,
     ],
   },
   {
@@ -100,7 +97,10 @@ export function scanArchitectureSources(sources) {
 
     for (const rule of rules) {
       if (!applies(rule, filePath)) continue;
-      for (const pattern of rule.patterns) {
+      for (const finding of rule.scanner?.(entry.source, filePath) ?? []) {
+        findings.push({ ...finding, message: rule.message, rule: rule.id });
+      }
+      for (const pattern of rule.patterns ?? []) {
         for (const match of entry.source.matchAll(pattern)) {
           const line = lineNumberAt(entry.source, match.index ?? 0);
           const excerpt = match[0].split("\n", 1)[0].trim().slice(0, 120);
@@ -117,6 +117,61 @@ export function scanArchitectureSources(sources) {
   return findings.sort((left, right) =>
     left.evidence.localeCompare(right.evidence),
   );
+}
+
+function scanTopLevelRegistries(source, filePath) {
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const findings = [];
+
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name)) continue;
+      const initializer = unwrapExpression(declaration.initializer);
+      if (!initializer || !ts.isNewExpression(initializer)) continue;
+
+      const constructorName = initializer.expression.getText(sourceFile);
+      const isRegistry = /^(?:Provider|Executor)Registry$/.test(
+        constructorName,
+      );
+      const isSemanticMap =
+        constructorName === "Map" &&
+        /(?:provider|executor|registr|catalog)/i.test(declaration.name.text);
+      if (!isRegistry && !isSemanticMap) continue;
+
+      const start = declaration.getStart(sourceFile);
+      const { line } = sourceFile.getLineAndCharacterOfPosition(start);
+      findings.push({
+        evidence: `${filePath}:${line + 1} ${declaration
+          .getText(sourceFile)
+          .split("\n", 1)[0]
+          .trim()
+          .slice(0, 120)} - `,
+      });
+    }
+  }
+
+  return findings;
+}
+
+function unwrapExpression(expression) {
+  let current = expression;
+  while (
+    current &&
+    (ts.isAsExpression(current) ||
+      ts.isParenthesizedExpression(current) ||
+      ts.isSatisfiesExpression(current) ||
+      ts.isTypeAssertionExpression(current))
+  ) {
+    current = current.expression;
+  }
+  return current;
 }
 
 export async function collectArchitectureSources(rootDir) {

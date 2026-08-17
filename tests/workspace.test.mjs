@@ -510,6 +510,26 @@ const architectureBoundaryFixtures = [
     source: "// registration\nexport const registry = new ProviderRegistry();",
   },
   {
+    name: "typed module-global ProviderRegistry",
+    path: "apps/server/src/app.ts",
+    rule: "instance-owned-registries",
+    source:
+      "// composition\nconst catalog: ProviderCatalog = new ProviderRegistry();",
+  },
+  {
+    name: "module-global let ExecutorRegistry",
+    path: "apps/server/src/worker.ts",
+    rule: "instance-owned-registries",
+    source: "// composition\nlet active = new ExecutorRegistry();",
+  },
+  {
+    name: "semantic module-global registry Map",
+    path: "apps/server/src/app.ts",
+    rule: "instance-owned-registries",
+    source:
+      "// composition\nlet executorCatalog: Map<string, unknown> = new Map();",
+  },
+  {
     name: "route-local isZodError helper",
     path: "apps/server/src/http/projects.ts",
     rule: "shared-zod-boundary",
@@ -520,6 +540,13 @@ const architectureBoundaryFixtures = [
     path: "apps/server/src/http/canvases.ts",
     rule: "shared-zod-boundary",
     source: '// route\nif ("issues" in error) throw error;',
+  },
+  {
+    name: "route-local cast then issues access",
+    path: "apps/server/src/http/canvases.ts",
+    rule: "shared-zod-boundary",
+    source:
+      "// route\nif ((error as { issues?: unknown }).issues) throw error;",
   },
   {
     name: "route-local ZodError name check",
@@ -546,10 +573,28 @@ const architectureBoundaryFixtures = [
     source: "// api\nreturn response as ProjectList;",
   },
   {
+    name: "unchecked awaited json cast",
+    path: "apps/web/src/lib/server-api.ts",
+    rule: "schema-aware-web-api",
+    source: "// api\nreturn (await response.json()) as ProjectList;",
+  },
+  {
     name: "direct queued-job orchestration",
     path: "apps/server/src/http/jobs.ts",
     rule: "generation-use-case-boundary",
     source: "// adapter\nawait jobService.createJob(input);",
+  },
+  {
+    name: "direct jobService enqueue orchestration",
+    path: "apps/server/src/agent/runtime.ts",
+    rule: "generation-use-case-boundary",
+    source: "// adapter\nawait jobService.enqueueGeneration(input);",
+  },
+  {
+    name: "direct jobService submit orchestration",
+    path: "apps/server/src/http/generate.ts",
+    rule: "generation-use-case-boundary",
+    source: "// adapter\nawait jobService.submitVideo(input);",
   },
   {
     name: "direct Skill importer",
@@ -568,6 +613,24 @@ const architectureBoundaryFixtures = [
     path: "apps/server/src/agent/tools/video-generate.ts",
     rule: "canvas-application-boundary",
     source: '// tool\nawait client.from("project_assets").insert(asset);',
+  },
+  {
+    name: "legacy Agent insertGeneratedMediaElement call",
+    path: "apps/server/src/agent/tools/image-generate.ts",
+    rule: "canvas-application-boundary",
+    source: "// tool\nawait insertGeneratedMediaElement(input);",
+  },
+  {
+    name: "legacy Agent persistGeneratedMedia call",
+    path: "apps/server/src/agent/tools/video-generate.ts",
+    rule: "canvas-application-boundary",
+    source: "// tool\nawait persistGeneratedMedia(input);",
+  },
+  {
+    name: "legacy Agent writeCanvasContent call",
+    path: "apps/server/src/agent/runtime.ts",
+    rule: "canvas-application-boundary",
+    source: "// runtime\nawait writeCanvasContent(input);",
   },
 ];
 
@@ -589,7 +652,18 @@ test("registry boundary allows function-local composition", () => {
     {
       path: "apps/server/src/app.ts",
       source:
-        "export function buildApp() {\n  const registry = new ProviderRegistry();\n  return registry;\n}",
+        "export function buildApp() {\nconst registry = new ProviderRegistry();\nreturn registry;\n}",
+    },
+  ]);
+
+  assert.deepEqual(findings, []);
+});
+
+test("registry boundary allows unrelated module-global Maps", () => {
+  const findings = scanArchitectureSources([
+    {
+      path: "apps/server/src/app.ts",
+      source: "const requestTimers = new Map<string, number>();",
     },
   ]);
 
