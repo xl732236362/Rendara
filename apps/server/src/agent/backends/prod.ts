@@ -6,17 +6,34 @@ import {
   CompositeBackend,
   FilesystemBackend,
   LocalShellBackend,
+  StateBackend,
   StoreBackend,
 } from "deepagents";
 
 const DEFAULT_SANDBOX_ROOT = "/tmp/loomic-sandbox";
 const DEFAULT_SKILLS_ROOT = "/opt/loomic/skills";
 
+function withoutExecute(backend: CompositeBackend): BackendProtocol {
+  return {
+    lsInfo: (path) => backend.lsInfo(path),
+    read: (filePath, offset, limit) => backend.read(filePath, offset, limit),
+    readRaw: (filePath) => backend.readRaw(filePath),
+    grepRaw: (pattern, path, glob) =>
+      backend.grepRaw(pattern, path ?? undefined, glob),
+    globInfo: (pattern, path) => backend.globInfo(pattern, path),
+    write: (filePath, content) => backend.write(filePath, content),
+    edit: (filePath, oldString, newString, replaceAll) =>
+      backend.edit(filePath, oldString, newString, replaceAll),
+    uploadFiles: (files) => backend.uploadFiles(files),
+    downloadFiles: (paths) => backend.downloadFiles(paths),
+  };
+}
+
 /**
- * Create a production backend with per-project LocalShellBackend sandbox.
+ * Create a production backend with per-project persistent file routing.
  *
- * LocalShellBackend 作为 default backend，deepagents 自动暴露内置 `execute` 工具。
- * 每个 canvasId 对应一个独立的工作目录，用完由 runtime.ts 清理。
+ * Local shell is opt-in. When disabled, StateBackend keeps normal agent and
+ * controlled application tools available without exposing `execute`.
  *
  * 文件持久化（/workspace/、/memories/）走 StoreBackend (PostgresStore)，
  * 与 LocalShellBackend 完全独立互不影响。
@@ -26,42 +43,42 @@ const DEFAULT_SKILLS_ROOT = "/opt/loomic/skills";
  *   /memories/         → StoreBackend (PostgresStore, per-project)
  *   /skills/           → FilesystemBackend (shared, read-only system skills)
  *   /workspace-skills/ → StoreBackend (user-installed workspace skills, optional)
- *   default            → LocalShellBackend (per-run sandbox, provides execute tool)
+ *   default            → StateBackend, or opt-in LocalShellBackend
  */
 export function createProductionBackendFactory(
   canvasId: string,
   options?: {
+    allowLocalExecute?: boolean;
     sandboxRoot?: string;
     skillsRoot?: string;
     hasWorkspaceSkills?: boolean;
   },
-): { factory: BackendFactory; sandboxDir: string } {
+): { factory: BackendFactory; sandboxDir?: string } {
   const sandboxRoot = resolve(options?.sandboxRoot ?? DEFAULT_SANDBOX_ROOT);
   const skillsRoot = resolve(options?.skillsRoot ?? DEFAULT_SKILLS_ROOT);
 
-  // Per-run isolated directory
-  const runId = crypto.randomUUID();
-  const sandboxDir = join(sandboxRoot, runId);
-  mkdirSync(sandboxDir, { recursive: true });
-  const realSandboxDir = realpathSync(sandboxDir);
+  let sandbox: LocalShellBackend | undefined;
+  let realSandboxDir: string | undefined;
+  if (options?.allowLocalExecute) {
+    const runId = crypto.randomUUID();
+    const sandboxDir = join(sandboxRoot, runId);
+    mkdirSync(sandboxDir, { recursive: true });
+    realSandboxDir = realpathSync(sandboxDir);
 
-  // LocalShellBackend = FilesystemBackend + execute tool
-  // env 只传必要变量，不传 API key 等敏感信息
-  // virtualMode: true 限制文件工具（write_file/read_file/ls 等）只能操作 rootDir 内的文件。
-  // 防止多用户并发时通过 write_file 写绝对路径导致冲突。
-  // 注意：virtualMode 不限制 execute 工具（shell 命令仍可访问全文件系统）。
-  const sandbox = new LocalShellBackend({
-    rootDir: sandboxDir,
-    virtualMode: true,
-    timeout: 120,
-    maxOutputBytes: 200_000,
-    env: {
-      PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
-      HOME: sandboxDir,
-      FONT_DIR: join(skillsRoot, "canvas-design", "canvas-fonts"),
-      PYTHONDONTWRITEBYTECODE: "1",
-    },
-  });
+    // Local shell remains opt-in until a genuinely isolated provider replaces it.
+    sandbox = new LocalShellBackend({
+      rootDir: sandboxDir,
+      virtualMode: true,
+      timeout: 120,
+      maxOutputBytes: 200_000,
+      env: {
+        PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+        HOME: sandboxDir,
+        FONT_DIR: join(skillsRoot, "canvas-design", "canvas-fonts"),
+        PYTHONDONTWRITEBYTECODE: "1",
+      },
+    });
+  }
 
   const skillsBackend = new FilesystemBackend({
     rootDir: skillsRoot,
@@ -85,8 +102,13 @@ export function createProductionBackendFactory(
       });
     }
 
-    return new CompositeBackend(sandbox, routes);
+    const defaultBackend = sandbox ?? new StateBackend(stateAndStore);
+    const composite = new CompositeBackend(defaultBackend, routes);
+    return sandbox ? composite : withoutExecute(composite);
   };
 
-  return { factory, sandboxDir: realSandboxDir };
+  return {
+    factory,
+    ...(realSandboxDir ? { sandboxDir: realSandboxDir } : {}),
+  };
 }

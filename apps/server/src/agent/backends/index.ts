@@ -29,12 +29,6 @@ export function createAgentBackend(
     });
   }
 
-  if (!env.allowLocalAgentExecute) {
-    throw new Error(
-      "Production code execution requires an isolated sandbox provider; local execute is disabled.",
-    );
-  }
-
   if (!canvasId) {
     throw new Error(
       "canvasId is required for production (state) backend mode. " +
@@ -43,6 +37,7 @@ export function createAgentBackend(
   }
 
   return createProductionBackendFactory(canvasId, {
+    allowLocalExecute: env.allowLocalAgentExecute,
     ...(env.skillsRoot ? { skillsRoot: env.skillsRoot } : {}),
     ...(options?.hasWorkspaceSkills ? { hasWorkspaceSkills: true } : {}),
   });

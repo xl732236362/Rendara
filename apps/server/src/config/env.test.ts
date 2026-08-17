@@ -1,3 +1,4 @@
+import { isSandboxBackend } from "deepagents";
 import { describe, expect, it } from "vitest";
 import { createAgentBackend } from "../agent/backends/index.js";
 import { loadServerEnv } from "./env.js";
@@ -23,18 +24,19 @@ describe("security capability defaults", () => {
 });
 
 describe("production agent execution", () => {
-  it("rejects local execution unless explicitly enabled", () => {
-    expect(() =>
-      createAgentBackend(
-        {
-          agentBackendMode: "state",
-          allowLocalAgentExecute: false,
-        },
-        "canvas-1",
-      ),
-    ).toThrow(
-      "Production code execution requires an isolated sandbox provider",
+  it("keeps the agent available without exposing local execution", () => {
+    const result = createAgentBackend(
+      {
+        agentBackendMode: "state",
+        allowLocalAgentExecute: false,
+      },
+      "canvas-1",
     );
+
+    const backend = result.factory({ state: { files: {} } });
+
+    expect(isSandboxBackend(backend)).toBe(false);
+    expect(result.sandboxDir).toBeUndefined();
   });
 });
 
