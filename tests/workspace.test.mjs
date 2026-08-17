@@ -5,6 +5,11 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import {
+  collectArchitectureSources,
+  scanArchitectureSources,
+} from "../scripts/check-architecture-boundaries.mjs";
+
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(dirname, "..");
 
@@ -489,4 +494,82 @@ test("CI runs database permission tests and a container smoke test", async () =>
   assert.match(workflow, /supabase test db/);
   assert.match(workflow, /docker run --rm/);
   assert.match(workflow, /app-load-ok/);
+});
+
+test("architecture boundary rules report actionable file and line evidence", () => {
+  const fixtures = [
+    {
+      path: "apps/server/src/generation/providers/registry.ts",
+      source: "const entries = new Map();\nexport function getProvider() {}",
+    },
+    {
+      path: "apps/server/src/features/jobs/job-executor.ts",
+      source: "export const defaultCatalog = new ExecutorRegistry();",
+    },
+    {
+      path: "apps/server/src/http/projects.ts",
+      source: 'function isZodError(error) { return "issues" in error; }',
+    },
+    {
+      path: "apps/web/src/lib/server-api.ts",
+      source: 'const response = await fetch("/api/projects");',
+    },
+    {
+      path: "apps/web/src/lib/server-api.ts",
+      source: "return await response.json();",
+    },
+    {
+      path: "apps/web/src/lib/server-api.ts",
+      source: "return response as ProjectList;",
+    },
+    {
+      path: "apps/server/src/http/jobs.ts",
+      source: "await jobService.createJob(input);",
+    },
+    {
+      path: "apps/server/src/http/skills.ts",
+      source: "return importSkillFromUrl(sourceUrl);",
+    },
+    {
+      path: "apps/server/src/agent/runtime.ts",
+      source:
+        'await client.from("canvases").update({ content });\nawait client.from("project_assets").insert(asset);',
+    },
+  ];
+
+  const findings = scanArchitectureSources(fixtures);
+
+  assert.deepEqual(
+    new Set(findings.map(({ rule }) => rule)),
+    new Set([
+      "instance-owned-registries",
+      "shared-zod-boundary",
+      "schema-aware-web-api",
+      "generation-use-case-boundary",
+      "skill-import-use-case-boundary",
+      "canvas-application-boundary",
+    ]),
+  );
+  assert.equal(
+    findings.filter(({ rule }) => rule === "schema-aware-web-api").length,
+    3,
+  );
+  assert.equal(
+    findings.filter(({ rule }) => rule === "instance-owned-registries").length,
+    2,
+  );
+  for (const finding of findings) {
+    assert.match(finding.evidence, /^[^:]+(?:\/[^:]+)+:\d+ /);
+  }
+});
+
+test("phase 1 architecture boundaries remain enforced across migrated sources", async () => {
+  const sources = await collectArchitectureSources(rootDir);
+  const findings = scanArchitectureSources(sources);
+
+  assert.deepEqual(
+    findings,
+    [],
+    findings.map(({ evidence, message }) => `${evidence}${message}`).join("\n"),
+  );
 });
