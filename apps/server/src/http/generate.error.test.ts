@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import { afterEach, describe, expect, it } from "vitest";
+import { JobServiceError } from "../features/jobs/job-service.js";
 import {
   clearProviders,
   registerImageProvider,
@@ -102,6 +103,32 @@ describe("generation route errors", () => {
     await app.close();
   });
 
+  it("preserves trusted video job creation errors", async () => {
+    const app = await createApp(undefined, {
+      createJob: async () => {
+        throw new JobServiceError(
+          "job_create_failed",
+          "database-password-secret",
+          500,
+        );
+      },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent/generate-video",
+      payload: { prompt: "hello" },
+    });
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({
+      error: {
+        code: "job_create_failed",
+        message: "Job creation failed.",
+      },
+    });
+    expect(response.body).not.toContain("secret");
+    await app.close();
+  });
+
   it("maps video polling failures to a safe 502", async () => {
     const app = await createApp(undefined, {
       createJob: async () => ({ id: "j1" }),
@@ -121,6 +148,33 @@ describe("generation route errors", () => {
         message: "Video generation status could not be retrieved.",
       },
     });
+    await app.close();
+  }, 10_000);
+
+  it("preserves trusted video job polling errors", async () => {
+    const app = await createApp(undefined, {
+      createJob: async () => ({ id: "j1" }),
+      getJobAdmin: async () => {
+        throw new JobServiceError(
+          "job_query_failed",
+          "database-password-secret",
+          500,
+        );
+      },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent/generate-video",
+      payload: { prompt: "hello" },
+    });
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({
+      error: {
+        code: "job_query_failed",
+        message: "Job query failed.",
+      },
+    });
+    expect(response.body).not.toContain("secret");
     await app.close();
   }, 10_000);
 });

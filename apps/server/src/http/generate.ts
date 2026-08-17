@@ -26,6 +26,7 @@ import type {
 import {
   parseRequest,
   raiseBoundaryError,
+  throwLegacyServiceError,
   throwRouteError,
 } from "./route-errors.js";
 
@@ -234,6 +235,9 @@ export async function registerGenerateRoutes(
       });
     } catch (error) {
       request.log.error({ err: error }, "video generation job creation failed");
+      if (error instanceof JobServiceError) {
+        throwLegacyServiceError(error);
+      }
       throwRouteError({
         code: "generation_failed",
         statusCode: 502,
@@ -272,6 +276,9 @@ export async function registerGenerateRoutes(
       );
     } catch (error) {
       request.log.error({ err: error }, "video generation job polling failed");
+      if (error instanceof JobServiceError) {
+        throwLegacyServiceError(error);
+      }
       throwRouteError({
         code: "generation_failed",
         statusCode: 502,

@@ -35,6 +35,8 @@ const LEGACY_PUBLIC_ERRORS: Partial<
   canvas_not_found: { statusCode: 404, message: "Canvas not found." },
   session_not_found: { statusCode: 404, message: "Session not found." },
   job_not_found: { statusCode: 404, message: "Job not found." },
+  job_create_failed: { statusCode: 500, message: "Job creation failed." },
+  job_query_failed: { statusCode: 500, message: "Job query failed." },
   asset_not_found: { statusCode: 404, message: "Asset not found." },
   settings_not_found: { statusCode: 404, message: "Settings not found." },
   brand_kit_not_found: { statusCode: 404, message: "Brand kit not found." },
