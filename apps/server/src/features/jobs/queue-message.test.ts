@@ -109,7 +109,11 @@ describe("generation queue boundary", () => {
         job_type: "image_generation",
         workspace_id: ids.workspace,
       },
-      lookupJob: vi.fn().mockRejectedValue(new Error("database unavailable")),
+      lookupJob: vi.fn().mockRejectedValue(
+        Object.assign(new Error("database unavailable"), {
+          code: "job_query_failed",
+        }),
+      ),
     });
 
     expect(resolution).toMatchObject({
@@ -126,6 +130,43 @@ describe("generation queue boundary", () => {
     ).toBe("retry");
     expect(actions.markDeadLetter).not.toHaveBeenCalled();
     expect(actions.archive).not.toHaveBeenCalled();
+    expect(actions.refund).not.toHaveBeenCalled();
+  });
+
+  it("archives a permanently orphaned message without dead-letter or refund", async () => {
+    const actions = {
+      markDeadLetter: vi.fn().mockResolvedValue(undefined),
+      archive: vi.fn().mockResolvedValue(undefined),
+      refund: vi.fn().mockResolvedValue(undefined),
+    };
+    const resolution = await resolveGenerationQueueMessage({
+      queue: "image_generation_jobs",
+      message: {
+        job_id: ids.job,
+        job_type: "image_generation",
+        workspace_id: ids.workspace,
+      },
+      lookupJob: vi
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error("not found"), { code: "job_not_found" }),
+        ),
+    });
+
+    expect(resolution).toMatchObject({
+      status: "poison",
+      jobId: ids.job,
+      code: "orphaned_queue_job",
+    });
+    if (resolution.status === "ready") {
+      throw new Error("Expected non-ready queue resolution.");
+    }
+
+    expect(
+      await settleNonReadyGenerationQueueMessage(resolution, actions),
+    ).toBe("archived");
+    expect(actions.archive).toHaveBeenCalledOnce();
+    expect(actions.markDeadLetter).not.toHaveBeenCalled();
     expect(actions.refund).not.toHaveBeenCalled();
   });
 

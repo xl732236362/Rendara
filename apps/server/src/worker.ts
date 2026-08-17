@@ -191,7 +191,7 @@ async function processMessage(
       code: resolution.code,
       queue,
       msgId: msg.msg_id,
-      ...(resolution.status !== "poison" ? { jobId: resolution.jobId } : {}),
+      ...("jobId" in resolution ? { jobId: resolution.jobId } : {}),
     };
     if (resolution.status === "retryable") {
       console.warn(`${tag} Queue message deferred`, logFields);

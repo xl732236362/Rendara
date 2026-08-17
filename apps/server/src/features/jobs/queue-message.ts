@@ -51,7 +51,13 @@ export type QueueMessageResolution =
       code: "job_lookup_unavailable";
       message: string;
     }
-  | { status: "poison"; code: "unidentifiable_queue_message"; message: string };
+  | { status: "poison"; code: "unidentifiable_queue_message"; message: string }
+  | {
+      status: "poison";
+      jobId: string;
+      code: "orphaned_queue_job";
+      message: string;
+    };
 
 type QueueSettlementActions = {
   markDeadLetter: (
@@ -114,7 +120,15 @@ export async function resolveGenerationQueueMessage(options: {
   let job: AuthoritativeGenerationJob;
   try {
     job = await options.lookupJob(jobId);
-  } catch {
+  } catch (error) {
+    if (hasErrorCode(error, "job_not_found")) {
+      return {
+        status: "poison",
+        jobId,
+        code: "orphaned_queue_job",
+        message: "Queue message references a job that no longer exists.",
+      };
+    }
     return {
       status: "retryable",
       jobId,
@@ -227,6 +241,17 @@ export async function settleNonReadyGenerationQueueMessage(
 
   await settleRejectedGenerationQueueMessage(resolution, actions);
   return "dead_lettered";
+}
+
+function hasErrorCode(
+  error: unknown,
+  code: string,
+): error is Error & { code: string } {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as Error & { code?: unknown }).code === code
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
