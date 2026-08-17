@@ -22,8 +22,10 @@ export type BackgroundJobType = z.infer<typeof backgroundJobTypeSchema>;
 
 export const imageGenerationPayloadSchema = z.object({
   prompt: z.string().min(1),
+  title: z.string().min(1).optional(),
   model: z.string().optional(),
   aspect_ratio: z.string().optional(),
+  input_images: z.array(z.string()).optional(),
 });
 export type ImageGenerationPayload = z.infer<
   typeof imageGenerationPayloadSchema
@@ -43,12 +45,25 @@ export type VideoGenerationPayload = z.infer<
   typeof videoGenerationPayloadSchema
 >;
 
+const generationRequestContextShape = {
+  project_id: z.string().uuid().optional(),
+  canvas_id: z.string().uuid().optional(),
+  session_id: z.string().uuid().optional(),
+  thread_id: z.string().optional(),
+};
+
 export const generationSubmissionRequestSchema = z.discriminatedUnion("type", [
   imageGenerationPayloadSchema
-    .extend({ type: z.literal("image_generation") })
+    .extend({
+      ...generationRequestContextShape,
+      type: z.literal("image_generation"),
+    })
     .strict(),
   videoGenerationPayloadSchema
-    .extend({ type: z.literal("video_generation") })
+    .extend({
+      ...generationRequestContextShape,
+      type: z.literal("video_generation"),
+    })
     .strict(),
 ]);
 export type GenerationSubmissionRequest = z.infer<
@@ -82,12 +97,24 @@ export const generationQueueEnvelopeSchema = z.discriminatedUnion("type", [
   z.object({
     schemaVersion: z.literal(1),
     type: z.literal("image_generation"),
-    payload: imageGenerationPayloadSchema.strict(),
+    payload: imageGenerationPayloadSchema
+      .extend({
+        job_id: z.string().uuid(),
+        workspace_id: z.string().uuid(),
+        ...generationRequestContextShape,
+      })
+      .strict(),
   }),
   z.object({
     schemaVersion: z.literal(1),
     type: z.literal("video_generation"),
-    payload: videoGenerationPayloadSchema.strict(),
+    payload: videoGenerationPayloadSchema
+      .extend({
+        job_id: z.string().uuid(),
+        workspace_id: z.string().uuid(),
+        ...generationRequestContextShape,
+      })
+      .strict(),
   }),
 ]);
 export type GenerationQueueEnvelope = z.infer<

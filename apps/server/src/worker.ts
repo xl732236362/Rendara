@@ -21,6 +21,7 @@ import {
   getExecutor,
 } from "./features/jobs/job-executor.js";
 import { createJobService } from "./features/jobs/job-service.js";
+import { parseGenerationQueueMessage } from "./features/jobs/queue-message.js";
 import { type PgmqMessage, createPgmqClient } from "./queue/pgmq-client.js";
 import { createAdminSupabaseClient } from "./supabase/admin.js";
 import { createUserSupabaseClientFactory } from "./supabase/user.js";
@@ -29,18 +30,11 @@ import { createUserSupabaseClientFactory } from "./supabase/user.js";
 import "./features/jobs/executors/image-generation.js";
 import "./features/jobs/executors/video-generation.js";
 
-import type { BackgroundJobType } from "@loomic/shared";
-
 // Register all image/video providers via shared helper (keeps parity with app.ts)
 import { registerAllProviders } from "./generation/providers/register-all.js";
 
 // 代码执行由 LocalShellBackend 的内置 execute 工具直接处理，不走 PGMQ。
 const QUEUES = ["image_generation_jobs", "video_generation_jobs"] as const;
-
-const QUEUE_TO_TYPE: Record<string, BackgroundJobType> = {
-  image_generation_jobs: "image_generation",
-  video_generation_jobs: "video_generation",
-};
 
 const VT_BY_QUEUE: Record<string, number> = {
   image_generation_jobs: 120,
@@ -184,20 +178,21 @@ async function processMessage(
   creditService: CreditService,
   tag: string,
 ) {
-  const jobId = msg.message.job_id as string;
-  const jobType =
-    (msg.message.job_type as BackgroundJobType) ?? QUEUE_TO_TYPE[queue];
-
-  if (!jobId || !jobType) {
-    console.error(`${tag} Invalid message in ${queue}:`, msg.message);
+  const parsedMessage = parseGenerationQueueMessage(msg.message);
+  if (!parsedMessage.success) {
+    console.error(
+      `${tag} ${parsedMessage.code} in ${queue}:`,
+      parsedMessage.issues,
+    );
     await ctx.pgmq.archive(queue, msg.msg_id);
     return;
   }
+  const { jobId, jobType, payload } = parsedMessage.data;
 
   // Extract traceability context from PGMQ message (if present)
   const sessionShort =
-    typeof msg.message.session_id === "string"
-      ? msg.message.session_id.slice(0, 8)
+    typeof payload.session_id === "string"
+      ? payload.session_id.slice(0, 8)
       : undefined;
   const startTime = Date.now();
   console.log(
@@ -224,11 +219,7 @@ async function processMessage(
   await ctx.jobService.markRunning(jobId);
 
   try {
-    const result = await executor(
-      jobId,
-      msg.message as Record<string, unknown>,
-      ctx,
-    );
+    const result = await executor(jobId, payload, ctx);
     await ctx.jobService.markSucceeded(jobId, result);
     await ctx.pgmq.deleteMsg(queue, msg.msg_id);
     console.log(`${tag} Job ${jobId} succeeded +${Date.now() - startTime}ms`);

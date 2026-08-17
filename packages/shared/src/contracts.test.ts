@@ -48,22 +48,35 @@ describe("@loomic/shared contracts", () => {
     expect(
       requestSchema.parse({
         type: "image_generation",
+        project_id: "550e8400-e29b-41d4-a716-446655440001",
+        canvas_id: "550e8400-e29b-41d4-a716-446655440002",
+        session_id: "550e8400-e29b-41d4-a716-446655440003",
+        thread_id: "thread-image",
         prompt: "A product photograph",
         model: "image-model",
         aspect_ratio: "16:9",
       }),
     ).toMatchObject({
       type: "image_generation",
+      thread_id: "thread-image",
       prompt: "A product photograph",
     });
     expect(
       requestSchema.parse({
         type: "video_generation",
+        project_id: "550e8400-e29b-41d4-a716-446655440001",
+        canvas_id: "550e8400-e29b-41d4-a716-446655440002",
+        session_id: "550e8400-e29b-41d4-a716-446655440003",
+        thread_id: "thread-video",
         prompt: "A slow camera orbit",
         duration: 5,
         resolution: "1080p",
       }),
-    ).toMatchObject({ type: "video_generation", duration: 5 });
+    ).toMatchObject({
+      type: "video_generation",
+      thread_id: "thread-video",
+      duration: 5,
+    });
     expect(
       responseSchema.parse({
         jobId: "550e8400-e29b-41d4-a716-446655440000",
@@ -114,12 +127,26 @@ describe("@loomic/shared contracts", () => {
     const imageEnvelope = schema.parse({
       schemaVersion: 1,
       type: "image_generation",
-      payload: { prompt: "A product photograph", aspect_ratio: "1:1" },
+      payload: {
+        job_id: "550e8400-e29b-41d4-a716-446655440000",
+        workspace_id: "550e8400-e29b-41d4-a716-446655440001",
+        canvas_id: "550e8400-e29b-41d4-a716-446655440002",
+        session_id: "550e8400-e29b-41d4-a716-446655440003",
+        thread_id: "thread-image",
+        prompt: "A product photograph",
+        aspect_ratio: "1:1",
+      },
     });
     const videoEnvelope = schema.parse({
       schemaVersion: 1,
       type: "video_generation",
-      payload: { prompt: "A camera orbit", duration: 5 },
+      payload: {
+        job_id: "550e8400-e29b-41d4-a716-446655440000",
+        workspace_id: "550e8400-e29b-41d4-a716-446655440001",
+        project_id: "550e8400-e29b-41d4-a716-446655440004",
+        prompt: "A camera orbit",
+        duration: 5,
+      },
     });
 
     expect(imageEnvelope.type).toBe("image_generation");
@@ -128,7 +155,19 @@ describe("@loomic/shared contracts", () => {
       schema.parse({
         schemaVersion: 1,
         type: "image_generation",
-        payload: { prompt: "Wrong payload", duration: 5 },
+        payload: {
+          job_id: "550e8400-e29b-41d4-a716-446655440000",
+          workspace_id: "550e8400-e29b-41d4-a716-446655440001",
+          prompt: "Wrong payload",
+          duration: 5,
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      schema.parse({
+        schemaVersion: 1,
+        type: "image_generation",
+        payload: { prompt: "Missing queue identifiers" },
       }),
     ).toThrow();
   });

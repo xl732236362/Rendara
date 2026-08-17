@@ -11,6 +11,7 @@ import type {
   AuthenticatedUser,
   UserSupabaseClient,
 } from "../../supabase/user.js";
+import { createGenerationQueueMessage } from "./queue-message.js";
 
 // Queue name mapping
 const QUEUE_MAP: Record<BackgroundJobType, string> = {
@@ -150,13 +151,11 @@ export function createJobService(options: {
 
       // Enqueue to pgmq — rollback on failure
       try {
-        await options.pgmq.send(queueName, {
-          job_id: job.id,
-          job_type: input.jobType,
-          workspace_id: input.workspaceId,
-          ...(input.canvasId ? { canvas_id: input.canvasId } : {}),
-          ...(input.sessionId ? { session_id: input.sessionId } : {}),
+        const queueMessage = createGenerationQueueMessage({
+          ...input,
+          jobId: job.id,
         });
+        await options.pgmq.send(queueName, queueMessage);
       } catch (enqueueErr) {
         console.error("[job-service] pgmq.send failed:", enqueueErr);
         await client.from("background_jobs").delete().eq("id", job.id);

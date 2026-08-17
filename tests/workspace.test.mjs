@@ -67,6 +67,12 @@ async function sourceFiles(directory) {
   return files;
 }
 
+function isDirectZodImport(source) {
+  return /(?:\b(?:from|import)\s*(?:\(\s*)?|\brequire\s*\(\s*)["']zod(?:\/[^"']+)?["']/.test(
+    source,
+  );
+}
+
 test("root manifest exposes dev, build, test, and lint scripts", async () => {
   const manifest = await readJson("package.json");
 
@@ -188,7 +194,7 @@ test("every package importing Zod declares the central catalog dependency", asyn
 
     for (const file of files) {
       const source = await readFile(file, "utf8");
-      if (/(?:from\s+|import\s*\()\s*["']zod["']/.test(source)) {
+      if (isDirectZodImport(source)) {
         importers.push(path.relative(rootDir, file));
       }
     }
@@ -201,6 +207,20 @@ test("every package importing Zod declares the central catalog dependency", asyn
       );
     }
   }
+});
+
+test("Zod import detection covers module forms and compatibility subpaths", () => {
+  for (const source of [
+    'import { z } from "zod";',
+    'import "zod";',
+    'const zod = await import("zod/v4");',
+    "const zod = require('zod');",
+    'export { z } from "zod/v3";',
+  ]) {
+    assert.equal(isDirectZodImport(source), true, source);
+  }
+
+  assert.equal(isDirectZodImport('import "zod-to-json-schema";'), false);
 });
 
 test("root lint baseline is wired through Biome", async () => {

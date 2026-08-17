@@ -19,12 +19,12 @@
 
 ## Task 1: Align Zod And Complete Boundary Contracts
 
-**Files:** `package.json`, `packages/shared/package.json`, `apps/server/package.json`, `pnpm-lock.yaml`, `packages/shared/src/http.ts`, `packages/shared/src/ws-protocol.ts`, `packages/shared/src/job-contracts.ts`, `packages/shared/src/contracts.test.ts`, `tests/workspace.test.mjs`
+**Files:** `package.json`, `pnpm-workspace.yaml`, `packages/shared/package.json`, `apps/server/package.json`, `pnpm-lock.yaml`, shared HTTP/WS/job contracts and tests, workspace dependency tests, and the server job queue producer/worker boundary.
 
 - [x] Add failing workspace tests proving every workspace consumer resolves Zod major 4 and no package declares Zod 3.
-- [x] Add failing contract tests for a single error envelope, generation submission/cancellation requests and responses, WS error messages, and parsed queue envelopes with schema version/type/payload.
+- [x] Add failing contract tests for a single error envelope, context-preserving generation submission/cancellation requests and responses, WS error messages, and parsed queue envelopes with schema version/type/strict payload.
 - [x] Run `pnpm test:workspace` and `pnpm --filter @loomic/shared test`; confirm failures identify missing contracts/version alignment.
-- [x] Pin Zod 4 in the workspace catalog, explicitly reference it from importing packages, and implement the schemas/types.
+- [x] Pin Zod 4 in the workspace catalog, explicitly reference it from every source-importing package, implement the schemas/types, and atomically migrate the queue producer and worker parser.
 - [x] Rebuild shared and run workspace/shared tests, typecheck, and `pnpm dedupe --check`.
 
 ## Task 2: Establish AppError And Fastify Error Boundary
