@@ -47,15 +47,14 @@ describe("security capability defaults", () => {
     expect(env.allowExternalSkillImport).toBe(false);
   });
 
-  it("only enables capabilities from the exact true literal", () => {
+  it("only accepts exact boolean literals", () => {
     expect(
       loadServerEnv({}, { LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE: "true" })
         .allowLocalAgentExecute,
     ).toBe(true);
-    expect(
-      loadServerEnv({}, { LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE: "1" })
-        .allowLocalAgentExecute,
-    ).toBe(false);
+    expect(() =>
+      loadServerEnv({}, { LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE: "1" }),
+    ).toThrow(/LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE/);
   });
 });
 

@@ -167,6 +167,16 @@ test("deployment contract binds real API and worker Railway configs", async () =
   );
   assert.match(worker.deploy.startCommand, /worker\.js/);
   assert.ok(contract.services.worker.variables.includes("SUPABASE_DB_URL"));
+  assert.ok(
+    contract.services.api.providerAnyOf.some((keys) =>
+      keys.includes("OPENAI_API_KEY"),
+    ),
+  );
+  assert.ok(
+    contract.services.worker.providerAnyOf.some((keys) =>
+      keys.includes("GOOGLE_SERVICE_ACCOUNT_JSON"),
+    ),
+  );
   assert.equal(vercel.env, undefined);
   assert.match(contract.services.worker.binding, /dashboard/i);
 });
@@ -175,7 +185,10 @@ test("production server parses environment exactly once before composition", asy
   const server = await readText("apps/server/src/server.ts");
   const app = await readText("apps/server/src/app.ts");
 
-  assert.equal((server.match(/loadServerEnv\(\)/g) ?? []).length, 1);
+  assert.match(
+    server,
+    /loadServerEnv\(\{\}, process\.env, \{ process: "api" \}\)/,
+  );
   assert.match(server, /buildAppFromEnv\(env\)/);
   const productionComposition = app.slice(
     app.indexOf("export function buildAppFromEnv"),
@@ -185,6 +198,57 @@ test("production server parses environment exactly once before composition", asy
   assert.match(
     app,
     /buildAppWithOverrides[\s\S]*loadServerEnv\(options\.env\)/,
+  );
+});
+
+test("Railway validator rejects undeclared shell variables and inexact entrypoints", async () => {
+  const { validateEnvironmentContracts } = await import(
+    "../scripts/validate-env-template.mjs"
+  );
+  const issues = validateEnvironmentContracts({
+    envTemplate: "",
+    requireCompleteTemplate: false,
+    serverHealthSource: 'app.get("/api/health"',
+    deployments: [
+      {
+        name: "railway-api.json",
+        metadata: {
+          binding: "Railway dashboard",
+          healthPath: "/api/health",
+          platform: "railway",
+          process: "api",
+          variables: [
+            "SUPABASE_URL",
+            "SUPABASE_ANON_KEY",
+            "SUPABASE_SERVICE_ROLE_KEY",
+          ],
+        },
+        config: {
+          $schema: "https://railway.com/railway.schema.json",
+          deploy: {
+            healthcheckPath: "/api/health",
+            startCommand:
+              'echo node apps/server/dist/server.js && echo "$UNDECLARED"',
+          },
+        },
+      },
+    ],
+  });
+
+  assert.ok(issues.some((issue) => issue.includes("exact API entrypoint")));
+  assert.ok(
+    issues.some(
+      (issue) =>
+        issue.includes("UNDECLARED") &&
+        issue.includes("no environment descriptor"),
+    ),
+  );
+  assert.ok(
+    issues.some(
+      (issue) =>
+        issue.includes("UNDECLARED") &&
+        issue.includes("missing from the service contract"),
+    ),
   );
 });
 

@@ -48,13 +48,30 @@ export function validateEnvironmentContracts({
     if (deployment.metadata.platform === "railway") {
       const expectedEntry =
         deployment.metadata.process === "worker" ? "worker.js" : "server.js";
-      if (
-        !config?.$schema?.includes("railway") ||
-        !config.deploy?.startCommand?.includes(expectedEntry)
-      ) {
+      const expectedCommand = `sh -c "if [ -n \\"$GOOGLE_SERVICE_ACCOUNT_JSON\\" ]; then printf '%s' \\"$GOOGLE_SERVICE_ACCOUNT_JSON\\" > /app/credentials/vertex-ai-service-account.json && export GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/vertex-ai-service-account.json; fi; exec node apps/server/dist/${expectedEntry}"`;
+      if (!config?.$schema?.includes("railway")) {
         issues.push(
           `${deployment.name}: invalid Railway ${deployment.metadata.process} service config`,
         );
+      }
+      if (config?.deploy?.startCommand !== expectedCommand) {
+        issues.push(
+          `${deployment.name}: startCommand must use the exact ${deployment.metadata.process.toUpperCase()} entrypoint`,
+        );
+      }
+      for (const reference of shellVariableReferences(
+        config?.deploy?.startCommand ?? "",
+      )) {
+        if (!descriptorByKey.has(reference)) {
+          issues.push(
+            `${deployment.name}: shell variable ${reference} has no environment descriptor`,
+          );
+        }
+        if (!variables.has(reference)) {
+          issues.push(
+            `${deployment.name}: shell variable ${reference} is missing from the service contract`,
+          );
+        }
       }
       if (
         deployment.metadata.process === "api" &&
@@ -85,6 +102,25 @@ export function validateEnvironmentContracts({
       issues.push(
         `${deployment.name}: missing dashboard variable binding instructions`,
       );
+    }
+    if (
+      (deployment.metadata.process === "api" ||
+        deployment.metadata.process === "worker") &&
+      (!Array.isArray(deployment.metadata.providerAnyOf) ||
+        deployment.metadata.providerAnyOf.length === 0)
+    ) {
+      issues.push(
+        `${deployment.name}: missing providerAnyOf deployment contract`,
+      );
+    }
+    for (const alternative of deployment.metadata.providerAnyOf ?? []) {
+      for (const key of alternative) {
+        if (!descriptorByKey.has(key) || !variables.has(key)) {
+          issues.push(
+            `${deployment.name}: provider alternative key ${key} is not declared`,
+          );
+        }
+      }
     }
     for (const key of variables) {
       const descriptor = descriptorByKey.get(key);
@@ -123,6 +159,16 @@ export function validateEnvironmentContracts({
     }
   }
   return issues;
+}
+
+function shellVariableReferences(command) {
+  const references = new Set();
+  for (const match of command.matchAll(
+    /\$(?:\{([A-Z][A-Z0-9_]*)\}|([A-Z][A-Z0-9_]*))/g,
+  )) {
+    references.add(match[1] ?? match[2]);
+  }
+  return references;
 }
 
 async function main() {

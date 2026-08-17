@@ -12,7 +12,7 @@ if (process.env.GLOBAL_AGENT_HTTP_PROXY) {
 import { buildAppFromEnv } from "./app.js";
 import { loadServerEnv } from "./config/env.js";
 
-const env = loadServerEnv();
+const env = loadServerEnv({}, process.env, { process: "api" });
 const app = buildAppFromEnv(env);
 
 const host = process.env.HOST ?? "127.0.0.1";

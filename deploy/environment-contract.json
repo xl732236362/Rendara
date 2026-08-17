@@ -11,7 +11,21 @@
         "SUPABASE_ANON_KEY",
         "SUPABASE_SERVICE_ROLE_KEY",
         "SUPABASE_PROJECT_ID",
-        "SUPABASE_JWT_SECRET"
+        "SUPABASE_JWT_SECRET",
+        "OPENAI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_VERTEX_PROJECT",
+        "GOOGLE_VERTEX_LOCATION",
+        "GOOGLE_SERVICE_ACCOUNT_JSON"
+      ],
+      "providerAnyOf": [
+        ["OPENAI_API_KEY"],
+        ["GOOGLE_API_KEY"],
+        [
+          "GOOGLE_VERTEX_PROJECT",
+          "GOOGLE_VERTEX_LOCATION",
+          "GOOGLE_SERVICE_ACCOUNT_JSON"
+        ]
       ]
     },
     "worker": {
@@ -24,7 +38,21 @@
         "SUPABASE_SERVICE_ROLE_KEY",
         "SUPABASE_DB_URL",
         "SUPABASE_PROJECT_ID",
-        "SUPABASE_JWT_SECRET"
+        "SUPABASE_JWT_SECRET",
+        "OPENAI_API_KEY",
+        "GOOGLE_API_KEY",
+        "GOOGLE_VERTEX_PROJECT",
+        "GOOGLE_VERTEX_LOCATION",
+        "GOOGLE_SERVICE_ACCOUNT_JSON"
+      ],
+      "providerAnyOf": [
+        ["OPENAI_API_KEY"],
+        ["GOOGLE_API_KEY"],
+        [
+          "GOOGLE_VERTEX_PROJECT",
+          "GOOGLE_VERTEX_LOCATION",
+          "GOOGLE_SERVICE_ACCOUNT_JSON"
+        ]
       ]
     },
     "web": {

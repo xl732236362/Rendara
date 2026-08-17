@@ -35,6 +35,7 @@ export type ServerEnvironment = {
   allowLocalAgentExecute: boolean;
   googleApiKey?: string;
   googleApplicationCredentials?: string;
+  googleServiceAccountJson?: string;
   googleFontsApiKey?: string;
   googleVertexLocation?: string;
   googleVertexProject?: string;
@@ -86,15 +87,23 @@ export const envDescriptors = [
   ]),
   descriptor("LOOMIC_WEB_ORIGIN", "webOrigin", "public", ["api"]),
   descriptor("NEXT_PUBLIC_SERVER_BASE_URL", undefined, "public", ["web"]),
-  descriptor("SUPABASE_URL", "supabaseUrl", "private", ["api", "worker"]),
-  descriptor("SUPABASE_ANON_KEY", "supabaseAnonKey", "secret", [
-    "api",
-    "worker",
-  ]),
-  descriptor("SUPABASE_SERVICE_ROLE_KEY", "supabaseServiceRoleKey", "secret", [
-    "api",
-    "worker",
-  ]),
+  descriptor("SUPABASE_URL", "supabaseUrl", "private", ["api", "worker"], {
+    requiredFor: ["api", "worker"],
+  }),
+  descriptor(
+    "SUPABASE_ANON_KEY",
+    "supabaseAnonKey",
+    "secret",
+    ["api", "worker"],
+    { requiredFor: ["api", "worker"] },
+  ),
+  descriptor(
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "supabaseServiceRoleKey",
+    "secret",
+    ["api", "worker"],
+    { requiredFor: ["api", "worker"] },
+  ),
   descriptor("SUPABASE_DB_URL", "supabaseDbUrl", "secret", ["worker"], {
     requiredFor: ["worker"],
   }),
@@ -116,6 +125,12 @@ export const envDescriptors = [
     "GOOGLE_APPLICATION_CREDENTIALS",
     "googleApplicationCredentials",
     "private",
+    ["api", "worker"],
+  ),
+  descriptor(
+    "GOOGLE_SERVICE_ACCOUNT_JSON",
+    "googleServiceAccountJson",
+    "secret",
     ["api", "worker"],
   ),
   descriptor("GOOGLE_FONTS_API_KEY", "googleFontsApiKey", "secret", ["api"]),
@@ -286,10 +301,11 @@ const optionalInteger = (minimum: number, maximum: number) =>
           : value,
     z.number().int().min(minimum).max(maximum).optional(),
   );
-const exactTrue = z.preprocess(
-  (value: unknown) => value === "true" || value === true,
-  z.boolean(),
-);
+const exactBoolean = z.preprocess((value: unknown) => {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return value;
+}, z.boolean());
 
 export const serverEnvironmentSchema = z.object({
   LOOMIC_SERVER_PORT: strictInteger(1, 65_535).optional(),
@@ -307,6 +323,7 @@ export const serverEnvironmentSchema = z.object({
   OPENAI_API_BASE: optionalUrl,
   GOOGLE_API_KEY: optionalString,
   GOOGLE_APPLICATION_CREDENTIALS: optionalString,
+  GOOGLE_SERVICE_ACCOUNT_JSON: optionalString,
   GOOGLE_FONTS_API_KEY: optionalString,
   GOOGLE_VERTEX_PROJECT: optionalString,
   GOOGLE_VERTEX_LOCATION: optionalString,
@@ -316,8 +333,8 @@ export const serverEnvironmentSchema = z.object({
   VOLCES_BASE_URL: optionalUrl,
   LOOMIC_AGENT_FILES_ROOT: optionalString,
   LOOMIC_SKILLS_ROOT: optionalString,
-  LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE: exactTrue.default(false),
-  LOOMIC_ALLOW_EXTERNAL_SKILL_IMPORT: exactTrue.default(false),
+  LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE: exactBoolean.default(false),
+  LOOMIC_ALLOW_EXTERNAL_SKILL_IMPORT: exactBoolean.default(false),
   LOOMIC_RATE_LIMIT_DEFAULT_PER_MINUTE: strictInteger(1, 100_000).default(300),
   LOOMIC_RATE_LIMIT_GENERATION_PER_MINUTE: strictInteger(1, 100_000).default(
     10,
@@ -371,26 +388,59 @@ export function parseServerEnvironment(
   const raw = result.success ? result.data : undefined;
   const candidate = {
     agentModel: normalizedCandidate(source.LOOMIC_AGENT_MODEL),
+    googleApplicationCredentials: normalizedCandidate(
+      source.GOOGLE_APPLICATION_CREDENTIALS,
+    ),
     googleApiKey: normalizedCandidate(source.GOOGLE_API_KEY),
+    googleServiceAccountJson: normalizedCandidate(
+      source.GOOGLE_SERVICE_ACCOUNT_JSON,
+    ),
     googleVertexLocation: normalizedCandidate(source.GOOGLE_VERTEX_LOCATION),
     googleVertexProject: normalizedCandidate(source.GOOGLE_VERTEX_PROJECT),
     openAIApiKey: normalizedCandidate(source.OPENAI_API_KEY),
+    supabaseAnonKey: normalizedCandidate(source.SUPABASE_ANON_KEY),
     supabaseDbUrl: normalizedCandidate(source.SUPABASE_DB_URL),
+    supabaseServiceRoleKey: normalizedCandidate(
+      source.SUPABASE_SERVICE_ROLE_KEY,
+    ),
+    supabaseUrl: normalizedCandidate(source.SUPABASE_URL),
   };
-  if (options.process === "worker" && !candidate.supabaseDbUrl) {
-    issues.push({
-      key: "SUPABASE_DB_URL",
-      message: "is required for the worker process",
-    });
+  if (options.process) {
+    for (const [key, present] of [
+      ["SUPABASE_URL", candidate.supabaseUrl],
+      ["SUPABASE_ANON_KEY", candidate.supabaseAnonKey],
+      ["SUPABASE_SERVICE_ROLE_KEY", candidate.supabaseServiceRoleKey],
+      ...(options.process === "worker"
+        ? [["SUPABASE_DB_URL", candidate.supabaseDbUrl]]
+        : []),
+    ] as const) {
+      if (!present) {
+        issues.push({
+          key: String(key),
+          message: `is required for the ${options.process} process`,
+        });
+      }
+    }
   }
-  if (candidate.agentModel?.startsWith("openai:") && !candidate.openAIApiKey) {
+  const resolvedAgentModel =
+    candidate.agentModel ??
+    (!candidate.openAIApiKey &&
+    (candidate.googleApiKey || candidate.googleVertexProject)
+      ? "gemini-2.5-flash"
+      : "gpt-4.1");
+  const validateProvider = Boolean(options.process || candidate.agentModel);
+  const usesGoogle =
+    resolvedAgentModel.startsWith("google:") ||
+    resolvedAgentModel.includes("gemini");
+  if (validateProvider && !usesGoogle && !candidate.openAIApiKey) {
     issues.push({
       key: "OPENAI_API_KEY",
       message: "is required by the selected OpenAI model",
     });
   }
   if (
-    candidate.agentModel?.startsWith("google:") &&
+    validateProvider &&
+    usesGoogle &&
     !candidate.googleApiKey &&
     !(candidate.googleVertexProject && candidate.googleVertexLocation)
   ) {
@@ -398,6 +448,24 @@ export function parseServerEnvironment(
       key: "GOOGLE_API_KEY",
       message:
         "or complete Google Vertex configuration is required by the selected Google model",
+    });
+  }
+  if (
+    validateProvider &&
+    usesGoogle &&
+    !candidate.googleApiKey &&
+    candidate.googleVertexProject &&
+    candidate.googleVertexLocation &&
+    !candidate.googleApplicationCredentials &&
+    !candidate.googleServiceAccountJson
+  ) {
+    issues.push({
+      key: "GOOGLE_APPLICATION_CREDENTIALS",
+      message: "or GOOGLE_SERVICE_ACCOUNT_JSON is required for Vertex",
+    });
+    issues.push({
+      key: "GOOGLE_SERVICE_ACCOUNT_JSON",
+      message: "or GOOGLE_APPLICATION_CREDENTIALS is required for Vertex",
     });
   }
   if (issues.length > 0) throw new ConfigValidationError(issues);
@@ -414,11 +482,7 @@ export function parseServerEnvironment(
     if (value !== undefined) output[item.property] = value;
   }
   output.port = raw.LOOMIC_SERVER_PORT ?? raw.PORT ?? 3001;
-  output.agentModel =
-    raw.LOOMIC_AGENT_MODEL ??
-    (!raw.OPENAI_API_KEY && (raw.GOOGLE_API_KEY || raw.GOOGLE_VERTEX_PROJECT)
-      ? "gemini-2.5-flash"
-      : "gpt-4.1");
+  output.agentModel = resolvedAgentModel;
   return output as ServerEnvironment;
 }
 
