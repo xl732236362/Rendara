@@ -224,8 +224,7 @@ function scanWebApiCalls(context) {
       if (isIdentifier(node.expression, "fetch")) return true;
       return (
         ts.isPropertyAccessExpression(node.expression) &&
-        node.expression.name.text === "json" &&
-        isIdentifier(unwrapExpression(node.expression.expression), "response")
+        node.expression.name.text === "json"
       );
     }
     return (
@@ -257,7 +256,9 @@ function scanDirectSkillImporter(context) {
     }
     return (
       ts.isCallExpression(node) &&
-      isIdentifier(node.expression, "importSkillFromUrl")
+      (isIdentifier(node.expression, "importSkillFromUrl") ||
+        (ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === "importSkillFromUrl"))
     );
   });
 }
@@ -275,6 +276,7 @@ function scanAgentCanvasWrites(context) {
     }
     if (!ts.isPropertyAccessExpression(node.expression)) return false;
     const method = node.expression.name.text;
+    if (legacyWriters.has(method)) return true;
     const table = findSupabaseTable(node.expression.expression);
     return (
       (table === "canvases" && canvasWriteMethods.has(method)) ||

@@ -581,6 +581,12 @@ const architectureBoundaryFixtures = [
     source: "// api\nasync function load() { return await response.json(); }",
   },
   {
+    name: "unchecked renamed response json",
+    path: "apps/web/src/lib/server-api.ts",
+    rule: "schema-aware-web-api",
+    source: "// api\nasync function load() { return await res.json(); }",
+  },
+  {
     name: "unchecked response cast",
     path: "apps/web/src/lib/server-api.ts",
     rule: "schema-aware-web-api",
@@ -619,6 +625,13 @@ const architectureBoundaryFixtures = [
       "// adapter\nfunction importExternal() { return importSkillFromUrl(sourceUrl); }",
   },
   {
+    name: "namespace direct Skill importer",
+    path: "apps/server/src/http/skills.ts",
+    rule: "skill-import-use-case-boundary",
+    source:
+      "// adapter\nfunction importExternal() { return legacy.importSkillFromUrl(sourceUrl); }",
+  },
+  {
     name: "deep Agent canvas write",
     path: "apps/server/src/agent/tools/image-generate.ts",
     rule: "canvas-application-boundary",
@@ -637,16 +650,34 @@ const architectureBoundaryFixtures = [
     source: "// tool\nawait insertGeneratedMediaElement(input);",
   },
   {
+    name: "namespace legacy Agent insertGeneratedMediaElement call",
+    path: "apps/server/src/agent/tools/image-generate.ts",
+    rule: "canvas-application-boundary",
+    source: "// tool\nawait legacy.insertGeneratedMediaElement(input);",
+  },
+  {
     name: "legacy Agent persistGeneratedMedia call",
     path: "apps/server/src/agent/tools/video-generate.ts",
     rule: "canvas-application-boundary",
     source: "// tool\nawait persistGeneratedMedia(input);",
   },
   {
+    name: "namespace legacy Agent persistGeneratedMedia call",
+    path: "apps/server/src/agent/tools/video-generate.ts",
+    rule: "canvas-application-boundary",
+    source: "// tool\nawait legacy.persistGeneratedMedia(input);",
+  },
+  {
     name: "legacy Agent writeCanvasContent call",
     path: "apps/server/src/agent/runtime.ts",
     rule: "canvas-application-boundary",
     source: "// runtime\nawait writeCanvasContent(input);",
+  },
+  {
+    name: "namespace legacy Agent writeCanvasContent call",
+    path: "apps/server/src/agent/runtime.ts",
+    rule: "canvas-application-boundary",
+    source: "// runtime\nawait legacy.writeCanvasContent(input);",
   },
 ];
 
