@@ -591,6 +591,40 @@ const architectureBoundaryFixtures = [
       'import type * as registries from "../features/jobs/job-executor.js";\nconst active: registries.ExecutorRegistry = buildExecutorCatalog();',
   },
   {
+    name: "union typed module-global registry",
+    path: "apps/server/src/composition/providers.ts",
+    rule: "instance-owned-registries",
+    source:
+      "// composition\nconst active: ProviderRegistry | undefined = undefined;",
+  },
+  {
+    name: "nullable typed module-global registry",
+    path: "apps/server/src/composition/providers.ts",
+    rule: "instance-owned-registries",
+    source: "// composition\nconst active: ProviderRegistry | null = null;",
+  },
+  {
+    name: "namespace union typed module-global registry",
+    path: "apps/server/src/composition/jobs.ts",
+    rule: "instance-owned-registries",
+    source:
+      'import type * as registries from "../features/jobs/job-executor.js";\nconst active: registries.ExecutorRegistry | null = null;',
+  },
+  {
+    name: "generic wrapped module-global registry type",
+    path: "apps/server/src/composition/providers.ts",
+    rule: "instance-owned-registries",
+    source:
+      "// composition\nconst active: Readonly<ProviderRegistry> = buildProviderCatalog();",
+  },
+  {
+    name: "parenthesized intersection module-global registry type",
+    path: "apps/server/src/composition/providers.ts",
+    rule: "instance-owned-registries",
+    source:
+      "// composition\nconst active: (ProviderRegistry & { sealed: true }) = buildProviderCatalog();",
+  },
+  {
     name: "route-local isZodError helper",
     path: "apps/server/src/http/projects.ts",
     rule: "shared-zod-boundary",
@@ -786,6 +820,28 @@ test("registry boundary allows unrelated module-global factories", () => {
 
   assert.deepEqual(findings, []);
 });
+
+for (const fixture of [
+  {
+    name: "unrelated union types",
+    source: "const active: string | undefined = undefined;",
+  },
+  {
+    name: "unrelated generic wrapper types",
+    source: "const active: Readonly<Unrelated> = buildUnrelated();",
+  },
+]) {
+  test(`registry boundary allows ${fixture.name}`, () => {
+    const findings = scanArchitectureSources([
+      {
+        path: "apps/server/src/composition/unrelated.ts",
+        source: fixture.source,
+      },
+    ]);
+
+    assert.deepEqual(findings, []);
+  });
+}
 
 const forbiddenArchitectureText =
   'fetch("/"); response.json(); response as Project; jobService.createJob(); jobService.enqueueGeneration(); importSkillFromUrl(); insertGeneratedMediaElement(); persistGeneratedMedia(); writeCanvasContent(); client.from("canvases").update(); client.from("project_assets").insert(); error.name === "ZodError"; "issues" in error; function isZodError; const providerRegistry = new Map(); new ProviderRegistry();';

@@ -208,8 +208,32 @@ function resolveRegistryFactory(expression, imports) {
 }
 
 function isRegistryTypeNode(typeNode, imports) {
-  if (!typeNode || !ts.isTypeReferenceNode(typeNode)) return false;
-  const name = typeNode.typeName;
+  if (!typeNode) return false;
+  if (ts.isTypeReferenceNode(typeNode)) {
+    return (
+      isRegistryTypeName(typeNode.typeName, imports) ||
+      (typeNode.typeArguments?.some((typeArgument) =>
+        isRegistryTypeNode(typeArgument, imports),
+      ) ??
+        false)
+    );
+  }
+  if (ts.isUnionTypeNode(typeNode) || ts.isIntersectionTypeNode(typeNode)) {
+    return typeNode.types.some((member) => isRegistryTypeNode(member, imports));
+  }
+  if (ts.isParenthesizedTypeNode(typeNode)) {
+    return isRegistryTypeNode(typeNode.type, imports);
+  }
+  if (ts.isArrayTypeNode(typeNode)) {
+    return isRegistryTypeNode(typeNode.elementType, imports);
+  }
+  if (ts.isTypeOperatorNode(typeNode)) {
+    return isRegistryTypeNode(typeNode.type, imports);
+  }
+  return false;
+}
+
+function isRegistryTypeName(name, imports) {
   if (ts.isIdentifier(name)) {
     if (isKnownRegistryType(name.text)) return true;
     return isKnownRegistryType(imports.named.get(name.text));
