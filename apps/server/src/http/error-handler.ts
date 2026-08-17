@@ -1,24 +1,25 @@
 import { errorEnvelopeSchema } from "@loomic/shared";
 import type { FastifyError, FastifyInstance, FastifyRequest } from "fastify";
-import { ZodError, type ZodIssue } from "zod";
 
 import {
   AppError,
   type AppErrorCode,
   type SafeErrorDetails,
 } from "../errors/app-error.js";
+import { RequestValidationError } from "../errors/request-validation.js";
+import { sanitizeErrorForLog } from "../utils/error-sanitizer.js";
 
 const ABORT_CODES = new Set([
   "ABORT_ERR",
   "ECONNRESET",
   "ERR_STREAM_PREMATURE_CLOSE",
 ]);
-const TIMEOUT_CODES = new Set([
-  "ETIMEDOUT",
-  "UND_ERR_CONNECT_TIMEOUT",
-  "UND_ERR_HEADERS_TIMEOUT",
-  "UND_ERR_BODY_TIMEOUT",
-]);
+const FALLBACK_ENVELOPE = {
+  error: {
+    code: "application_error",
+    message: "An unexpected error occurred",
+  },
+} as const;
 
 type ClassifiedError = {
   code: AppErrorCode;
@@ -30,24 +31,36 @@ type ClassifiedError = {
 
 export function registerErrorHandler(app: FastifyInstance): void {
   app.setErrorHandler((error, request, reply) => {
-    const classified = classifyError(error);
+    const classified = classifyError(error, request);
     logFailure(request, error, classified);
 
-    const envelope = errorEnvelopeSchema.parse({
+    if (reply.sent) {
+      return reply;
+    }
+
+    const parsedEnvelope = errorEnvelopeSchema.safeParse({
       error: {
         code: classified.code,
         message: classified.message,
         ...(classified.details ? { details: classified.details } : {}),
       },
     });
+    const envelope = parsedEnvelope.success
+      ? parsedEnvelope.data
+      : FALLBACK_ENVELOPE;
 
-    return reply.code(classified.statusCode).send(envelope);
+    return reply
+      .code(parsedEnvelope.success ? classified.statusCode : 500)
+      .send(envelope);
   });
 }
 
-function classifyError(error: unknown): ClassifiedError {
-  if (error instanceof ZodError) {
-    return invalidRequest(error.issues.map(toSafeZodIssue));
+function classifyError(
+  error: unknown,
+  request: FastifyRequest,
+): ClassifiedError {
+  if (error instanceof RequestValidationError) {
+    return invalidRequest(error.issues);
   }
 
   const validation = (error as FastifyError | null)?.validation;
@@ -83,7 +96,10 @@ function classifyError(error: unknown): ClassifiedError {
   }
 
   const nativeCode = getErrorCode(error);
-  if (ABORT_CODES.has(nativeCode) || getErrorName(error) === "AbortError") {
+  if (
+    (request.raw.aborted || request.raw.destroyed) &&
+    (ABORT_CODES.has(nativeCode) || getErrorName(error) === "AbortError")
+  ) {
     return {
       code: "request_aborted",
       statusCode: 499,
@@ -91,15 +107,6 @@ function classifyError(error: unknown): ClassifiedError {
       interrupted: true,
     };
   }
-  if (TIMEOUT_CODES.has(nativeCode) || getErrorName(error) === "TimeoutError") {
-    return {
-      code: "request_timeout",
-      statusCode: 504,
-      message: "Request timed out",
-      interrupted: true,
-    };
-  }
-
   return {
     code: "application_error",
     statusCode: 500,
@@ -115,14 +122,6 @@ function invalidRequest(issues: unknown[]): ClassifiedError {
     message: "Request validation failed",
     details: { issues },
     interrupted: false,
-  };
-}
-
-function toSafeZodIssue(issue: ZodIssue): Record<string, unknown> {
-  return {
-    code: issue.code,
-    message: issue.message,
-    path: issue.path,
   };
 }
 
@@ -149,8 +148,8 @@ function logFailure(
     method: request.method,
     route: request.routeOptions.url,
     statusCode: classified.statusCode,
-    errorCode: classified.code,
-    errorName: getErrorName(error),
+    boundaryCode: classified.code,
+    ...sanitizeErrorForLog(error),
   };
 
   if (classified.interrupted) {

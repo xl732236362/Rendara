@@ -11,6 +11,55 @@ const AUTH_PATTERN =
   /jwt|token|unauthorized|forbidden|credential|service.account/i;
 const INFRA_PATTERN =
   /econnrefused|econnreset|etimedout|dns|socket|tls|certificate/i;
+const SECRET_ASSIGNMENT_PATTERN =
+  /(password|token|secret|authorization|api[_-]?key)(\s*(?:[:=]|\bis\b)\s*)([^\s,;]+)/gi;
+const BEARER_PATTERN = /\bbearer\s+[a-z0-9._~+/-]+=*/gi;
+
+export type SanitizedErrorDiagnostic = {
+  errorName: string;
+  errorMessage: string;
+  errorCode?: string;
+  errorStack?: string;
+  errorCause?: SanitizedErrorDiagnostic;
+};
+
+/** Produces bounded diagnostics suitable for structured server logs. */
+export function sanitizeErrorForLog(
+  error: unknown,
+  depth = 0,
+): SanitizedErrorDiagnostic {
+  const record = isRecord(error) ? error : undefined;
+  const diagnostic: SanitizedErrorDiagnostic = {
+    errorName: sanitizeDiagnosticText(
+      error instanceof Error ? error.name : "UnknownError",
+    ),
+    errorMessage: sanitizeDiagnosticText(
+      error instanceof Error ? error.message : String(error),
+    ),
+  };
+  const code = record?.code;
+  if (typeof code === "string") {
+    diagnostic.errorCode = sanitizeDiagnosticText(code);
+  }
+  if (error instanceof Error && error.stack) {
+    diagnostic.errorStack = sanitizeDiagnosticText(error.stack, 4_000);
+  }
+  if (depth < 2 && record && "cause" in record && record.cause !== undefined) {
+    diagnostic.errorCause = sanitizeErrorForLog(record.cause, depth + 1);
+  }
+  return diagnostic;
+}
+
+function sanitizeDiagnosticText(value: string, maxLength = 1_000): string {
+  return value
+    .replace(SECRET_ASSIGNMENT_PATTERN, "$1$2[REDACTED]")
+    .replace(BEARER_PATTERN, "Bearer [REDACTED]")
+    .slice(0, maxLength);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
 
 export function sanitizeErrorForClient(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
@@ -19,29 +68,32 @@ export function sanitizeErrorForClient(error: unknown): string {
   console.error("[error-sanitizer] Raw error:", raw);
   if (error instanceof Error) {
     // Log nested cause chain (LangChain wraps errors multiple levels deep)
-    let cause = (error as any).cause;
+    let cause: unknown = error.cause;
     while (cause) {
-      console.error("[error-sanitizer] Caused by:", cause.message ?? cause);
-      cause = cause.cause;
+      console.error(
+        "[error-sanitizer] Caused by:",
+        isRecord(cause) && typeof cause.message === "string"
+          ? cause.message
+          : cause,
+      );
+      cause = isRecord(cause) ? cause.cause : undefined;
     }
     // Log response details if present (Google API errors attach response/details)
-    const errAny = error as any;
-    if (errAny.response) {
-      console.error(
-        "[error-sanitizer] Response status:",
-        errAny.response.status,
-      );
+    const errorRecord = error as Error & Record<string, unknown>;
+    const response = isRecord(errorRecord.response)
+      ? errorRecord.response
+      : undefined;
+    if (response) {
+      console.error("[error-sanitizer] Response status:", response.status);
       console.error(
         "[error-sanitizer] Response data:",
-        JSON.stringify(
-          errAny.response.data ?? errAny.response.body ?? "",
-        ).substring(0, 2000),
+        JSON.stringify(response.data ?? response.body ?? "").substring(0, 2000),
       );
     }
-    if (errAny.details) {
+    if (errorRecord.details) {
       console.error(
         "[error-sanitizer] Details:",
-        JSON.stringify(errAny.details).substring(0, 2000),
+        JSON.stringify(errorRecord.details).substring(0, 2000),
       );
     }
     if (error.stack) {

@@ -22,6 +22,22 @@ export class AppError extends Error {
   override readonly cause?: unknown;
 
   constructor(options: AppErrorOptions) {
+    if (
+      !Number.isInteger(options.statusCode) ||
+      options.statusCode < 400 ||
+      options.statusCode > 599
+    ) {
+      throw new TypeError(
+        "AppError statusCode must be an integer from 400 to 599",
+      );
+    }
+    if (options.message.trim().length === 0) {
+      throw new TypeError("AppError message must not be empty");
+    }
+    if (options.details && !isJsonSafe(options.details, new WeakSet())) {
+      throw new TypeError("AppError details must contain JSON-safe values");
+    }
+
     super(options.message, { cause: options.cause });
     this.name = "AppError";
     this.code = options.code;
@@ -30,4 +46,32 @@ export class AppError extends Error {
     this.details = options.details;
     this.cause = options.cause;
   }
+}
+
+function isJsonSafe(value: unknown, ancestors: WeakSet<object>): boolean {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return true;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value);
+  }
+  if (typeof value !== "object") {
+    return false;
+  }
+  if (ancestors.has(value)) {
+    return false;
+  }
+
+  ancestors.add(value);
+  const valid = Array.isArray(value)
+    ? value.every((item) => isJsonSafe(item, ancestors))
+    : (Object.getPrototypeOf(value) === Object.prototype ||
+        Object.getPrototypeOf(value) === null) &&
+      Object.values(value).every((item) => isJsonSafe(item, ancestors));
+  ancestors.delete(value);
+  return valid;
 }
