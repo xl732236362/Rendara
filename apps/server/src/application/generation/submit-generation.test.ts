@@ -54,19 +54,20 @@ function setup() {
         calls.push("deduct");
         return "tx-1";
       }),
-      refund: vi.fn(async () => undefined),
     },
     jobs: {
       create: vi.fn(async () => {
         calls.push("create");
         return { id: ids.job, status: "queued" as const };
       }),
+      attachCredits: vi.fn(async () => {
+        calls.push("attach");
+      }),
+    },
+    cancellation: {
       cancel: vi.fn(async () => {
         calls.push("cancel");
         return { id: ids.job, status: "canceled" as const };
-      }),
-      attachCredits: vi.fn(async () => {
-        calls.push("attach");
       }),
     },
   };
@@ -207,8 +208,7 @@ describe("SubmitGeneration", () => {
     await expect(
       submit(principal, { type: "image_generation", prompt: "draw" }),
     ).rejects.toMatchObject({ code: "insufficient_credits", statusCode: 402 });
-    expect(ports.jobs.cancel).toHaveBeenCalledWith(principal, ids.job);
-    expect(credits.refund).not.toHaveBeenCalled();
+    expect(ports.cancellation.cancel).toHaveBeenCalledWith(principal, ids.job);
   });
 
   it("cancels after credit metadata attachment fails without masking the failure", async () => {
@@ -224,7 +224,7 @@ describe("SubmitGeneration", () => {
     await expect(
       submit(principal, { type: "video_generation", prompt: "animate" }),
     ).rejects.toMatchObject({ code: "job_create_failed", statusCode: 500 });
-    expect(ports.jobs.cancel).toHaveBeenCalledWith(principal, ids.job);
+    expect(ports.cancellation.cancel).toHaveBeenCalledWith(principal, ids.job);
   });
 
   it("logs identifiers and stages without prompt or access token", async () => {

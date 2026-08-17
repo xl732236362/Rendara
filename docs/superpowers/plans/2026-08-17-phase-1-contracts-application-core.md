@@ -72,9 +72,11 @@ Verification evidence: registered-route regression tests cover projects, canvase
 **Files:** `apps/server/src/application/generation/ports.ts`, `submit-generation.ts`, `cancel-generation.ts`, corresponding tests, `apps/server/src/features/jobs/job-service.ts`, `apps/server/src/features/credits/tier-guard.ts`
 
 - [x] Write failing tests for media-specific schema parsing, tier/model validation, job submission, cleanup on pre-queue failure, cancellation ownership, and stable application errors.
-- [x] Define ports for job creation/cancel, tier authorization, model resolution, and optional synchronous generation; use cases must not import Fastify, WebSocket, Supabase, or global registries.
+- [x] Define separate queued-job submission/cancellation ports plus tier authorization and model resolution; direct synchronous generation remains a separate workflow and no unused synchronous port is introduced. Use cases must not import Fastify, WebSocket, Supabase, or global registries.
 - [x] Implement submission/cancellation by composing existing services without changing phase 2 transaction semantics; log operation identifiers and failure stage without prompts/tokens.
-- [x] Run focused tests and confirm HTTP/Agent adapters can receive the same use-case interface.
+- [x] Run focused tests and confirm Task 8 can reuse `SubmitGeneration` for queued HTTP/Agent paths while direct generation keeps its materially different result and lifecycle.
+
+Verification evidence: generation application tests cover shared media schema parsing, ordered model/tier/credit orchestration, post-create cleanup, cancellation delegation, identifier-safe logging, and strict normalization of real-shaped legacy service errors. `CancelGeneration` depends only on `GenerationCancellationPort`; queued submission does not expose a direct-generation mode.
 
 ## Task 7: Add ApplyCanvasOperations And ImportSkill Use Cases
 

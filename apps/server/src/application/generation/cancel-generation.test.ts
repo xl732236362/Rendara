@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { AppError } from "../../errors/app-error.js";
 import { createCancelGeneration } from "./cancel-generation.js";
 import type {
+  GenerationCancellationPort,
   GenerationPrincipal,
-  JobPort,
   StructuredLogger,
 } from "./ports.js";
 
@@ -16,10 +16,8 @@ const jobId = "44444444-4444-4444-8444-444444444444";
 
 describe("CancelGeneration", () => {
   it("delegates ownership enforcement to the job port and preserves status", async () => {
-    const jobs: JobPort = {
-      create: vi.fn(),
+    const jobs: GenerationCancellationPort = {
       cancel: vi.fn(async () => ({ id: jobId, status: "canceled" as const })),
-      attachCredits: vi.fn(),
     };
     const cancel = createCancelGeneration({ jobs, logger: silentLogger() });
 
@@ -37,12 +35,10 @@ describe("CancelGeneration", () => {
       message: "Job not found or already completed",
       expose: true,
     });
-    const jobs: JobPort = {
-      create: vi.fn(),
+    const jobs: GenerationCancellationPort = {
       cancel: vi.fn(async () => {
         throw expected;
       }),
-      attachCredits: vi.fn(),
     };
     const cancel = createCancelGeneration({ jobs, logger: silentLogger() });
 
@@ -50,11 +46,7 @@ describe("CancelGeneration", () => {
   });
 
   it("rejects malformed job ids without calling the job port", async () => {
-    const jobs: JobPort = {
-      create: vi.fn(),
-      cancel: vi.fn(),
-      attachCredits: vi.fn(),
-    };
+    const jobs: GenerationCancellationPort = { cancel: vi.fn() };
     const cancel = createCancelGeneration({ jobs, logger: silentLogger() });
     await expect(
       cancel(principal, { jobId: "not-a-uuid" }),

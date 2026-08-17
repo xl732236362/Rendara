@@ -32,14 +32,18 @@ export type GenerationJob = {
     | "dead_letter";
 };
 
-export type JobPort = {
+export type GenerationJobSubmissionPort = {
   create(command: JobCreateCommand): Promise<GenerationJob>;
-  cancel(principal: GenerationPrincipal, jobId: string): Promise<GenerationJob>;
   attachCredits(
     jobId: string,
     creditsCost: number,
     transactionId: string,
   ): Promise<void>;
+};
+
+export type GenerationCancellationPort = {
+  /** The adapter enforces ownership and cancellable status atomically. */
+  cancel(principal: GenerationPrincipal, jobId: string): Promise<GenerationJob>;
 };
 
 export type ModelCatalogPort = {
@@ -64,7 +68,7 @@ export type TierAuthorizationPort = {
   ): number;
 };
 
-export type CreditPort = {
+export type CreditDeductionPort = {
   deduct(command: {
     workspaceId: string;
     userId: string;
@@ -72,14 +76,6 @@ export type CreditPort = {
     jobId: string;
     description: string;
   }): Promise<string>;
-  /** Reserved for workflows that already refund; submission keeps current cancel-only semantics. */
-  refund(command: {
-    workspaceId: string;
-    userId: string;
-    amount: number;
-    jobId: string;
-    description: string;
-  }): Promise<string | undefined>;
 };
 
 export type StructuredLogContext = Record<string, unknown>;
@@ -91,8 +87,9 @@ export type StructuredLogger = {
 };
 
 export type GenerationApplicationPorts = {
-  jobs: JobPort;
+  jobs: GenerationJobSubmissionPort;
+  cancellation: GenerationCancellationPort;
   models: ModelCatalogPort;
   tiers: TierAuthorizationPort;
-  credits?: CreditPort;
+  credits?: CreditDeductionPort;
 };

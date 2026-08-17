@@ -5,6 +5,7 @@ import {
 } from "@loomic/shared";
 
 import { AppError } from "../../errors/app-error.js";
+import { normalizeGenerationError } from "./legacy-error.js";
 import type {
   GenerationApplicationPorts,
   GenerationPrincipal,
@@ -93,7 +94,7 @@ export function createSubmitGeneration(options: {
       );
       return { jobId, status: "queued" };
     } catch (error) {
-      const normalized = normalizeApplicationError(error);
+      const normalized = normalizeGenerationError(error);
       options.logger.error(
         "Generation submission failed",
         logContext(
@@ -144,7 +145,7 @@ async function cancelAfterFailure(
   failedStage: string,
 ) {
   try {
-    await options.ports.jobs.cancel(principal, jobId);
+    await options.ports.cancellation.cancel(principal, jobId);
     options.logger.warn(
       "Generation job canceled after submission failure",
       logContext(principal, type, model, "cleanup_canceled", jobId),
@@ -176,35 +177,4 @@ function logContext(
     ...(jobId ? { jobId } : {}),
     ...(errorCode ? { errorCode } : {}),
   };
-}
-
-function normalizeApplicationError(error: unknown): AppError {
-  if (error instanceof AppError) return error;
-  if (isServiceError(error)) {
-    return new AppError({
-      code: error.code as AppError["code"],
-      statusCode: error.statusCode,
-      message: error.message,
-      expose: error.statusCode < 500,
-      cause: error,
-    });
-  }
-  return new AppError({
-    code: "application_error",
-    statusCode: 500,
-    message: "Generation submission failed.",
-    cause: error,
-  });
-}
-
-function isServiceError(
-  error: unknown,
-): error is Error & { code: string; statusCode: number } {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    typeof error.code === "string" &&
-    "statusCode" in error &&
-    Number.isInteger(error.statusCode)
-  );
 }

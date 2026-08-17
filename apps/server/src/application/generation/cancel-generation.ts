@@ -4,9 +4,10 @@ import {
 } from "@loomic/shared";
 
 import { AppError } from "../../errors/app-error.js";
+import { normalizeGenerationError } from "./legacy-error.js";
 import type {
+  GenerationCancellationPort,
   GenerationPrincipal,
-  JobPort,
   StructuredLogger,
 } from "./ports.js";
 
@@ -16,7 +17,7 @@ export type CancelGeneration = (
 ) => Promise<GenerationCancellationResponse>;
 
 export function createCancelGeneration(options: {
-  jobs: JobPort;
+  jobs: GenerationCancellationPort;
   logger: StructuredLogger;
 }): CancelGeneration {
   return async (principal, rawRequest) => {
@@ -42,7 +43,7 @@ export function createCancelGeneration(options: {
       });
       return { jobId, status };
     } catch (error) {
-      const normalized = normalizeCancellationError(error);
+      const normalized = normalizeGenerationError(error);
       options.logger.error("Generation cancellation failed", {
         stage: "cancel",
         jobId,
@@ -53,29 +54,4 @@ export function createCancelGeneration(options: {
       throw normalized;
     }
   };
-}
-
-function normalizeCancellationError(error: unknown): AppError {
-  if (error instanceof AppError) return error;
-  if (
-    error instanceof Error &&
-    "code" in error &&
-    typeof error.code === "string" &&
-    "statusCode" in error &&
-    typeof error.statusCode === "number"
-  ) {
-    return new AppError({
-      code: error.code as AppError["code"],
-      statusCode: error.statusCode,
-      message: error.message,
-      expose: error.statusCode < 500,
-      cause: error,
-    });
-  }
-  return new AppError({
-    code: "job_cancel_failed",
-    statusCode: 500,
-    message: "Failed to cancel generation job.",
-    cause: error,
-  });
 }
