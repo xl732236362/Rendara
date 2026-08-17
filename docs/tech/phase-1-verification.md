@@ -13,7 +13,8 @@
 - 验收前实现提交：`2904479e3c52eb5e412231e6f9b121a70ef2684a`
 - 工作分支：`codex/phase-1-contracts-application-core`
 - 实现提交数：49
-- 验收环境：Windows 11 / Node.js 22 / pnpm 10.26.2 / Docker Desktop 29.6.1 / Supabase CLI 2.114.0
+- 宿主验收环境：Windows 11 / Node.js 24.14.0 / pnpm 10.26.2 / Docker Desktop 29.6.1 / Supabase CLI 2.114.0
+- CI 与 Server Docker runtime：Node.js 22
 
 ## 结果清单
 
