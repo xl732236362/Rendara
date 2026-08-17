@@ -3,6 +3,8 @@ import path from "node:path";
 import ts from "typescript";
 
 const serverSource = "apps/server/src";
+const canvasWriteMethods = new Set(["delete", "insert", "update", "upsert"]);
+const generatedMediaTables = new Set(["assets", "project_assets"]);
 
 const rules = [
   {
@@ -19,23 +21,14 @@ const rules = [
       "HTTP routes must delegate Zod recognition to the shared request/error boundary",
     pathPrefix: `${serverSource}/http/`,
     excludePaths: new Set([`${serverSource}/http/error-handler.ts`]),
-    patterns: [
-      /\b(?:function|const)\s+isZodError\b/g,
-      /\berror\s*(?:as\s+[^;\n]+)?\.issues\b/g,
-      /["']issues["']\s+in\s+error\b/g,
-      /\berror\s*\.\s*name\s*===\s*["']ZodError["']/g,
-    ],
+    scanner: scanRouteLocalZodChecks,
   },
   {
     id: "schema-aware-web-api",
     message:
       "server-api must use apiFetch and validate responses with shared schemas",
     paths: new Set(["apps/web/src/lib/server-api.ts"]),
-    patterns: [
-      /\bfetch\s*\(/g,
-      /\.json\s*\(/g,
-      /\bresponse\s+as\s+(?:unknown\s+as\s+)?[A-Z][\w<>{}\[\]|, ]*/g,
-    ],
+    scanner: scanWebApiCalls,
   },
   {
     id: "generation-use-case-boundary",
@@ -46,28 +39,21 @@ const rules = [
       `${serverSource}/http/generate.ts`,
       `${serverSource}/http/jobs.ts`,
     ]),
-    patterns: [
-      /\.(?:createJob|cancelJob|setCreditsInfo)\s*\(/g,
-      /\bjobService\.(?:enqueue|submit)\w*\s*\(/g,
-    ],
+    scanner: scanGenerationOrchestration,
   },
   {
     id: "skill-import-use-case-boundary",
     message:
       "HTTP Skill imports must go through the ImportSkill application use case",
     paths: new Set([`${serverSource}/http/skills.ts`]),
-    patterns: [/\bimportSkillFromUrl\b/g],
+    scanner: scanDirectSkillImporter,
   },
   {
     id: "canvas-application-boundary",
     message:
       "Agent canvas writes and generated-media insertion must use application boundaries",
     pathPrefix: `${serverSource}/agent/`,
-    patterns: [
-      /\.from\(\s*["']canvases["']\s*\)[\s\S]{0,300}?\.(?:delete|insert|update|upsert)\s*\(/g,
-      /\.from\(\s*["'](?:assets|project_assets)["']\s*\)[\s\S]{0,300}?\.insert\s*\(/g,
-      /\b(?:insertGeneratedMediaElement|persistGeneratedMedia|writeCanvasContent)\s*\(/g,
-    ],
+    scanner: scanAgentCanvasWrites,
   },
 ];
 
@@ -84,32 +70,19 @@ function applies(rule, filePath) {
   );
 }
 
-function lineNumberAt(source, index) {
-  return source.slice(0, index).split("\n").length;
-}
-
 export function scanArchitectureSources(sources) {
   const findings = [];
 
   for (const entry of sources) {
     const filePath = normalizePath(entry.path);
     if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(filePath)) continue;
+    const sourceFile = parseSourceFile(entry.source, filePath);
+    const context = { filePath, sourceFile };
 
     for (const rule of rules) {
       if (!applies(rule, filePath)) continue;
-      for (const finding of rule.scanner?.(entry.source, filePath) ?? []) {
+      for (const finding of rule.scanner(context)) {
         findings.push({ ...finding, message: rule.message, rule: rule.id });
-      }
-      for (const pattern of rule.patterns ?? []) {
-        for (const match of entry.source.matchAll(pattern)) {
-          const line = lineNumberAt(entry.source, match.index ?? 0);
-          const excerpt = match[0].split("\n", 1)[0].trim().slice(0, 120);
-          findings.push({
-            evidence: `${filePath}:${line} ${excerpt} - `,
-            message: rule.message,
-            rule: rule.id,
-          });
-        }
       }
     }
   }
@@ -119,7 +92,7 @@ export function scanArchitectureSources(sources) {
   );
 }
 
-function scanTopLevelRegistries(source, filePath) {
+function parseSourceFile(source, filePath) {
   const sourceFile = ts.createSourceFile(
     filePath,
     source,
@@ -127,7 +100,21 @@ function scanTopLevelRegistries(source, filePath) {
     true,
     ts.ScriptKind.TS,
   );
+  const diagnostic = sourceFile.parseDiagnostics?.[0];
+  if (diagnostic) {
+    const { line } = sourceFile.getLineAndCharacterOfPosition(
+      diagnostic.start ?? 0,
+    );
+    throw new Error(
+      `${filePath}:${line + 1} architecture scan rejected invalid TypeScript syntax`,
+    );
+  }
+  return sourceFile;
+}
+
+function scanTopLevelRegistries({ filePath, sourceFile }) {
   const findings = [];
+  const imports = registryImportBindings(sourceFile);
 
   for (const statement of sourceFile.statements) {
     if (!ts.isVariableStatement(statement)) continue;
@@ -136,28 +123,210 @@ function scanTopLevelRegistries(source, filePath) {
       const initializer = unwrapExpression(declaration.initializer);
       if (!initializer || !ts.isNewExpression(initializer)) continue;
 
-      const constructorName = initializer.expression.getText(sourceFile);
-      const isRegistry = /^(?:Provider|Executor)Registry$/.test(
-        constructorName,
+      const constructorName = resolveRegistryConstructor(
+        initializer.expression,
+        imports,
       );
+      const isRegistry = constructorName !== undefined;
       const isSemanticMap =
-        constructorName === "Map" &&
+        ts.isIdentifier(initializer.expression) &&
+        initializer.expression.text === "Map" &&
         /(?:provider|executor|registr|catalog)/i.test(declaration.name.text);
       if (!isRegistry && !isSemanticMap) continue;
 
-      const start = declaration.getStart(sourceFile);
-      const { line } = sourceFile.getLineAndCharacterOfPosition(start);
-      findings.push({
-        evidence: `${filePath}:${line + 1} ${declaration
-          .getText(sourceFile)
-          .split("\n", 1)[0]
-          .trim()
-          .slice(0, 120)} - `,
-      });
+      findings.push(findingAt(declaration, { filePath, sourceFile }));
     }
   }
 
   return findings;
+}
+
+function registryImportBindings(sourceFile) {
+  const named = new Map();
+  const namespaces = new Set();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (bindings && ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements) {
+        const importedName = (element.propertyName ?? element.name).text;
+        if (/^(?:Provider|Executor)Registry$/.test(importedName)) {
+          named.set(element.name.text, importedName);
+        }
+      }
+    } else if (bindings && ts.isNamespaceImport(bindings)) {
+      namespaces.add(bindings.name.text);
+    }
+  }
+  return { named, namespaces };
+}
+
+function resolveRegistryConstructor(expression, imports) {
+  if (ts.isIdentifier(expression)) {
+    if (/^(?:Provider|Executor)Registry$/.test(expression.text)) {
+      return expression.text;
+    }
+    return imports.named.get(expression.text);
+  }
+  if (
+    ts.isPropertyAccessExpression(expression) &&
+    ts.isIdentifier(expression.expression) &&
+    imports.namespaces.has(expression.expression.text) &&
+    /^(?:Provider|Executor)Registry$/.test(expression.name.text)
+  ) {
+    return expression.name.text;
+  }
+  return undefined;
+}
+
+function scanRouteLocalZodChecks(context) {
+  return collectMatchingNodes(context, (node) => {
+    if (
+      (ts.isFunctionDeclaration(node) || ts.isVariableDeclaration(node)) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === "isZodError"
+    ) {
+      return true;
+    }
+    if (ts.isPropertyAccessExpression(node) && node.name.text === "issues") {
+      return isIdentifier(unwrapExpression(node.expression), "error");
+    }
+    if (ts.isBinaryExpression(node)) {
+      if (
+        node.operatorToken.kind === ts.SyntaxKind.InKeyword &&
+        ts.isStringLiteral(node.left) &&
+        node.left.text === "issues" &&
+        isIdentifier(unwrapExpression(node.right), "error")
+      ) {
+        return true;
+      }
+      if (node.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken) {
+        return isErrorNameAndZodError(node.left, node.right);
+      }
+    }
+    return false;
+  });
+}
+
+function isErrorNameAndZodError(left, right) {
+  return (
+    ts.isPropertyAccessExpression(left) &&
+    left.name.text === "name" &&
+    isIdentifier(unwrapExpression(left.expression), "error") &&
+    ts.isStringLiteral(right) &&
+    right.text === "ZodError"
+  );
+}
+
+function scanWebApiCalls(context) {
+  return collectMatchingNodes(context, (node) => {
+    if (ts.isCallExpression(node)) {
+      if (isIdentifier(node.expression, "fetch")) return true;
+      return (
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === "json" &&
+        isIdentifier(unwrapExpression(node.expression.expression), "response")
+      );
+    }
+    return (
+      ts.isAsExpression(node) &&
+      !ts.isAsExpression(node.parent) &&
+      isIdentifier(unwrapExpression(node.expression), "response")
+    );
+  });
+}
+
+function scanGenerationOrchestration(context) {
+  const directMethods = new Set(["createJob", "cancelJob", "setCreditsInfo"]);
+  return collectMatchingNodes(context, (node) => {
+    if (!ts.isCallExpression(node)) return false;
+    const callee = node.expression;
+    if (!ts.isPropertyAccessExpression(callee)) return false;
+    if (directMethods.has(callee.name.text)) return true;
+    return (
+      isIdentifier(unwrapExpression(callee.expression), "jobService") &&
+      /^(?:enqueue|submit)/.test(callee.name.text)
+    );
+  });
+}
+
+function scanDirectSkillImporter(context) {
+  return collectMatchingNodes(context, (node) => {
+    if (ts.isImportSpecifier(node)) {
+      return (node.propertyName ?? node.name).text === "importSkillFromUrl";
+    }
+    return (
+      ts.isCallExpression(node) &&
+      isIdentifier(node.expression, "importSkillFromUrl")
+    );
+  });
+}
+
+function scanAgentCanvasWrites(context) {
+  const legacyWriters = new Set([
+    "insertGeneratedMediaElement",
+    "persistGeneratedMedia",
+    "writeCanvasContent",
+  ]);
+  return collectMatchingNodes(context, (node) => {
+    if (!ts.isCallExpression(node)) return false;
+    if (ts.isIdentifier(node.expression)) {
+      return legacyWriters.has(node.expression.text);
+    }
+    if (!ts.isPropertyAccessExpression(node.expression)) return false;
+    const method = node.expression.name.text;
+    const table = findSupabaseTable(node.expression.expression);
+    return (
+      (table === "canvases" && canvasWriteMethods.has(method)) ||
+      (generatedMediaTables.has(table) && method === "insert")
+    );
+  });
+}
+
+function findSupabaseTable(expression) {
+  const current = unwrapExpression(expression);
+  if (!current) return undefined;
+  if (ts.isCallExpression(current)) {
+    if (
+      ts.isPropertyAccessExpression(current.expression) &&
+      current.expression.name.text === "from" &&
+      current.arguments[0] &&
+      ts.isStringLiteral(current.arguments[0])
+    ) {
+      return current.arguments[0].text;
+    }
+    return findSupabaseTable(current.expression);
+  }
+  if (ts.isPropertyAccessExpression(current)) {
+    return findSupabaseTable(current.expression);
+  }
+  return undefined;
+}
+
+function collectMatchingNodes(context, predicate) {
+  const findings = [];
+  function visit(node) {
+    if (predicate(node)) findings.push(findingAt(node, context));
+    ts.forEachChild(node, visit);
+  }
+  visit(context.sourceFile);
+  return findings;
+}
+
+function findingAt(node, { filePath, sourceFile }) {
+  const start = node.getStart(sourceFile);
+  const { line } = sourceFile.getLineAndCharacterOfPosition(start);
+  return {
+    evidence: `${filePath}:${line + 1} ${node
+      .getText(sourceFile)
+      .split("\n", 1)[0]
+      .trim()
+      .slice(0, 120)} - `,
+  };
+}
+
+function isIdentifier(node, name) {
+  return node !== undefined && ts.isIdentifier(node) && node.text === name;
 }
 
 function unwrapExpression(expression) {

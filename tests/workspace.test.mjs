@@ -523,6 +523,20 @@ const architectureBoundaryFixtures = [
     source: "// composition\nlet active = new ExecutorRegistry();",
   },
   {
+    name: "aliased imported module-global ProviderRegistry",
+    path: "apps/server/src/app.ts",
+    rule: "instance-owned-registries",
+    source:
+      'import { ProviderRegistry as Registry } from "./registry.js";\nconst active = new Registry();',
+  },
+  {
+    name: "namespace imported module-global ExecutorRegistry",
+    path: "apps/server/src/worker.ts",
+    rule: "instance-owned-registries",
+    source:
+      'import * as registries from "./registry.js";\nconst active = new registries.ExecutorRegistry();',
+  },
+  {
     name: "semantic module-global registry Map",
     path: "apps/server/src/app.ts",
     rule: "instance-owned-registries",
@@ -564,19 +578,20 @@ const architectureBoundaryFixtures = [
     name: "unchecked response json",
     path: "apps/web/src/lib/server-api.ts",
     rule: "schema-aware-web-api",
-    source: "// api\nreturn await response.json();",
+    source: "// api\nasync function load() { return await response.json(); }",
   },
   {
     name: "unchecked response cast",
     path: "apps/web/src/lib/server-api.ts",
     rule: "schema-aware-web-api",
-    source: "// api\nreturn response as ProjectList;",
+    source: "// api\nfunction load() { return response as ProjectList; }",
   },
   {
     name: "unchecked awaited json cast",
     path: "apps/web/src/lib/server-api.ts",
     rule: "schema-aware-web-api",
-    source: "// api\nreturn (await response.json()) as ProjectList;",
+    source:
+      "// api\nasync function load() { return (await response.json()) as ProjectList; }",
   },
   {
     name: "direct queued-job orchestration",
@@ -600,7 +615,8 @@ const architectureBoundaryFixtures = [
     name: "direct Skill importer",
     path: "apps/server/src/http/skills.ts",
     rule: "skill-import-use-case-boundary",
-    source: "// adapter\nreturn importSkillFromUrl(sourceUrl);",
+    source:
+      "// adapter\nfunction importExternal() { return importSkillFromUrl(sourceUrl); }",
   },
   {
     name: "deep Agent canvas write",
@@ -668,6 +684,59 @@ test("registry boundary allows unrelated module-global Maps", () => {
   ]);
 
   assert.deepEqual(findings, []);
+});
+
+const forbiddenArchitectureText =
+  'fetch("/"); response.json(); response as Project; jobService.createJob(); jobService.enqueueGeneration(); importSkillFromUrl(); insertGeneratedMediaElement(); persistGeneratedMedia(); writeCanvasContent(); client.from("canvases").update(); client.from("project_assets").insert(); error.name === "ZodError"; "issues" in error; function isZodError; const providerRegistry = new Map(); new ProviderRegistry();';
+
+for (const fixture of [
+  {
+    name: "comments",
+    source: `// ${forbiddenArchitectureText}`,
+  },
+  {
+    name: "ordinary strings",
+    source: `const documentation = ${JSON.stringify(forbiddenArchitectureText)};`,
+  },
+  {
+    name: "template text",
+    source: `const documentation = \`${forbiddenArchitectureText}\`;`,
+  },
+]) {
+  test(`architecture boundary ignores forbidden words in ${fixture.name}`, () => {
+    const findings = scanArchitectureSources(
+      [
+        "apps/server/src/app.ts",
+        "apps/server/src/http/projects.ts",
+        "apps/server/src/http/jobs.ts",
+        "apps/server/src/http/skills.ts",
+        "apps/server/src/agent/tools/image-generate.ts",
+        "apps/web/src/lib/server-api.ts",
+      ].map((path) => ({ path, source: fixture.source })),
+    );
+
+    assert.deepEqual(findings, []);
+  });
+}
+
+test("architecture boundary fails closed on malformed TypeScript", () => {
+  const secret = "must-not-appear-in-diagnostics";
+
+  assert.throws(
+    () =>
+      scanArchitectureSources([
+        {
+          path: "apps/server/src/http/projects.ts",
+          source: `const credential = ${JSON.stringify(secret)};\nfunction broken(`,
+        },
+      ]),
+    (error) => {
+      assert.match(error.message, /^apps\/server\/src\/http\/projects\.ts:2 /);
+      assert.match(error.message, /invalid TypeScript syntax/);
+      assert.doesNotMatch(error.message, new RegExp(secret));
+      return true;
+    },
+  );
 });
 
 test("phase 1 architecture boundaries remain enforced across migrated sources", async () => {
