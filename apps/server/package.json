@@ -54,6 +54,7 @@
     "start": "node dist/server.js",
     "start:worker": "node dist/worker.js",
     "test": "vitest run",
+    "test:integration": "vitest run src/testing/postgres-concurrency.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   }
 }

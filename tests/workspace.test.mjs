@@ -760,6 +760,26 @@ const architectureBoundaryFixtures = [
     rule: "canvas-application-boundary",
     source: "// runtime\nawait legacy.writeCanvasContent(input);",
   },
+  {
+    name: "direct background job lifecycle update",
+    path: "apps/server/src/worker.ts",
+    rule: "phase2-persistence-boundary",
+    source:
+      '// worker\nawait client.from("background_jobs").update({ status: "succeeded" });',
+  },
+  {
+    name: "direct Canvas content update",
+    path: "apps/server/src/features/canvas/legacy-writer.ts",
+    rule: "phase2-persistence-boundary",
+    source:
+      '// writer\nawait client.from("canvases").update({ content: next });',
+  },
+  {
+    name: "generation lifecycle compensation",
+    path: "apps/server/src/features/jobs/legacy-settlement.ts",
+    rule: "phase2-persistence-boundary",
+    source: "// settlement\nawait credits.compensateGeneration(command);",
+  },
 ];
 
 for (const fixture of architectureBoundaryFixtures) {

@@ -290,7 +290,7 @@ supabase gen types typescript --linked > packages/shared/src/supabase-types.ts
 
 ## ⚡ Worker Scaling
 
-Each worker polls PGMQ and processes jobs concurrently. PGMQ guarantees exactly-once delivery.
+Each worker polls PGMQ and processes jobs concurrently. A message is owned by one consumer during its visibility timeout, but becomes visible again if it is not deleted or archived. Loomic therefore treats delivery as at least once and uses leases, conditional settlement, and effect receipts to make business effects idempotent.
 
 ```bash
 # Local: start multiple workers

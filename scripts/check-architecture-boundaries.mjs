@@ -62,6 +62,18 @@ const rules = [
     pathPrefix: `${serverSource}/agent/`,
     scanner: scanAgentCanvasWrites,
   },
+  {
+    id: "phase2-persistence-boundary",
+    message:
+      "job transitions, Canvas content, and compensation must use Phase 2 repositories",
+    pathPrefix: `${serverSource}/`,
+    excludePaths: new Set([
+      `${serverSource}/features/jobs/job-state-repository.ts`,
+      `${serverSource}/features/canvas/canvas-repository.ts`,
+      `${serverSource}/features/credits/credit-service.ts`,
+    ]),
+    scanner: scanPhase2PersistenceBypasses,
+  },
 ];
 
 function normalizePath(filePath) {
@@ -117,6 +129,33 @@ function parseSourceFile(source, filePath) {
     );
   }
   return sourceFile;
+}
+
+function scanPhase2PersistenceBypasses({ filePath, sourceFile }) {
+  const findings = [];
+  visit(sourceFile);
+  return findings;
+
+  function visit(node) {
+    if (ts.isCallExpression(node)) {
+      const text = node.getText(sourceFile);
+      const directJobUpdate =
+        /\.from\(\s*["']background_jobs["']\s*\)[\s\S]*?\.update\s*\(/.test(
+          text,
+        );
+      const directCanvasUpdate =
+        /\.from\(\s*["']canvases["']\s*\)[\s\S]*?\.update\s*\(\s*\{[\s\S]*?\bcontent\s*:/.test(
+          text,
+        );
+      const lifecycleCompensation =
+        /(?:refundCredits|refund_credits|compensateGeneration)\s*\(/.test(text) &&
+        /(?:worker|jobs|generation)/.test(filePath);
+      if (directJobUpdate || directCanvasUpdate || lifecycleCompensation) {
+        findings.push(findingAt(node, { filePath, sourceFile }));
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
 }
 
 function scanTopLevelRegistries({ filePath, sourceFile }) {

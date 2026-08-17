@@ -573,33 +573,35 @@ git commit -m "feat(events): publish committed domain outbox events"
 - Modify: `tests/workspace.test.mjs`
 - Modify: `README.md`
 
-- [ ] **Step 1: Add failing architecture fixtures**
+- [x] **Step 1: Add failing architecture fixtures**
 
 Extend the TypeScript AST scanner to reject server code outside repositories that calls `.update({ content: ... })`, direct `background_jobs` lifecycle updates, or generation failure/cancellation paths invoking compensation. Add one negative fixture per bypass and scan real source.
 
-- [ ] **Step 2: Run workspace tests and verify RED**
+- [x] **Step 2: Run workspace tests and verify RED**
 
 Run: `pnpm test:workspace`
 
 Expected: FAIL on the legacy direct writers until Tasks 3-8 have removed them and the scanner allowlist is precise.
 
-- [ ] **Step 3: Add real PostgreSQL test harness**
+- [x] **Step 3: Add real PostgreSQL test harness**
 
 Validate `PHASE2_TEST_DATABASE_URL`, create independent `pg.Pool` clients, and provide barrier helpers that use promises/advisory locks rather than timing sleeps. Add `test:integration` to the server package without folding environment-dependent tests into ordinary unit tests.
 
-- [ ] **Step 4: Implement concurrency matrix**
+- [x] **Step 4: Implement concurrency matrix**
 
 Use two or more independent sessions to prove: identical/conflicting submission races, balance contention, simultaneous lease claims, lease expiry takeover, stale settlement, cancel/succeed serialization, compensation replay, Canvas CAS races, effect receipt uniqueness, and outbox rollback. Assert exact row counts, balance, ledger entries, job state/version, Canvas revision, effect count, and outbox count.
 
-- [ ] **Step 5: Implement named failpoints**
+Implementation note: the real multi-session suite covers simultaneous lease claims and Canvas CAS, while the rebuilt-database pgTAP suite covers idempotent/conflicting submission, balance rollback, stale lease settlement, cancel/settle serialization, compensation replay, effect uniqueness, and outbox rollback with exact ledger/state assertions. This split keeps deterministic invariants in transaction-scoped pgTAP and reserves independent clients for races that require overlapping sessions.
+
+- [x] **Step 5: Implement named failpoints**
 
 The test-only session setting `loomic.test_failpoint` is read by Phase 2 RPCs only when the database role is the local test owner. Exercise `after_debit`, `before_enqueue`, `before_job_settle_commit`, `before_canvas_commit`, and `after_outbox_claim`. Production roles cannot activate failpoints.
 
-- [ ] **Step 6: Correct queue documentation**
+- [x] **Step 6: Correct queue documentation**
 
 Replace any claim of unconditional PGMQ exactly-once delivery with: one consumer within a visibility timeout; messages become visible again when not deleted/archived; Loomic business handling is at least once and idempotent.
 
-- [ ] **Step 7: Run architecture and integration tests**
+- [x] **Step 7: Run architecture and integration tests**
 
 Run: `pnpm test:workspace`
 
@@ -607,7 +609,7 @@ Run: `pnpm --filter @loomic/server test:integration`
 
 Expected: both PASS against the rebuilt local database.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```text
 git add apps/server/src/testing apps/server/package.json tests/workspace.test.mjs README.md
