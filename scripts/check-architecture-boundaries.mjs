@@ -3,26 +3,13 @@ import path from "node:path";
 
 const serverSource = "apps/server/src";
 
-const exactTargets = [
-  `${serverSource}/agent/runtime.ts`,
-  `${serverSource}/agent/tools/manipulate-canvas.ts`,
-  `${serverSource}/features/jobs/job-executor.ts`,
-  `${serverSource}/generation/providers/registry.ts`,
-  `${serverSource}/http/generate.ts`,
-  `${serverSource}/http/jobs.ts`,
-  `${serverSource}/http/skills.ts`,
-  "apps/web/src/lib/server-api.ts",
-];
-
 const rules = [
   {
     id: "instance-owned-registries",
     message:
       "provider and executor registries must be instance-owned and composed explicitly",
-    paths: new Set([
-      `${serverSource}/features/jobs/job-executor.ts`,
-      `${serverSource}/generation/providers/registry.ts`,
-    ]),
+    pathPattern:
+      /^apps\/server\/src\/(?:app|worker|generation\/providers\/(?:registry|register-all)|features\/jobs\/(?:job-executor|executors\/register-all))\.ts$/,
     patterns: [
       /^(?:export\s+)?const\s+\w+\s*=\s*new\s+Map\b/gm,
       /^(?:export\s+)?const\s+\w+\s*=\s*new\s+(?:Provider|Executor)Registry\b/gm,
@@ -38,6 +25,7 @@ const rules = [
       /\b(?:function|const)\s+isZodError\b/g,
       /\berror\s*(?:as\s+[^;\n]+)?\.issues\b/g,
       /["']issues["']\s+in\s+error\b/g,
+      /\berror\s*\.\s*name\s*===\s*["']ZodError["']/g,
     ],
   },
   {
@@ -63,7 +51,7 @@ const rules = [
     ]),
     patterns: [
       /\.(?:createJob|cancelJob|setCreditsInfo)\s*\(/g,
-      /\bjobService\.(?:create|cancel|enqueue|submit)\w*\s*\(/g,
+      /\bjobService\.(?:enqueue|submit)\w*\s*\(/g,
     ],
   },
   {
@@ -77,10 +65,7 @@ const rules = [
     id: "canvas-application-boundary",
     message:
       "Agent canvas writes and generated-media insertion must use application boundaries",
-    paths: new Set([
-      `${serverSource}/agent/runtime.ts`,
-      `${serverSource}/agent/tools/manipulate-canvas.ts`,
-    ]),
+    pathPrefix: `${serverSource}/agent/`,
     patterns: [
       /\.from\(\s*["']canvases["']\s*\)[\s\S]{0,300}?\.(?:delete|insert|update|upsert)\s*\(/g,
       /\.from\(\s*["'](?:assets|project_assets)["']\s*\)[\s\S]{0,300}?\.insert\s*\(/g,
@@ -97,6 +82,7 @@ function applies(rule, filePath) {
   if (rule.excludePaths?.has(filePath)) return false;
   return (
     rule.paths?.has(filePath) ||
+    rule.pathPattern?.test(filePath) ||
     (rule.pathPrefix && filePath.startsWith(rule.pathPrefix))
   );
 }
@@ -134,16 +120,10 @@ export function scanArchitectureSources(sources) {
 }
 
 export async function collectArchitectureSources(rootDir) {
-  const httpDir = path.join(rootDir, serverSource, "http");
-  const httpTargets = (await readdir(httpDir, { withFileTypes: true }))
-    .filter(
-      (entry) =>
-        entry.isFile() &&
-        entry.name.endsWith(".ts") &&
-        !/\.(?:test|spec)\.ts$/.test(entry.name),
-    )
-    .map((entry) => `${serverSource}/http/${entry.name}`);
-  const targets = [...new Set([...exactTargets, ...httpTargets])].sort();
+  const targets = [
+    ...(await productionTypeScriptFiles(rootDir, serverSource)),
+    "apps/web/src/lib/server-api.ts",
+  ].sort();
 
   return Promise.all(
     targets.map(async (relativePath) => ({
@@ -151,4 +131,23 @@ export async function collectArchitectureSources(rootDir) {
       source: await readFile(path.join(rootDir, relativePath), "utf8"),
     })),
   );
+}
+
+async function productionTypeScriptFiles(rootDir, relativeDirectory) {
+  const directory = path.join(rootDir, relativeDirectory);
+  const targets = [];
+
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const relativePath = `${relativeDirectory}/${entry.name}`;
+    if (entry.isDirectory()) {
+      targets.push(...(await productionTypeScriptFiles(rootDir, relativePath)));
+    } else if (
+      entry.name.endsWith(".ts") &&
+      !/\.(?:test|spec)\.ts$/.test(entry.name)
+    ) {
+      targets.push(relativePath);
+    }
+  }
+
+  return targets;
 }

@@ -496,75 +496,122 @@ test("CI runs database permission tests and a container smoke test", async () =>
   assert.match(workflow, /app-load-ok/);
 });
 
-test("architecture boundary rules report actionable file and line evidence", () => {
-  const fixtures = [
+const architectureBoundaryFixtures = [
+  {
+    name: "module-global registry map",
+    path: "apps/server/src/app.ts",
+    rule: "instance-owned-registries",
+    source: "// composition\nconst providerRegistry = new Map();",
+  },
+  {
+    name: "module-global registry singleton",
+    path: "apps/server/src/features/jobs/executors/register-all.ts",
+    rule: "instance-owned-registries",
+    source: "// registration\nexport const registry = new ProviderRegistry();",
+  },
+  {
+    name: "route-local isZodError helper",
+    path: "apps/server/src/http/projects.ts",
+    rule: "shared-zod-boundary",
+    source: "// route\nfunction isZodError(error) { return false; }",
+  },
+  {
+    name: "route-local issues duck typing",
+    path: "apps/server/src/http/canvases.ts",
+    rule: "shared-zod-boundary",
+    source: '// route\nif ("issues" in error) throw error;',
+  },
+  {
+    name: "route-local ZodError name check",
+    path: "apps/server/src/http/skills.ts",
+    rule: "shared-zod-boundary",
+    source: "// route\nif (error.name === 'ZodError') throw error;",
+  },
+  {
+    name: "direct Web fetch",
+    path: "apps/web/src/lib/server-api.ts",
+    rule: "schema-aware-web-api",
+    source: '// api\nconst response = await fetch("/api/projects");',
+  },
+  {
+    name: "unchecked response json",
+    path: "apps/web/src/lib/server-api.ts",
+    rule: "schema-aware-web-api",
+    source: "// api\nreturn await response.json();",
+  },
+  {
+    name: "unchecked response cast",
+    path: "apps/web/src/lib/server-api.ts",
+    rule: "schema-aware-web-api",
+    source: "// api\nreturn response as ProjectList;",
+  },
+  {
+    name: "direct queued-job orchestration",
+    path: "apps/server/src/http/jobs.ts",
+    rule: "generation-use-case-boundary",
+    source: "// adapter\nawait jobService.createJob(input);",
+  },
+  {
+    name: "direct Skill importer",
+    path: "apps/server/src/http/skills.ts",
+    rule: "skill-import-use-case-boundary",
+    source: "// adapter\nreturn importSkillFromUrl(sourceUrl);",
+  },
+  {
+    name: "deep Agent canvas write",
+    path: "apps/server/src/agent/tools/image-generate.ts",
+    rule: "canvas-application-boundary",
+    source: '// tool\nawait client.from("canvases").update({ content });',
+  },
+  {
+    name: "deep Agent media insert",
+    path: "apps/server/src/agent/tools/video-generate.ts",
+    rule: "canvas-application-boundary",
+    source: '// tool\nawait client.from("project_assets").insert(asset);',
+  },
+];
+
+for (const fixture of architectureBoundaryFixtures) {
+  test(`architecture boundary rejects ${fixture.name} with file and line evidence`, () => {
+    const findings = scanArchitectureSources([fixture]);
+    assert.equal(findings.length, 1, fixture.name);
+    assert.equal(findings[0].rule, fixture.rule, fixture.name);
+    assert.match(
+      findings[0].evidence,
+      new RegExp(`^${fixture.path.replaceAll("/", "\\/")}:2 `),
+      fixture.name,
+    );
+  });
+}
+
+test("registry boundary allows function-local composition", () => {
+  const findings = scanArchitectureSources([
     {
-      path: "apps/server/src/generation/providers/registry.ts",
-      source: "const entries = new Map();\nexport function getProvider() {}",
-    },
-    {
-      path: "apps/server/src/features/jobs/job-executor.ts",
-      source: "export const defaultCatalog = new ExecutorRegistry();",
-    },
-    {
-      path: "apps/server/src/http/projects.ts",
-      source: 'function isZodError(error) { return "issues" in error; }',
-    },
-    {
-      path: "apps/web/src/lib/server-api.ts",
-      source: 'const response = await fetch("/api/projects");',
-    },
-    {
-      path: "apps/web/src/lib/server-api.ts",
-      source: "return await response.json();",
-    },
-    {
-      path: "apps/web/src/lib/server-api.ts",
-      source: "return response as ProjectList;",
-    },
-    {
-      path: "apps/server/src/http/jobs.ts",
-      source: "await jobService.createJob(input);",
-    },
-    {
-      path: "apps/server/src/http/skills.ts",
-      source: "return importSkillFromUrl(sourceUrl);",
-    },
-    {
-      path: "apps/server/src/agent/runtime.ts",
+      path: "apps/server/src/app.ts",
       source:
-        'await client.from("canvases").update({ content });\nawait client.from("project_assets").insert(asset);',
+        "export function buildApp() {\n  const registry = new ProviderRegistry();\n  return registry;\n}",
     },
-  ];
+  ]);
 
-  const findings = scanArchitectureSources(fixtures);
-
-  assert.deepEqual(
-    new Set(findings.map(({ rule }) => rule)),
-    new Set([
-      "instance-owned-registries",
-      "shared-zod-boundary",
-      "schema-aware-web-api",
-      "generation-use-case-boundary",
-      "skill-import-use-case-boundary",
-      "canvas-application-boundary",
-    ]),
-  );
-  assert.equal(
-    findings.filter(({ rule }) => rule === "schema-aware-web-api").length,
-    3,
-  );
-  assert.equal(
-    findings.filter(({ rule }) => rule === "instance-owned-registries").length,
-    2,
-  );
-  for (const finding of findings) {
-    assert.match(finding.evidence, /^[^:]+(?:\/[^:]+)+:\d+ /);
-  }
+  assert.deepEqual(findings, []);
 });
 
 test("phase 1 architecture boundaries remain enforced across migrated sources", async () => {
   const sources = await collectArchitectureSources(rootDir);
+  const sourcePaths = new Set(sources.map(({ path }) => path));
+  for (const requiredPath of [
+    "apps/server/src/app.ts",
+    "apps/server/src/worker.ts",
+    "apps/server/src/generation/providers/register-all.ts",
+    "apps/server/src/features/jobs/executors/register-all.ts",
+    "apps/server/src/agent/tools/image-generate.ts",
+    "apps/server/src/agent/tools/video-generate.ts",
+  ]) {
+    assert.ok(
+      sourcePaths.has(requiredPath),
+      `architecture scan omitted ${requiredPath}`,
+    );
+  }
   const findings = scanArchitectureSources(sources);
 
   assert.deepEqual(
