@@ -5,6 +5,7 @@ import { z } from "zod";
 export const backgroundJobStatusSchema = z.enum([
   "queued",
   "running",
+  "cancel_requested",
   "succeeded",
   "failed",
   "canceled",
@@ -53,16 +54,24 @@ const generationRequestContextShape = {
   thread_id: z.string().optional(),
 };
 
+export const idempotencyKeySchema = z.string().trim().min(1).max(128);
+
+const generationSubmissionIdentityShape = {
+  idempotency_key: idempotencyKeySchema,
+};
+
 export const generationSubmissionRequestSchema = z.discriminatedUnion("type", [
   imageGenerationPayloadSchema
     .extend({
       ...generationRequestContextShape,
+      ...generationSubmissionIdentityShape,
       type: z.literal("image_generation"),
     })
     .strict(),
   videoGenerationPayloadSchema
     .extend({
       ...generationRequestContextShape,
+      ...generationSubmissionIdentityShape,
       type: z.literal("video_generation"),
     })
     .strict(),
@@ -131,6 +140,7 @@ export type GenerationQueueEnvelope = z.infer<
 >;
 
 export const createVideoJobRequestSchema = z.object({
+  idempotency_key: idempotencyKeySchema,
   project_id: z.string().uuid().optional(),
   canvas_id: z.string().uuid().optional(),
   session_id: z.string().uuid().optional(),
@@ -164,6 +174,13 @@ export const backgroundJobSchema = z.object({
   error_message: z.string().nullable(),
   attempt_count: z.number().int(),
   max_attempts: z.number().int(),
+  transition_version: z.number().int().nonnegative(),
+  lease_token: z.string().uuid().nullable(),
+  lease_owner: z.string().nullable(),
+  lease_expires_at: z.string().nullable(),
+  pgmq_message_id: z.number().int().nonnegative().nullable(),
+  credits_transaction_id: z.string().uuid().nullable(),
+  credits_cost: z.number().int().nonnegative().nullable(),
   created_by: z.string().uuid(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -177,6 +194,7 @@ export type BackgroundJob = z.infer<typeof backgroundJobSchema>;
 // --- API Request schemas ---
 
 export const createImageJobRequestSchema = z.object({
+  idempotency_key: idempotencyKeySchema,
   project_id: z.string().uuid().optional(),
   canvas_id: z.string().uuid().optional(),
   session_id: z.string().uuid().optional(),

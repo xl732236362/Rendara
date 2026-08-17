@@ -15,6 +15,7 @@ export const userIdSchema = identifierSchema;
 export const workspaceIdSchema = identifierSchema;
 export const projectIdSchema = identifierSchema;
 export const canvasIdSchema = identifierSchema;
+export const canvasRevisionSchema = z.number().int().nonnegative().safe();
 
 export const workspaceTypeSchema = z.enum(["personal", "team"]);
 export const workspaceRoleSchema = z.enum(["owner", "admin", "member"]);
@@ -139,6 +140,7 @@ export const canvasDetailSchema = z.object({
   id: canvasIdSchema,
   name: z.string().min(1),
   projectId: projectIdSchema,
+  revision: canvasRevisionSchema,
   content: canvasContentSchema,
 });
 

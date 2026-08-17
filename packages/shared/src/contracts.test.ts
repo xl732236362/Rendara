@@ -91,6 +91,7 @@ describe("@loomic/shared contracts", () => {
     expect(
       requestSchema.parse({
         type: "image_generation",
+        idempotency_key: "request-image-1",
         project_id: "550e8400-e29b-41d4-a716-446655440001",
         canvas_id: "550e8400-e29b-41d4-a716-446655440002",
         session_id: "550e8400-e29b-41d4-a716-446655440003",
@@ -107,6 +108,7 @@ describe("@loomic/shared contracts", () => {
     expect(
       requestSchema.parse({
         type: "video_generation",
+        idempotency_key: "request-video-1",
         project_id: "550e8400-e29b-41d4-a716-446655440001",
         canvas_id: "550e8400-e29b-41d4-a716-446655440002",
         session_id: "550e8400-e29b-41d4-a716-446655440003",
@@ -132,6 +134,7 @@ describe("@loomic/shared contracts", () => {
     expect(() =>
       requestSchema.parse({
         type: "image_generation",
+        idempotency_key: "request-invalid-1",
         prompt: "Wrong media fields",
         duration: 5,
       }),
@@ -148,6 +151,7 @@ describe("@loomic/shared contracts", () => {
       expect(
         requestSchema.parse({
           type: "image_generation",
+          idempotency_key: `request-quality-${quality}`,
           prompt: "draw",
           quality,
         }),
@@ -166,6 +170,92 @@ describe("@loomic/shared contracts", () => {
       ).toMatchObject({ quality });
     },
   );
+
+  it("requires a bounded idempotency key for queued generation", () => {
+    const schema = getExportedSchema("generationSubmissionRequestSchema");
+
+    expect(() =>
+      schema.parse({ type: "image_generation", prompt: "draw" }),
+    ).toThrow();
+    expect(() =>
+      schema.parse({
+        type: "image_generation",
+        idempotency_key: "x".repeat(129),
+        prompt: "draw",
+      }),
+    ).toThrow();
+    expect(
+      schema.parse({
+        type: "image_generation",
+        idempotency_key: " request-1 ",
+        prompt: "draw",
+      }),
+    ).toMatchObject({ idempotency_key: "request-1" });
+  });
+
+  it("shares lease-aware job states and transition metadata", () => {
+    const statusSchema = getExportedSchema("backgroundJobStatusSchema");
+    const jobSchema = getExportedSchema("backgroundJobSchema");
+
+    expect(statusSchema.parse("cancel_requested")).toBe("cancel_requested");
+    expect(
+      jobSchema.parse({
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        workspace_id: "550e8400-e29b-41d4-a716-446655440001",
+        project_id: null,
+        canvas_id: null,
+        session_id: null,
+        thread_id: null,
+        queue_name: "image_generation_jobs",
+        job_type: "image_generation",
+        status: "cancel_requested",
+        payload: {},
+        result: null,
+        error_code: null,
+        error_message: null,
+        attempt_count: 1,
+        max_attempts: 3,
+        transition_version: 2,
+        lease_token: "550e8400-e29b-41d4-a716-446655440009",
+        lease_owner: "worker-1",
+        lease_expires_at: "2026-08-18T12:01:00.000Z",
+        pgmq_message_id: 42,
+        credits_transaction_id: "550e8400-e29b-41d4-a716-446655440008",
+        credits_cost: 7,
+        created_by: "550e8400-e29b-41d4-a716-446655440002",
+        created_at: "2026-08-18T12:00:00.000Z",
+        updated_at: "2026-08-18T12:00:30.000Z",
+        started_at: "2026-08-18T12:00:10.000Z",
+        completed_at: null,
+        failed_at: null,
+        canceled_at: null,
+      }),
+    ).toMatchObject({ transition_version: 2, lease_owner: "worker-1" });
+  });
+
+  it("round-trips revision-aware canvas read and save contracts", () => {
+    const detailSchema = getExportedSchema("canvasDetailSchema");
+    const requestSchema = getExportedSchema("canvasSaveRequestSchema");
+    const responseSchema = getExportedSchema("canvasSaveResponseSchema");
+    const content = { elements: [], appState: {}, files: {} };
+
+    expect(
+      detailSchema.parse({
+        id: "canvas-1",
+        name: "Main Canvas",
+        projectId: "project-1",
+        revision: 3,
+        content,
+      }),
+    ).toMatchObject({ revision: 3 });
+    expect(requestSchema.parse({ expectedRevision: 3, content })).toMatchObject(
+      { expectedRevision: 3 },
+    );
+    expect(responseSchema.parse({ ok: true, revision: 4 })).toEqual({
+      ok: true,
+      revision: 4,
+    });
+  });
 
   it("shares generation cancellation request and response contracts", () => {
     const requestSchema = getExportedSchema(

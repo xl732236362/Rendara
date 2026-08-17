@@ -60,7 +60,7 @@
 - Modify: `packages/shared/src/http.ts`
 - Modify: `packages/shared/src/contracts.test.ts`
 
-- [ ] **Step 1: Write failing contract tests**
+- [x] **Step 1: Write failing contract tests**
 
 Add assertions that `generationSubmissionRequestSchema` requires a 1-128 character `idempotency_key`, accepts `cancel_requested`, exposes lease metadata only on the job entity, and round-trips Canvas revisions:
 
@@ -80,13 +80,13 @@ expect(canvasSaveResponseSchema.parse({ ok: true, revision: 4 })).toEqual({
 });
 ```
 
-- [ ] **Step 2: Run the shared contract tests and verify RED**
+- [x] **Step 2: Run the shared contract tests and verify RED**
 
 Run: `pnpm --filter @loomic/shared test -- --run`
 
 Expected: FAIL because the current schemas have no idempotency key, `cancel_requested`, or revision fields.
 
-- [ ] **Step 3: Implement the contract changes**
+- [x] **Step 3: Implement the contract changes**
 
 Use one reusable key schema and safe integer revisions:
 
@@ -110,13 +110,13 @@ export const canvasSaveResponseSchema = z.object({
 
 Add `idempotency_conflict`, `invalid_job_transition`, `stale_job_lease`, `job_already_terminal`, `canvas_revision_conflict`, and `compensation_conflict` to the shared boundary error enum.
 
-- [ ] **Step 4: Run shared tests and typecheck**
+- [x] **Step 4: Run shared tests and typecheck**
 
 Run: `pnpm --filter @loomic/shared test && pnpm --filter @loomic/shared typecheck`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```text
 git add packages/shared/src/job-contracts.ts packages/shared/src/contracts.ts packages/shared/src/http.ts packages/shared/src/contracts.test.ts

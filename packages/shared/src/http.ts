@@ -4,6 +4,7 @@ import {
   assetObjectSchema,
   canvasContentSchema,
   canvasDetailSchema,
+  canvasRevisionSchema,
   chatMessageSchema,
   chatSessionSummarySchema,
   modelInfoSchema,
@@ -72,6 +73,7 @@ export const applicationErrorCodeSchema = z.enum([
   "brand_kit_asset_create_failed",
   "canvas_not_found",
   "canvas_save_failed",
+  "canvas_revision_conflict",
   "chat_error",
   "profile_update_failed",
   "project_query_failed",
@@ -89,6 +91,10 @@ export const applicationErrorCodeSchema = z.enum([
   "job_create_failed",
   "job_query_failed",
   "job_cancel_failed",
+  "idempotency_conflict",
+  "invalid_job_transition",
+  "stale_job_lease",
+  "job_already_terminal",
   "skill_not_found",
   "skill_create_failed",
   "skill_update_failed",
@@ -107,6 +113,7 @@ export const applicationErrorCodeSchema = z.enum([
   "credit_claim_failed",
   "credit_deduct_failed",
   "credit_refund_failed",
+  "compensation_conflict",
   "credit_plan_update_failed",
   "model_not_accessible",
   "resolution_not_allowed",
@@ -162,10 +169,12 @@ export const canvasGetResponseSchema = z.object({
 
 export const canvasSaveRequestSchema = z.object({
   content: canvasContentSchema,
+  expectedRevision: canvasRevisionSchema,
 });
 
 export const canvasSaveResponseSchema = z.object({
   ok: z.literal(true),
+  revision: canvasRevisionSchema,
 });
 
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
