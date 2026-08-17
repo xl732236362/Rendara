@@ -1,8 +1,8 @@
-import type { ProviderRegistry } from "./providers/registry.js";
+import type { ProviderCatalog } from "./providers/registry.js";
 import type { GeneratedVideo, VideoGenerateParams } from "./types.js";
 
 export async function generateVideo(
-  registry: ProviderRegistry,
+  registry: ProviderCatalog,
   providerName: string,
   params: VideoGenerateParams,
 ): Promise<GeneratedVideo> {

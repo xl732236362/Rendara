@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import type {
   AvailableModel,
-  ProviderRegistry,
+  ProviderCatalog,
 } from "../../generation/providers/registry.js";
 import { generateVideo } from "../../generation/video-generation.js";
 
@@ -158,7 +158,7 @@ type VideoGenerateResult = {
 export async function runVideoGenerate(
   input: VideoGenerateInput,
   submitVideoJob?: SubmitVideoJobFn,
-  providerRegistry?: ProviderRegistry,
+  providerRegistry?: ProviderCatalog,
 ): Promise<VideoGenerateResult> {
   const t0 = Date.now();
   const lap = (label: string, extra?: Record<string, unknown>) => {
@@ -302,7 +302,7 @@ export async function runVideoGenerate(
 export function createVideoGenerateTool(deps?: {
   submitVideoJob?: SubmitVideoJobFn;
   availableModels?: AvailableModel[];
-  providerRegistry?: ProviderRegistry;
+  providerRegistry?: ProviderCatalog;
 }) {
   const models =
     deps?.availableModels ??

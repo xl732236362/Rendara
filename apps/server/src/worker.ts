@@ -18,8 +18,8 @@ import {
 } from "./features/credits/credit-service.js";
 import { registerAllExecutors } from "./features/jobs/executors/register-all.js";
 import type {
+  ExecutorCatalog,
   ExecutorContext,
-  ExecutorRegistry,
 } from "./features/jobs/job-executor.js";
 import { createJobService } from "./features/jobs/job-service.js";
 import {
@@ -180,7 +180,7 @@ async function processMessage(
   msg: PgmqMessage,
   ctx: ExecutorContext,
   creditService: CreditService,
-  executorRegistry: ExecutorRegistry,
+  executorRegistry: ExecutorCatalog,
   tag: string,
 ) {
   const resolution = await resolveGenerationQueueMessage({

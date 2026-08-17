@@ -6,8 +6,18 @@ export interface AvailableModel extends ModelInfo {
   provider: string;
 }
 
+/** Read-only provider capabilities exposed after application composition. */
+export interface ProviderCatalog {
+  getImageProvider(name: string): ImageProvider;
+  getVideoProvider(name: string): VideoProvider;
+  getAvailableImageModels(): AvailableModel[];
+  getAvailableVideoModels(): AvailableModel[];
+  resolveImageProviderName(modelId: string): string;
+  resolveVideoProviderName(modelId: string): string;
+}
+
 /** Mutable during composition and immutable after validation by {@link seal}. */
-export class ProviderRegistry {
+export class ProviderRegistry implements ProviderCatalog {
   readonly #imageProviders = new Map<string, ImageProvider>();
   readonly #videoProviders = new Map<string, VideoProvider>();
   #sealed = false;

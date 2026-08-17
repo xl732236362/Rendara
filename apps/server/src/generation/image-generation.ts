@@ -1,8 +1,8 @@
-import type { ProviderRegistry } from "./providers/registry.js";
+import type { ProviderCatalog } from "./providers/registry.js";
 import type { GeneratedImage, ImageGenerateParams } from "./types.js";
 
 export async function generateImage(
-  registry: ProviderRegistry,
+  registry: ProviderCatalog,
   providerName: string,
   params: ImageGenerateParams,
 ): Promise<GeneratedImage> {

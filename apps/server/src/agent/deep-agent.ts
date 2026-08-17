@@ -13,7 +13,7 @@ import {
   DEFAULT_GOOGLE_AGENT_MODEL,
   type ServerEnv,
 } from "../config/env.js";
-import type { ProviderRegistry } from "../generation/providers/registry.js";
+import type { ProviderCatalog } from "../generation/providers/registry.js";
 import type { ConnectionManager } from "../ws/connection-manager.js";
 import {
   type AgentBackendResult,
@@ -44,7 +44,7 @@ export type LoomicAgentFactory = (options: {
   env: ServerEnv;
   model?: BaseLanguageModel | string;
   persistImage?: PersistImageFn;
-  providerRegistry: ProviderRegistry;
+  providerRegistry: ProviderCatalog;
 
   submitImageJob?: SubmitImageJobFn;
   submitVideoJob?: SubmitVideoJobFn;
@@ -62,7 +62,7 @@ export function createLoomicDeepAgent(options: {
   env: ServerEnv;
   model?: BaseLanguageModel | string;
   persistImage?: PersistImageFn;
-  providerRegistry: ProviderRegistry;
+  providerRegistry: ProviderCatalog;
 
   submitImageJob?: SubmitImageJobFn;
   submitVideoJob?: SubmitVideoJobFn;

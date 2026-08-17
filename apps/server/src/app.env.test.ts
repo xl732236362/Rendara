@@ -56,4 +56,42 @@ describe("application environment composition", () => {
     ]);
     await Promise.all([first.close(), second.close()]);
   });
+
+  it("rejects an injected registry with duplicate model ownership at startup", () => {
+    const registry = new ProviderRegistry()
+      .registerImageProvider(createImageProvider("first", "duplicate/model"))
+      .registerImageProvider(createImageProvider("second", "duplicate/model"));
+
+    expect(() =>
+      buildAppFromEnv(loadServerEnv({}, {}), { providerRegistry: registry }),
+    ).toThrow('Duplicate image model ID: "duplicate/model"');
+  });
+
+  it("seals an injected registry before exposing the application", async () => {
+    const registry = new ProviderRegistry().registerImageProvider(
+      createImageProvider("first", "first/model"),
+    );
+
+    const app = buildAppFromEnv(loadServerEnv({}, {}), {
+      providerRegistry: registry,
+    });
+
+    expect(() =>
+      registry.registerImageProvider(createImageProvider("late", "late/model")),
+    ).toThrow("Provider registry is sealed");
+    await app.close();
+  });
 });
+
+function createImageProvider(name: string, modelId: string) {
+  return {
+    name,
+    models: [{ id: modelId, displayName: modelId, description: modelId }],
+    generate: async () => ({
+      url: "data:image/png;base64,aW1hZ2U=",
+      mimeType: "image/png",
+      width: 1,
+      height: 1,
+    }),
+  };
+}

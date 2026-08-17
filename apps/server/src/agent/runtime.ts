@@ -34,7 +34,7 @@ import {
   TierGuardError,
 } from "../features/credits/tier-guard.js";
 import type { JobService } from "../features/jobs/job-service.js";
-import type { ProviderRegistry } from "../generation/providers/registry.js";
+import type { ProviderCatalog } from "../generation/providers/registry.js";
 import type {
   AuthenticatedUser,
   UserSupabaseClient,
@@ -276,7 +276,7 @@ type CreateAgentRuntimeOptions = {
   eventDelayMs?: number;
   jobService?: JobService;
   model?: BaseLanguageModel | string;
-  providerRegistry: ProviderRegistry;
+  providerRegistry: ProviderCatalog;
   now?: () => string;
   runIdFactory?: () => string;
   tierGuard?: TierGuard;

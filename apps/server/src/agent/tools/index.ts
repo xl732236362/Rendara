@@ -1,7 +1,7 @@
 import type { StructuredTool } from "@langchain/core/tools";
 import type { BackendFactory, BackendProtocol } from "deepagents";
 
-import type { ProviderRegistry } from "../../generation/providers/registry.js";
+import type { ProviderCatalog } from "../../generation/providers/registry.js";
 import type { ConnectionManager } from "../../ws/connection-manager.js";
 import { createBrandKitTool } from "./brand-kit.js";
 import {
@@ -59,7 +59,7 @@ export function createMainAgentTools(
     brandKitId?: string | null;
     connectionManager?: ConnectionManager;
     persistImage?: PersistImageFn;
-    providerRegistry: ProviderRegistry;
+    providerRegistry: ProviderCatalog;
     sandboxDir?: string;
     submitImageJob?: SubmitImageJobFn;
     submitVideoJob?: SubmitVideoJobFn;
@@ -103,7 +103,7 @@ export function createMainAgentTools(
 /** @deprecated Use createMainAgentTools + sub-agents instead */
 export function createPhaseATools(
   backend: BackendProtocol | BackendFactory,
-  providerRegistry: ProviderRegistry,
+  providerRegistry: ProviderCatalog,
 ) {
   return [
     createProjectSearchTool(backend),

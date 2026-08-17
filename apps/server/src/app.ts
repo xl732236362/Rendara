@@ -139,8 +139,9 @@ export function buildAppFromEnv(
   options: Omit<BuildAppOptions, "env"> = {},
 ): FastifyInstance {
   // Register generation providers (shared with worker.ts)
-  const providerRegistry =
-    options.providerRegistry ?? registerAllProviders(env);
+  const providerRegistry = (
+    options.providerRegistry ?? registerAllProviders(env)
+  ).seal();
 
   const app = Fastify({
     logger: { level: "info" },

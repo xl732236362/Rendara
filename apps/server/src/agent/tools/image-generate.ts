@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { generateImage } from "../../generation/image-generation.js";
 import type {
   AvailableModel,
-  ProviderRegistry,
+  ProviderCatalog,
 } from "../../generation/providers/registry.js";
 
 const DEFAULT_MODEL = "black-forest-labs/flux-kontext-pro";
@@ -158,7 +158,7 @@ export async function runImageGenerate(
   persistImage?: PersistImageFn,
   submitImageJob?: SubmitImageJobFn,
   attachmentMap?: Record<string, string>,
-  providerRegistry?: ProviderRegistry,
+  providerRegistry?: ProviderCatalog,
 ): Promise<ImageGenerateResult> {
   const t0 = Date.now();
   const lap = (label: string, extra?: Record<string, unknown>) => {
@@ -327,7 +327,7 @@ export function createImageGenerateTool(deps?: {
   submitImageJob?: SubmitImageJobFn;
   /** Override for testing — defaults to querying the provider registry. */
   availableModels?: AvailableModel[];
-  providerRegistry?: ProviderRegistry;
+  providerRegistry?: ProviderCatalog;
 }) {
   const models =
     deps?.availableModels ??

@@ -18,7 +18,7 @@ import type { JobService } from "../features/jobs/job-service.js";
 import { JobServiceError } from "../features/jobs/job-service.js";
 import type { UploadService } from "../features/uploads/upload-service.js";
 import { generateImage } from "../generation/image-generation.js";
-import type { ProviderRegistry } from "../generation/providers/registry.js";
+import type { ProviderCatalog } from "../generation/providers/registry.js";
 import type {
   AuthenticatedUser,
   RequestAuthenticator,
@@ -52,7 +52,7 @@ export async function registerGenerateRoutes(
     auth: RequestAuthenticator;
     creditService?: CreditService;
     jobService?: JobService;
-    providerRegistry: ProviderRegistry;
+    providerRegistry: ProviderCatalog;
     tierGuard?: TierGuard;
     uploadService: UploadService;
     viewerService: ViewerService;

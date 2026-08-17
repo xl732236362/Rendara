@@ -1,5 +1,5 @@
 import { generateImage } from "../../../generation/image-generation.js";
-import type { ProviderRegistry } from "../../../generation/providers/registry.js";
+import type { ProviderCatalog } from "../../../generation/providers/registry.js";
 import { applyWatermark } from "../../credits/watermark.js";
 // @credits-system — Image generation executor: applies watermark for free-tier users
 import type { ExecutorContext, JobExecutor } from "../job-executor.js";
@@ -7,7 +7,7 @@ import type { ExecutorContext, JobExecutor } from "../job-executor.js";
 import type { SubscriptionPlan } from "@loomic/shared";
 
 export function createImageGenerationExecutor(
-  providerRegistry: ProviderRegistry,
+  providerRegistry: ProviderCatalog,
 ): JobExecutor {
   return async (jobId, _rawPayload, ctx: ExecutorContext) => {
     const t0 = Date.now();

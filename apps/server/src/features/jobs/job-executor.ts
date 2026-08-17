@@ -28,7 +28,13 @@ export type JobExecutor = (
   ctx: ExecutorContext,
 ) => Promise<Record<string, unknown>>;
 
-export class ExecutorRegistry {
+/** Read-only executor capabilities exposed to worker dispatch. */
+export interface ExecutorCatalog {
+  get(jobType: BackgroundJobType): JobExecutor | undefined;
+  listJobTypes(): BackgroundJobType[];
+}
+
+export class ExecutorRegistry implements ExecutorCatalog {
   readonly #executors = new Map<BackgroundJobType, JobExecutor>();
   #sealed = false;
 

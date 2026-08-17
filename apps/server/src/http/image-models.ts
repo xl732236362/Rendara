@@ -10,7 +10,7 @@ import {
 
 import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
 import type { CreditService } from "../features/credits/credit-service.js";
-import type { ProviderRegistry } from "../generation/providers/registry.js";
+import type { ProviderCatalog } from "../generation/providers/registry.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
 
 export async function registerImageModelRoutes(
@@ -18,7 +18,7 @@ export async function registerImageModelRoutes(
   options: {
     auth: RequestAuthenticator;
     creditService: CreditService;
-    providerRegistry: ProviderRegistry;
+    providerRegistry: ProviderCatalog;
     viewerService: ViewerService;
   },
 ) {

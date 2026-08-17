@@ -1,9 +1,9 @@
-import type { ProviderRegistry } from "../../../generation/providers/registry.js";
+import type { ProviderCatalog } from "../../../generation/providers/registry.js";
 import { generateVideo } from "../../../generation/video-generation.js";
 import type { ExecutorContext, JobExecutor } from "../job-executor.js";
 
 export function createVideoGenerationExecutor(
-  providerRegistry: ProviderRegistry,
+  providerRegistry: ProviderCatalog,
 ): JobExecutor {
   return async (jobId, _rawPayload, ctx: ExecutorContext) => {
     const t0 = Date.now();
