@@ -11,7 +11,11 @@ export const DEFAULT_WEB_ORIGIN = "http://localhost:3000";
  * When Google/Vertex is configured but OpenAI is not, defaults to Gemini 2.5 Flash.
  */
 export function resolveDefaultAgentModel(
-  env: Pick<ServerEnv, "googleApiKey" | "googleVertexProject" | "openAIApiKey">,
+  env: {
+    googleApiKey?: string | undefined;
+    googleVertexProject?: string | undefined;
+    openAIApiKey?: string | undefined;
+  },
 ): string {
   const hasOpenAI = !!env.openAIApiKey;
   const hasGoogle = !!(env.googleApiKey || env.googleVertexProject);

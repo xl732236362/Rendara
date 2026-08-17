@@ -955,6 +955,18 @@ export type Database = {
         }
         Returns: string
       }
+      grant_plan_credits: {
+        Args: {
+          p_credits: number
+          p_plan: Database["public"]["Enums"]["subscription_plan"]
+          p_workspace_id: string
+        }
+        Returns: number
+      }
+      increment_job_attempt: {
+        Args: { p_job_id: string }
+        Returns: { attempt_count: number; max_attempts: number }[]
+      }
       refund_credits: {
         Args: {
           p_workspace_id: string
@@ -974,7 +986,7 @@ export type Database = {
         | "failed"
         | "canceled"
         | "dead_letter"
-      background_job_type: "image_generation" | "video_generation"
+      background_job_type: "image_generation" | "video_generation" | "code_execution"
       billing_period: "monthly" | "yearly"
       brand_kit_asset_type: "color" | "font" | "logo" | "image"
       credit_transaction_type:
@@ -992,6 +1004,97 @@ export type Database = {
     CompositeTypes: {
       [_ in never]: never
     }
+  }
+  // Supabase's API type generator omits this non-exposed, server-owned schema.
+  langgraph: {
+    Tables: {
+      checkpoint_migrations: {
+        Row: { v: number }
+        Insert: { v: number }
+        Update: { v?: number }
+        Relationships: []
+      }
+      checkpoints: {
+        Row: {
+          thread_id: string
+          checkpoint_ns: string
+          checkpoint_id: string
+          parent_checkpoint_id: string | null
+          type: string | null
+          checkpoint: Json
+          metadata: Json
+        }
+        Insert: {
+          thread_id: string
+          checkpoint_ns?: string
+          checkpoint_id: string
+          parent_checkpoint_id?: string | null
+          type?: string | null
+          checkpoint: Json
+          metadata?: Json
+        }
+        Update: Partial<Database["langgraph"]["Tables"]["checkpoints"]["Insert"]>
+        Relationships: []
+      }
+      checkpoint_blobs: {
+        Row: {
+          thread_id: string
+          checkpoint_ns: string
+          channel: string
+          version: string
+          type: string
+          blob: string | null
+        }
+        Insert: Database["langgraph"]["Tables"]["checkpoint_blobs"]["Row"]
+        Update: Partial<Database["langgraph"]["Tables"]["checkpoint_blobs"]["Row"]>
+        Relationships: []
+      }
+      checkpoint_writes: {
+        Row: {
+          thread_id: string
+          checkpoint_ns: string
+          checkpoint_id: string
+          task_id: string
+          idx: number
+          channel: string
+          type: string | null
+          blob: string
+        }
+        Insert: Database["langgraph"]["Tables"]["checkpoint_writes"]["Row"]
+        Update: Partial<Database["langgraph"]["Tables"]["checkpoint_writes"]["Row"]>
+        Relationships: []
+      }
+      store_migrations: {
+        Row: { v: number }
+        Insert: { v: number }
+        Update: { v?: number }
+        Relationships: []
+      }
+      store: {
+        Row: {
+          namespace_path: string
+          key: string
+          value: Json
+          created_at: string | null
+          updated_at: string | null
+          expires_at: string | null
+        }
+        Insert: {
+          namespace_path: string
+          key: string
+          value: Json
+          created_at?: string | null
+          updated_at?: string | null
+          expires_at?: string | null
+        }
+        Update: Partial<Database["langgraph"]["Tables"]["store"]["Insert"]>
+        Relationships: []
+      }
+    }
+    Views: { [_ in never]: never }
+    Functions: { [_ in never]: never }
+    Enums: { [_ in never]: never }
+    CompositeTypes: { [_ in never]: never }
   }
 }
 
@@ -1123,7 +1226,7 @@ export const Constants = {
         "canceled",
         "dead_letter",
       ],
-      background_job_type: ["image_generation", "video_generation"],
+      background_job_type: ["image_generation", "video_generation", "code_execution"],
       billing_period: ["monthly", "yearly"],
       brand_kit_asset_type: ["color", "font", "logo", "image"],
       credit_transaction_type: [

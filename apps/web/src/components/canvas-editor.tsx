@@ -10,7 +10,7 @@ import type { WebSocketHandle } from "../hooks/use-websocket";
 import { getServerBaseUrl } from "../lib/env";
 import { saveCanvas, uploadThumbnail } from "../lib/server-api";
 import { VideoCanvasElement } from "./canvas/video-canvas-element";
-import { isVideoUrl } from "../lib/canvas-elements";
+import { blobToDataURL, isVideoUrl } from "../lib/canvas-elements";
 import { CanvasToolMenu } from "./canvas-tool-menu";
 import { normalizeCanvasElements } from "../lib/canvas-normalize";
 import { ErrorBoundary } from "./error-boundary";
@@ -140,12 +140,7 @@ export function CanvasEditor({
               return;
             }
             const blob = await resp.blob();
-            const reader = new FileReader();
-            const dataURL = await new Promise<string>((resolve, reject) => {
-              reader.onload = () => resolve(reader.result as string);
-              reader.onerror = reject;
-              reader.readAsDataURL(blob);
-            });
+            const dataURL = await blobToDataURL(blob);
             resolved[fileId] = {
               id: meta.id ?? fileId,
               mimeType: meta.mimeType ?? blob.type,

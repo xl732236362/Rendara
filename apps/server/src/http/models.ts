@@ -4,6 +4,7 @@ import { type ModelInfo, modelListResponseSchema } from "@loomic/shared";
 import type { ServerEnv } from "../config/env.js";
 
 const OPENAI_MODELS: ModelInfo[] = [
+  { id: "openai:gpt-5.6-terra", name: "GPT-5.6 Terra", provider: "openai" },
   { id: "openai:az_sre/gpt-5.4", name: "GPT-5.4", provider: "openai" },
   { id: "openai:gpt-5.4", name: "OpenAI GPT-5.4", provider: "openai" },
   { id: "openai:gpt-5.2", name: "OpenAI GPT-5.2", provider: "openai" },

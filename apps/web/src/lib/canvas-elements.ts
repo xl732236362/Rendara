@@ -66,6 +66,7 @@ export function createExcalidrawImageElement(opts: {
   y: number;
   width: number;
   height: number;
+  angle?: number;
   title?: string;
   source?: "generated" | "uploaded";
   storageUrl?: string;
@@ -77,7 +78,7 @@ export function createExcalidrawImageElement(opts: {
     y: opts.y,
     width: opts.width,
     height: opts.height,
-    angle: 0,
+    angle: opts.angle ?? 0,
     fileId: opts.fileId,
     strokeColor: "#000000",
     backgroundColor: "transparent",
@@ -112,6 +113,17 @@ export function createExcalidrawImageElement(opts: {
   return element;
 }
 
+/** Convert a Blob to a data URL without leaking an opaque browser Event. */
+export function blobToDataURL(blob: Blob): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () =>
+      reject(new Error("Failed to convert image to data URL"));
+    reader.readAsDataURL(blob);
+  });
+}
+
 /**
  * Fetch an image URL and convert it to a data URL string.
  * Routes through the server proxy to bypass browser CORS restrictions.
@@ -124,13 +136,7 @@ export async function fetchAsDataURL(url: string): Promise<string> {
     throw new Error(`Failed to fetch image: ${response.status}`);
   }
   const blob = await response.blob();
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = () =>
-      reject(new Error("Failed to convert image to data URL"));
-    reader.readAsDataURL(blob);
-  });
+  return blobToDataURL(blob);
 }
 
 /**
