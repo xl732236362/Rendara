@@ -12,7 +12,8 @@
 
 ## File Map
 
-- Create `supabase/migrations/20260818000000_phase2_consistency_and_canvas_revision.sql`: additive schema, constraints, indexes, hardened RPCs, outbox/inbox, and compatibility grants.
+- Create `supabase/migrations/20260818000000_phase2_job_status.sql`: commit the cooperative-cancellation enum extension before it is referenced.
+- Create `supabase/migrations/20260818000001_phase2_consistency_and_canvas_revision.sql`: additive schema, constraints, indexes, hardened RPCs, outbox/inbox, and compatibility grants.
 - Create `supabase/tests/phase_2_consistency.test.sql`: pgTAP permission, atomicity, idempotency, transition, compensation, Canvas CAS, and outbox tests.
 - Create `apps/server/src/features/jobs/job-state-repository.ts`: typed Supabase RPC adapter for submit, cancel, claim, renew, and settle.
 - Create `apps/server/src/features/jobs/job-state-repository.test.ts`: RPC result/error mapping and redaction tests.
@@ -129,7 +130,7 @@ git commit -m "feat(shared): define phase two consistency contracts"
 - Create: `supabase/migrations/20260818000000_phase2_consistency_and_canvas_revision.sql`
 - Create: `supabase/tests/phase_2_consistency.test.sql`
 
-- [ ] **Step 1: Write failing pgTAP schema and permission tests**
+- [x] **Step 1: Write failing pgTAP schema and permission tests**
 
 Plan assertions for the new columns/tables, service-role-only submission/worker functions, authenticated cancel/Canvas functions, and revoked public execution. Submission stays server-only because model pricing is application-owned and must not be caller-supplied by a directly authenticated client. Include exact checks such as:
 
@@ -146,13 +147,13 @@ select ok(not has_function_privilege('authenticated',
   'clients cannot claim worker leases');
 ```
 
-- [ ] **Step 2: Run database tests and verify RED**
+- [x] **Step 2: Run database tests and verify RED**
 
 Run: `supabase test db`
 
 Expected: FAIL because Phase 2 schema and functions do not exist.
 
-- [ ] **Step 3: Implement additive schema**
+- [x] **Step 3: Implement additive schema**
 
 Create enums/columns and constraints without editing historical migrations. Add:
 
@@ -171,7 +172,7 @@ alter table public.background_jobs
 
 Create `generation_submission_keys`, `job_effect_receipts`, `credit_compensations`, `domain_outbox`, and `domain_inbox` with primary/unique keys, foreign keys, bounded text/check constraints, timestamps, and RLS. Add partial indexes for expired active leases and unpublished outbox rows.
 
-- [ ] **Step 4: Implement hardened transactional functions**
+- [x] **Step 4: Implement hardened transactional functions**
 
 Implement and comment these RPCs with fully qualified names, fixed `search_path`, explicit grants, stable SQLSTATE/detail codes, and consistent lock order. Grant `submit_generation_job` only to `service_role`; it accepts explicit user/workspace identities from the trusted server and revalidates membership plus referenced resource ownership in the database:
 
@@ -190,20 +191,20 @@ public.fail_domain_outbox(uuid,text,text)
 
 `submit_generation_job` must call `pgmq.send` before returning and persist its message id. `settle_generation_job` must insert the success effect receipt before transitioning to succeeded. `commit_canvas_revision` must update Canvas, insert optional effect receipt, and insert outbox in one transaction.
 
-- [ ] **Step 5: Add pgTAP behavioral tests**
+- [x] **Step 5: Add pgTAP behavioral tests**
 
 Use savepoints and deterministic fixtures to prove same-key replay, conflicting fingerprints, insufficient-balance rollback, one debit, immediate queued cancellation, running `cancel_requested`, stale lease rejection, terminal immutability, compensation replay, Canvas conflict, duplicate effect, and no outbox row after rollback.
 
-- [ ] **Step 6: Rebuild the database and run pgTAP**
+- [x] **Step 6: Rebuild the database and run pgTAP**
 
 Run: `supabase db reset --yes && supabase test db`
 
 Expected: all migrations apply from zero and all pgTAP assertions pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```text
-git add supabase/migrations/20260818000000_phase2_consistency_and_canvas_revision.sql supabase/tests/phase_2_consistency.test.sql
+git add supabase/migrations/20260818000000_phase2_job_status.sql supabase/migrations/20260818000001_phase2_consistency_and_canvas_revision.sql supabase/tests/phase_2_consistency.test.sql
 git commit -m "feat(db): add transactional job and canvas primitives"
 ```
 
