@@ -66,7 +66,6 @@ type QueueSettlementActions = {
     message: string,
   ) => Promise<void>;
   archive: () => Promise<unknown>;
-  refund: (jobId: string) => Promise<void>;
 };
 
 const QUEUE_TYPES: Record<string, BackgroundJobType> = {
@@ -224,7 +223,6 @@ export async function settleRejectedGenerationQueueMessage(
     rejection.message,
   );
   await actions.archive();
-  await actions.refund(rejection.jobId);
 }
 
 export async function settleNonReadyGenerationQueueMessage(

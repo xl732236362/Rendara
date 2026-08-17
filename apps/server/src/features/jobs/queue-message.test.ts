@@ -109,7 +109,6 @@ describe("generation queue boundary", () => {
     const actions = {
       markDeadLetter: vi.fn().mockResolvedValue(undefined),
       archive: vi.fn().mockResolvedValue(undefined),
-      refund: vi.fn().mockResolvedValue(undefined),
     };
     const resolution = await resolveGenerationQueueMessage({
       queue: "image_generation_jobs",
@@ -139,14 +138,12 @@ describe("generation queue boundary", () => {
     ).toBe("retry");
     expect(actions.markDeadLetter).not.toHaveBeenCalled();
     expect(actions.archive).not.toHaveBeenCalled();
-    expect(actions.refund).not.toHaveBeenCalled();
   });
 
   it("archives a permanently orphaned message without dead-letter or refund", async () => {
     const actions = {
       markDeadLetter: vi.fn().mockResolvedValue(undefined),
       archive: vi.fn().mockResolvedValue(undefined),
-      refund: vi.fn().mockResolvedValue(undefined),
     };
     const resolution = await resolveGenerationQueueMessage({
       queue: "image_generation_jobs",
@@ -176,7 +173,6 @@ describe("generation queue boundary", () => {
     ).toBe("archived");
     expect(actions.archive).toHaveBeenCalledOnce();
     expect(actions.markDeadLetter).not.toHaveBeenCalled();
-    expect(actions.refund).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -204,11 +200,10 @@ describe("generation queue boundary", () => {
     });
   });
 
-  it("dead-letters, archives, and refunds a recoverable rejection", async () => {
+  it("dead-letters and archives a recoverable rejection without compensation", async () => {
     const actions = {
       markDeadLetter: vi.fn().mockResolvedValue(undefined),
       archive: vi.fn().mockResolvedValue(undefined),
-      refund: vi.fn().mockResolvedValue(undefined),
     };
 
     const resolution = await resolveGenerationQueueMessage({
@@ -246,7 +241,6 @@ describe("generation queue boundary", () => {
       expect.any(String),
     );
     expect(actions.archive).toHaveBeenCalledOnce();
-    expect(actions.refund).toHaveBeenCalledWith(ids.job);
     expect(
       actions.markDeadLetter.mock.invocationCallOrder[0] ?? 0,
     ).toBeLessThan(

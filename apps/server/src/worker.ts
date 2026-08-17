@@ -1,4 +1,4 @@
-// @credits-system — Worker process: handles job failure refunds (credit refund on generation error)
+// Generation worker: leased execution with at-least-once queue delivery.
 import { bootstrap } from "global-agent";
 
 // Enable HTTP proxy for all outbound requests if GLOBAL_AGENT_HTTP_PROXY is set
@@ -12,20 +12,18 @@ if (process.env.GLOBAL_AGENT_HTTP_PROXY) {
 
 import { randomUUID } from "node:crypto";
 import { loadServerEnv } from "./config/env.js";
-import {
-  type CreditService,
-  createCreditService,
-} from "./features/credits/credit-service.js";
 import { registerAllExecutors } from "./features/jobs/executors/register-all.js";
 import type {
   ExecutorCatalog,
   ExecutorContext,
 } from "./features/jobs/job-executor.js";
 import { createJobService } from "./features/jobs/job-service.js";
+import { createJobStateRepository } from "./features/jobs/job-state-repository.js";
 import {
   resolveGenerationQueueMessage,
   settleNonReadyGenerationQueueMessage,
 } from "./features/jobs/queue-message.js";
+import { createWorkerJobLifecycle } from "./features/jobs/worker-job-lifecycle.js";
 import { type PgmqMessage, createPgmqClient } from "./queue/pgmq-client.js";
 import { createAdminSupabaseClient } from "./supabase/admin.js";
 import { createUserSupabaseClientFactory } from "./supabase/user.js";
@@ -68,7 +66,10 @@ async function main() {
     createUserClient,
     getAdminClient,
   });
-  const creditService = createCreditService({ getAdminClient });
+  const jobStateRepository = createJobStateRepository({
+    createUserClient,
+    getAdminClient,
+  });
 
   // Base context — per-message fields (queue, msgId, renewVt) are added in processMessage
   const baseCtx = {
@@ -161,9 +162,11 @@ async function main() {
             queue,
             msg,
             ctx,
-            creditService,
+            jobStateRepository,
             executorRegistry,
             tag,
+            workerId,
+            vt,
           ).finally(() => inFlight.delete(task));
           inFlight.add(task);
         }
@@ -178,9 +181,11 @@ async function processMessage(
   queue: string,
   msg: PgmqMessage,
   ctx: ExecutorContext,
-  creditService: CreditService,
+  jobStateRepository: ReturnType<typeof createJobStateRepository>,
   executorRegistry: ExecutorCatalog,
   tag: string,
+  workerId: string,
+  leaseSeconds: number,
 ) {
   const resolution = await resolveGenerationQueueMessage({
     queue,
@@ -201,130 +206,80 @@ async function processMessage(
     }
     await settleNonReadyGenerationQueueMessage(resolution, {
       markDeadLetter: (jobId, code, message) =>
-        ctx.jobService.markDeadLetter(jobId, code, message),
+        settleRejectedJob(
+          jobStateRepository,
+          jobId,
+          workerId,
+          leaseSeconds,
+          code,
+          message,
+        ),
       archive: () => ctx.pgmq.archive(queue, msg.msg_id),
-      refund: (jobId) => refundDeadLetteredJob(jobId, ctx, creditService, tag),
     });
     return;
   }
   const { jobId, jobType, payload } = resolution.dispatch;
 
-  // Extract traceability context from PGMQ message (if present)
-  const sessionShort =
-    typeof payload.session_id === "string"
-      ? payload.session_id.slice(0, 8)
-      : undefined;
-  const startTime = Date.now();
-  console.log(
-    `${tag} Processing job ${jobId} (${jobType})${sessionShort ? ` session:${sessionShort}` : ""}`,
-  );
-
-  const executor = executorRegistry.get(jobType);
-  if (!executor) {
-    console.error(`${tag} No executor for job type: ${jobType}`);
-    await ctx.jobService.markFailed(
-      jobId,
-      "no_executor",
-      `No executor registered for ${jobType}`,
-    );
-    await ctx.pgmq.archive(queue, msg.msg_id);
-    return;
-  }
-
-  // Increment attempt count
-  const { attempt_count, max_attempts } =
-    await ctx.jobService.incrementAttempt(jobId);
-
-  // Mark running
-  await ctx.jobService.markRunning(jobId);
-
-  try {
-    const result = await executor(jobId, payload, ctx);
-    await ctx.jobService.markSucceeded(jobId, result);
-    await ctx.pgmq.deleteMsg(queue, msg.msg_id);
-    console.log(`${tag} Job ${jobId} succeeded +${Date.now() - startTime}ms`);
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    const errorCode = (err as { code?: string })?.code ?? "executor_error";
-
-    // Non-retryable errors: retrying with the same input will always fail.
-    // Dead-letter immediately so the caller (agent polling) gets fast feedback.
-    const NON_RETRYABLE_CODES = new Set([
-      "invalid_input",
-      "model_not_found",
-      "provider_not_found",
-      "safety_filter",
-    ]);
-    const shouldDeadLetter =
-      attempt_count >= max_attempts || NON_RETRYABLE_CODES.has(errorCode);
-
-    if (shouldDeadLetter) {
-      await ctx.jobService.markDeadLetter(jobId, errorCode, errorMessage);
-      await ctx.pgmq.archive(queue, msg.msg_id);
-
-      // Auto-refund credits for dead-lettered jobs
-      await refundDeadLetteredJob(jobId, ctx, creditService, tag);
-
-      console.error(
-        `${tag} Job ${jobId} dead-lettered after ${attempt_count} attempts +${Date.now() - startTime}ms: ${errorMessage}`,
-      );
-    } else {
-      await ctx.jobService.markFailed(jobId, errorCode, errorMessage);
-      // Message will re-appear after VT expires for retry
-      console.warn(
-        `${tag} Job ${jobId} failed (attempt ${attempt_count}/${max_attempts}) +${Date.now() - startTime}ms: ${errorMessage}`,
-      );
-    }
-  }
+  const logger = {
+    info: (event: string, fields: Record<string, unknown>) =>
+      console.log(JSON.stringify({ level: "info", event, ...fields })),
+    warn: (event: string, fields: Record<string, unknown>) =>
+      console.warn(JSON.stringify({ level: "warn", event, ...fields })),
+    error: (event: string, fields: Record<string, unknown>) =>
+      console.error(JSON.stringify({ level: "error", event, ...fields })),
+  };
+  const lifecycle = createWorkerJobLifecycle({
+    jobs: jobStateRepository,
+    workerId,
+    leaseSeconds,
+    logger,
+    queue: {
+      deleteMessage: (name, messageId) => ctx.pgmq.deleteMsg(name, messageId),
+      archiveMessage: (name, messageId) => ctx.pgmq.archive(name, messageId),
+      renewMessage: (name, messageId, seconds) =>
+        ctx.pgmq.setVt(name, messageId, seconds),
+    },
+    executor: async (id, type, authoritativePayload) => {
+      const executor = executorRegistry.get(type);
+      if (!executor) {
+        throw Object.assign(new Error("Generation executor is unavailable."), {
+          code: "no_executor",
+        });
+      }
+      return executor(id, authoritativePayload, ctx);
+    },
+  });
+  await lifecycle.process({
+    jobId,
+    jobType,
+    payload,
+    queue,
+    messageId: msg.msg_id,
+  });
 }
 
-/**
- * Refund credits for a dead-lettered job if credits were deducted.
- * Only dead-lettered (permanently failed) jobs get refunds — not cancelled jobs.
- */
-async function refundDeadLetteredJob(
+async function settleRejectedJob(
+  jobs: ReturnType<typeof createJobStateRepository>,
   jobId: string,
-  ctx: ExecutorContext,
-  creditService: CreditService,
-  tag: string,
+  workerId: string,
+  leaseSeconds: number,
+  errorCode: string,
+  errorMessage: string,
 ) {
-  try {
-    const admin = ctx.getAdminClient();
-    const { data: jobRow } = await admin
-      .from("background_jobs")
-      .select("credits_cost, workspace_id, created_by")
-      .eq("id", jobId)
-      .single();
-
-    if (!jobRow) return;
-
-    const creditsCost = jobRow.credits_cost ?? 0;
-    const workspaceId = jobRow.workspace_id;
-    const createdBy = jobRow.created_by;
-
-    if (creditsCost <= 0 || !workspaceId || !createdBy) return;
-
-    const txId = await creditService.refundCredits(
-      workspaceId,
-      createdBy,
-      creditsCost,
-      jobId,
-      "Auto-refund: job failed",
-    );
-    console.log(
-      `${tag} Refunded ${creditsCost} credits for job ${jobId} (tx: ${txId})`,
-    );
-  } catch (refundErr) {
-    // Log but don't crash the worker — the job is already dead-lettered
-    console.error(
-      `${tag} Failed to refund credits for job ${jobId}:`,
-      refundErr,
-    );
+  const claim = await jobs.claim(jobId, workerId, leaseSeconds);
+  if (claim.kind === "missing" || claim.kind === "terminal") return;
+  if (claim.kind === "busy") {
+    throw Object.assign(new Error("Job is already leased."), {
+      code: "stale_job_lease",
+    });
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  await jobs.settle({
+    jobId,
+    leaseToken: claim.lease_token,
+    outcome: "dead_letter",
+    errorCode,
+    errorMessage,
+  });
 }
 
 main().catch((err) => {

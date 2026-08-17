@@ -289,7 +289,7 @@ git commit -m "feat(server): submit generation atomically"
 - Modify: `apps/server/src/features/jobs/queue-message.test.ts`
 - Modify: `apps/server/src/worker.ts`
 
-- [ ] **Step 1: Write state-machine tests first**
+- [x] **Step 1: Write state-machine tests first**
 
 Cover claim rejection for terminal jobs, duplicate delivery, lease renewal, retryable failure, dead letter, `cancel_requested`, stale settlement, and crash after settle before message delete. Assert every rejection/refusal path never calls refund:
 
@@ -300,13 +300,13 @@ expect(queue.deleteMsg).toHaveBeenCalledOnce();
 expect(compensate).not.toHaveBeenCalled();
 ```
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run: `pnpm --filter @loomic/server test -- src/features/jobs/worker-job-lifecycle.test.ts src/features/jobs/queue-message.test.ts`
 
 Expected: FAIL on the existing unconditional job updates and refund settlement.
 
-- [ ] **Step 3: Implement the lifecycle service**
+- [x] **Step 3: Implement the lifecycle service**
 
 Use a per-delivery flow:
 
@@ -326,21 +326,21 @@ try {
 
 Cancellation checks occur before provider execution, after provider response, and inside the settlement RPC. Queue deletion/archive occurs only after durable terminal settlement.
 
-- [ ] **Step 4: Remove automatic refunds**
+- [x] **Step 4: Remove automatic refunds**
 
 Delete `refund` from queue settlement actions and remove `refundDeadLetteredJob` from `worker.ts`. Rejected, canceled, failed, and dead-lettered jobs preserve their original debit ledger.
 
-- [ ] **Step 5: Replace console lifecycle logs**
+- [x] **Step 5: Replace console lifecycle logs**
 
 Use a small structured logger adapter with event names, job/queue/message ids, attempt, worker id, lease digest, transition, duration, and stable error code. Do not log provider payloads or raw lease tokens.
 
-- [ ] **Step 6: Run worker and queue tests**
+- [x] **Step 6: Run worker and queue tests**
 
 Run: `pnpm --filter @loomic/server test -- src/features/jobs/worker-job-lifecycle.test.ts src/features/jobs/queue-message.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```text
 git add apps/server/src/features/jobs apps/server/src/worker.ts

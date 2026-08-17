@@ -2,7 +2,6 @@ import type {
   BackgroundJob,
   BackgroundJobStatus,
   BackgroundJobType,
-  Json,
 } from "@loomic/shared";
 
 import type { AtomicJobSubmissionCommand } from "../../application/generation/ports.js";
@@ -53,23 +52,6 @@ export type JobService = {
   ): Promise<BackgroundJob[]>;
   cancelJob(user: AuthenticatedUser, jobId: string): Promise<BackgroundJob>;
   getJobAdmin(jobId: string): Promise<BackgroundJob>;
-
-  // Admin-only methods (use admin client, no user auth)
-  markRunning(jobId: string): Promise<void>;
-  markSucceeded(jobId: string, result: Record<string, unknown>): Promise<void>;
-  markFailed(
-    jobId: string,
-    errorCode: string,
-    errorMessage: string,
-  ): Promise<void>;
-  markDeadLetter(
-    jobId: string,
-    errorCode: string,
-    errorMessage: string,
-  ): Promise<void>;
-  incrementAttempt(
-    jobId: string,
-  ): Promise<{ attempt_count: number; max_attempts: number }>;
 };
 
 export function createJobService(options: {
@@ -188,86 +170,6 @@ export function createJobService(options: {
         throw new JobServiceError("job_not_found", "Job not found.", 404);
       }
       return mapJobRow(job as unknown as Record<string, unknown>);
-    },
-
-    // --- Admin-only methods (admin client, bypasses RLS) ---
-
-    // TODO(phase-2): verify affected rows and centralize transition failures
-    // when job lifecycle updates move behind transactional state semantics.
-    async markRunning(jobId) {
-      const admin = options.getAdminClient();
-      await admin
-        .from("background_jobs")
-        .update({ status: "running", started_at: new Date().toISOString() })
-        .eq("id", jobId)
-        .eq("status", "queued");
-    },
-
-    async markSucceeded(jobId, result) {
-      const admin = options.getAdminClient();
-      await admin
-        .from("background_jobs")
-        .update({
-          status: "succeeded",
-          result: result as Json,
-          completed_at: new Date().toISOString(),
-        })
-        .eq("id", jobId);
-    },
-
-    async markFailed(jobId, errorCode, errorMessage) {
-      const admin = options.getAdminClient();
-      await admin
-        .from("background_jobs")
-        .update({
-          status: "failed",
-          error_code: errorCode,
-          error_message: errorMessage,
-          failed_at: new Date().toISOString(),
-        })
-        .eq("id", jobId);
-    },
-
-    async markDeadLetter(jobId, errorCode, errorMessage) {
-      const admin = options.getAdminClient();
-      await admin
-        .from("background_jobs")
-        .update({
-          status: "dead_letter",
-          error_code: errorCode,
-          error_message: errorMessage,
-          failed_at: new Date().toISOString(),
-        })
-        .eq("id", jobId);
-    },
-
-    async incrementAttempt(jobId) {
-      const admin = options.getAdminClient();
-      // NOTE: increment_job_attempt may not be in generated Supabase types yet
-      const { data, error } = await (admin as any).rpc(
-        "increment_job_attempt",
-        {
-          p_job_id: jobId,
-        },
-      );
-
-      if (error) {
-        console.error(
-          "[job-service] increment_job_attempt RPC failed:",
-          error.message,
-        );
-        return { attempt_count: 1, max_attempts: 3 };
-      }
-
-      const row = Array.isArray(data) ? data[0] : data;
-      if (row && typeof row === "object") {
-        return {
-          attempt_count: (row as any).attempt_count as number,
-          max_attempts: ((row as any).max_attempts as number) ?? 3,
-        };
-      }
-      // Job not found — return safe defaults
-      return { attempt_count: 1, max_attempts: 3 };
     },
   };
 }

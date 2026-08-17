@@ -20,6 +20,25 @@ const cancellationSchema = z.object({
   replayed: z.boolean(),
 });
 
+const claimSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("missing") }),
+  z.object({ kind: z.literal("busy"), job: backgroundJobSchema }),
+  z.object({ kind: z.literal("terminal"), job: backgroundJobSchema }),
+  z.object({
+    kind: z.literal("claimed"),
+    job: backgroundJobSchema,
+    lease_token: z.string().uuid(),
+  }),
+]);
+
+const settlementSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("failed"), job: backgroundJobSchema }),
+  z.object({ kind: z.literal("terminal"), job: backgroundJobSchema }),
+]);
+
+export type JobClaim = z.infer<typeof claimSchema>;
+export type JobSettlement = z.infer<typeof settlementSchema>;
+
 type RpcError = {
   code?: string;
   details?: string;
@@ -42,6 +61,24 @@ export type JobStateRepository = {
     user: AuthenticatedUser,
     jobId: string,
   ): Promise<{ job: BackgroundJob; replayed: boolean }>;
+  claim(
+    jobId: string,
+    workerId: string,
+    leaseSeconds: number,
+  ): Promise<JobClaim>;
+  renew(
+    jobId: string,
+    leaseToken: string,
+    leaseSeconds: number,
+  ): Promise<BackgroundJob>;
+  settle(command: {
+    jobId: string;
+    leaseToken: string;
+    outcome: "succeeded" | "failed" | "dead_letter" | "canceled";
+    result?: Record<string, unknown>;
+    errorCode?: string;
+    errorMessage?: string;
+  }): Promise<JobSettlement>;
 };
 
 export function createJobStateRepository(options: {
@@ -90,6 +127,57 @@ export function createJobStateRepository(options: {
       if (!parsed.success) throw invalidRpcResult("generation cancellation");
       return parsed.data;
     },
+
+    async claim(jobId, workerId, leaseSeconds) {
+      const { data, error } = await callRpc(
+        options.getAdminClient(),
+        "claim_generation_job",
+        {
+          p_job_id: jobId,
+          p_lease_owner: workerId,
+          p_lease_seconds: leaseSeconds,
+        },
+      );
+      if (error) throw mapRpcError(error, "job_query_failed");
+      const parsed = claimSchema.safeParse(data);
+      if (!parsed.success) throw invalidRpcResult("generation job claim");
+      return parsed.data;
+    },
+
+    async renew(jobId, leaseToken, leaseSeconds) {
+      const { data, error } = await callRpc(
+        options.getAdminClient(),
+        "renew_generation_job_lease",
+        {
+          p_job_id: jobId,
+          p_lease_token: leaseToken,
+          p_lease_seconds: leaseSeconds,
+        },
+      );
+      if (error) throw mapRpcError(error, "job_query_failed");
+      const parsed = backgroundJobSchema.safeParse(data);
+      if (!parsed.success) throw invalidRpcResult("generation lease renewal");
+      return parsed.data;
+    },
+
+    async settle(command) {
+      const { data, error } = await callRpc(
+        options.getAdminClient(),
+        "settle_generation_job",
+        {
+          p_job_id: command.jobId,
+          p_lease_token: command.leaseToken,
+          p_outcome: command.outcome,
+          p_result: command.result ?? null,
+          p_error_code: command.errorCode ?? null,
+          p_error_message: command.errorMessage ?? null,
+        },
+      );
+      if (error) throw mapRpcError(error, "job_query_failed");
+      const parsed = settlementSchema.safeParse(data);
+      if (!parsed.success) throw invalidRpcResult("generation settlement");
+      return parsed.data;
+    },
   };
 }
 
@@ -119,6 +207,7 @@ function mapRpcError(error: RpcError, fallback: AppErrorCode): AppError {
     insufficient_credits: { code: "insufficient_credits", status: 402 },
     job_already_terminal: { code: "job_already_terminal", status: 409 },
     job_not_found: { code: "job_not_found", status: 404 },
+    stale_job_lease: { code: "stale_job_lease", status: 409 },
     unauthorized: { code: "unauthorized", status: 401 },
   };
   const classification = detail ? mapped[detail] : undefined;
@@ -149,6 +238,8 @@ function safeMessage(code: AppErrorCode): string {
       return "The job has already completed.";
     case "job_not_found":
       return "Job not found.";
+    case "stale_job_lease":
+      return "The job lease is no longer valid.";
     case "forbidden":
       return "Access denied.";
     case "unauthorized":

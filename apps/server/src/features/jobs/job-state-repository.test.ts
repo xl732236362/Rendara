@@ -152,4 +152,69 @@ describe("job state repository", () => {
       p_job_id: job.id,
     });
   });
+
+  it("claims and settles a job with the same lease token", async () => {
+    const leaseToken = "88888888-8888-4888-8888-888888888888";
+    const runningJob = {
+      ...job,
+      status: "running" as const,
+      attempt_count: 1,
+      lease_token: leaseToken,
+      lease_owner: "worker-1",
+      lease_expires_at: "2026-08-18T00:01:00.000Z",
+    };
+    const adminRpc = vi
+      .fn()
+      .mockResolvedValueOnce({
+        data: { kind: "claimed", job: runningJob, lease_token: leaseToken },
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: { kind: "terminal", job: { ...runningJob, status: "succeeded" } },
+        error: null,
+      });
+    const repository = createJobStateRepository({
+      getAdminClient: () =>
+        ({ rpc: adminRpc }) as unknown as AdminSupabaseClient,
+      createUserClient: () => ({}) as UserSupabaseClient,
+    });
+
+    await expect(
+      repository.claim(job.id, "worker-1", 30),
+    ).resolves.toMatchObject({
+      kind: "claimed",
+      lease_token: leaseToken,
+    });
+    await repository.settle({
+      jobId: job.id,
+      leaseToken,
+      outcome: "succeeded",
+      result: { url: "stored" },
+    });
+    expect(adminRpc).toHaveBeenNthCalledWith(2, "settle_generation_job", {
+      p_job_id: job.id,
+      p_lease_token: leaseToken,
+      p_outcome: "succeeded",
+      p_result: { url: "stored" },
+      p_error_code: null,
+      p_error_message: null,
+    });
+  });
+
+  it("maps stale lease renewal to a safe conflict", async () => {
+    const secret = "raw lease token must stay private";
+    const { repository } = setup({
+      data: null,
+      error: { details: "stale_job_lease", message: secret },
+    });
+    const error = await repository
+      .renew(job.id, "88888888-8888-4888-8888-888888888888", 30)
+      .catch((value) => value);
+    expect(error).toMatchObject({
+      code: "stale_job_lease",
+      statusCode: 409,
+      expose: true,
+    });
+    expect(error.message).not.toContain(secret);
+  });
 });
