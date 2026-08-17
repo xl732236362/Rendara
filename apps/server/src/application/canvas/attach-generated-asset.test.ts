@@ -22,6 +22,8 @@ describe("AttachGeneratedAsset", () => {
     });
     const command = {
       canvasId: "canvas-1",
+      jobId: "11111111-1111-4111-8111-111111111111",
+      effectKey: "generated_asset_attached",
       asset: {
         type: "image" as const,
         objectPath: "generated/a.png",

@@ -415,7 +415,7 @@ git commit -m "feat(credits): add replay-safe human compensation"
 - Modify: `apps/server/src/application/canvas/attach-generated-asset.test.ts`
 - Modify: `apps/server/src/app.ts`
 
-- [ ] **Step 1: Write failing Canvas repository and retry tests**
+- [x] **Step 1: Write failing Canvas repository and retry tests**
 
 Test successful revision 3 -> 4 commit, expected/current conflict details, three-operation retries, no retry for full-document save, duplicate generated asset effect, and event identity:
 
@@ -426,31 +426,31 @@ await expect(repository.commit({ expectedRevision: 2, ...command }))
   .rejects.toMatchObject({ code: "canvas_revision_conflict", statusCode: 409 });
 ```
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run: `pnpm --filter @loomic/server test -- src/features/canvas/canvas-repository.test.ts src/features/canvas/canvas-operation-application-adapter.test.ts`
 
 Expected: FAIL because writes do not carry revisions.
 
-- [ ] **Step 3: Implement CanvasRepository**
+- [x] **Step 3: Implement CanvasRepository**
 
 Define `read` returning stored content plus revision and `commit` calling `commit_canvas_revision`. Parse RPC output and map conflict details. Keep Storage upload outside `commit` and log orphan candidates when CAS exhausts retries.
 
-- [ ] **Step 4: Make element writer pure**
+- [x] **Step 4: Make element writer pure**
 
 Change image/video helpers to accept `CanvasContent` and return `{ content, elementId }`; remove all `.from("canvases")` reads/updates. Preserve storage download as an explicit pre-commit preparation step for image content.
 
-- [ ] **Step 5: Route Agent and generated assets through CAS**
+- [x] **Step 5: Route Agent and generated assets through CAS**
 
 `applyOperations` performs read -> pure apply -> commit and retries at most three conflicts with bounded jitter. `AttachGeneratedAssetCommand` requires a stable `effectKey` derived from job/effect identity and uses the same repository path.
 
-- [ ] **Step 6: Run all Canvas server tests**
+- [x] **Step 6: Run all Canvas server tests**
 
 Run: `pnpm --filter @loomic/server test -- src/features/canvas src/application/canvas`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```text
 git add apps/server/src/features/canvas apps/server/src/application/canvas apps/server/src/app.ts

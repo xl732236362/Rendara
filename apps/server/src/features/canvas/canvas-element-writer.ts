@@ -1,6 +1,6 @@
 // apps/server/src/features/canvas/canvas-element-writer.ts
 
-import type { CanvasContent, Json } from "@loomic/shared";
+import type { CanvasContent } from "@loomic/shared";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -9,8 +9,9 @@ import type { CanvasContent, Json } from "@loomic/shared";
 type CanvasElement = Record<string, unknown>;
 
 type ImageInsertOpts = {
-  canvasId: string;
-  objectPath: string; // Storage path for oss:// marker (already uploaded by worker)
+  dataURL: string;
+  elementId?: string;
+  fileId?: string;
   width: number;
   height: number;
   mimeType: string;
@@ -18,7 +19,7 @@ type ImageInsertOpts = {
 };
 
 type VideoInsertOpts = {
-  canvasId: string;
+  elementId?: string;
   signedUrl: string; // Public URL for embeddable link
   width: number;
   height: number;
@@ -30,7 +31,7 @@ type VideoInsertOpts = {
 
 type Placement = { x: number; y: number; width: number; height: number };
 
-type InsertResult = { elementId: string };
+type InsertResult = { elementId: string; content: CanvasContent };
 
 // ---------------------------------------------------------------------------
 // Placement calculation (ported from apps/web/src/lib/canvas-elements.ts)
@@ -104,7 +105,7 @@ function buildImageElement(
 ): CanvasElement {
   return {
     type: "image",
-    id: generateId(),
+    id: opts.elementId ?? generateId(),
     x: placement.x,
     y: placement.y,
     width: placement.width,
@@ -146,7 +147,7 @@ function buildVideoElement(
 ): CanvasElement {
   return {
     type: "embeddable",
-    id: generateId(),
+    id: opts.elementId ?? generateId(),
     x: placement.x,
     y: placement.y,
     width: placement.width,
@@ -199,44 +200,11 @@ const VIDEO_MAX_SIZE = 800;
  * We download it and embed as base64 dataURL in the canvas files map so
  * Excalidraw can render it natively (consistent with frontend-inserted images).
  */
-export async function insertImageElement(
-  client: {
-    from: (table: string) => any;
-    storage: { from: (bucket: string) => any };
-  },
+export function insertImageElement(
+  content: CanvasContent,
   opts: ImageInsertOpts,
   explicitPlacement?: Placement,
-): Promise<InsertResult> {
-  // 1. Download image from storage and convert to base64 dataURL
-  const { data: blob, error: dlError } = await client.storage
-    .from(CANVAS_FILES_BUCKET)
-    .download(opts.objectPath);
-
-  if (dlError || !blob) {
-    throw new Error(
-      `Failed to download image from storage: ${dlError?.message ?? "no data"}`,
-    );
-  }
-
-  const buffer = Buffer.from(await blob.arrayBuffer());
-  const base64 = buffer.toString("base64");
-  const dataURL = `data:${opts.mimeType};base64,${base64}`;
-
-  // 2. Read canvas
-  const { data, error } = await client
-    .from("canvases")
-    .select("content")
-    .eq("id", opts.canvasId)
-    .single();
-
-  if (error || !data) {
-    throw new Error(`Canvas not found: ${opts.canvasId}`);
-  }
-
-  const content = (data.content as CanvasContent) ?? {
-    elements: [],
-    appState: {},
-  };
+): InsertResult {
   const elements: CanvasElement[] = (content.elements as CanvasElement[]) ?? [];
   const files =
     ((content as any).files as Record<string, Record<string, unknown>>) ?? {};
@@ -247,68 +215,37 @@ export async function insertImageElement(
     calculateAutoPlacement(elements, opts.width, opts.height, IMAGE_MAX_SIZE);
 
   // 4. Build element + files entry with base64 dataURL
-  const fileId = generateId();
+  const fileId = opts.fileId ?? generateId();
   const element = buildImageElement(fileId, placement, opts);
 
   const updatedFiles = {
     ...files,
     [fileId]: {
       id: fileId,
-      dataURL,
+      dataURL: opts.dataURL,
       mimeType: opts.mimeType,
       created: Date.now(),
     },
   };
 
-  // 5. Write
   const updatedContent = {
     ...content,
     elements: [...elements, element],
     files: updatedFiles,
   };
 
-  const { error: writeError } = await client
-    .from("canvases")
-    .update({ content: updatedContent as unknown as Json })
-    .eq("id", opts.canvasId);
-
-  if (writeError) {
-    throw new Error(`Failed to write canvas: ${writeError.message}`);
-  }
-
-  console.log(
-    `[canvas-element-writer] image inserted canvasId=${opts.canvasId} elementId=${element.id}`,
-  );
-  return { elementId: element.id as string };
+  return { elementId: element.id as string, content: updatedContent };
 }
 
 /**
  * Insert a video element into a canvas. Videos use Excalidraw's `embeddable`
  * type with a link URL — no files map entry needed.
  */
-export async function insertVideoElement(
-  client: {
-    from: (table: string) => any;
-    storage: { from: (bucket: string) => any };
-  },
+export function insertVideoElement(
+  content: CanvasContent,
   opts: VideoInsertOpts,
   explicitPlacement?: Placement,
-): Promise<InsertResult> {
-  // 1. Read
-  const { data, error } = await client
-    .from("canvases")
-    .select("content")
-    .eq("id", opts.canvasId)
-    .single();
-
-  if (error || !data) {
-    throw new Error(`Canvas not found: ${opts.canvasId}`);
-  }
-
-  const content = (data.content as CanvasContent) ?? {
-    elements: [],
-    appState: {},
-  };
+): InsertResult {
   const elements: CanvasElement[] = (content.elements as CanvasElement[]) ?? [];
 
   // 2. Placement
@@ -319,23 +256,24 @@ export async function insertVideoElement(
   // 3. Build element
   const element = buildVideoElement(placement, opts);
 
-  // 4. Write
   const updatedContent = {
     ...content,
     elements: [...elements, element],
   };
 
-  const { error: writeError } = await client
-    .from("canvases")
-    .update({ content: updatedContent as unknown as Json })
-    .eq("id", opts.canvasId);
+  return { elementId: element.id as string, content: updatedContent };
+}
 
-  if (writeError) {
-    throw new Error(`Failed to write canvas: ${writeError.message}`);
-  }
-
-  console.log(
-    `[canvas-element-writer] video inserted canvasId=${opts.canvasId} elementId=${element.id}`,
-  );
-  return { elementId: element.id as string };
+export async function prepareImageDataURL(
+  client: { storage: { from: (bucket: string) => any } },
+  objectPath: string,
+  mimeType: string,
+): Promise<string> {
+  const { data: blob, error } = await client.storage
+    .from(CANVAS_FILES_BUCKET)
+    .download(objectPath);
+  if (error || !blob)
+    throw new Error("Generated image could not be loaded from storage.");
+  const buffer = Buffer.from(await blob.arrayBuffer());
+  return `data:${mimeType};base64,${buffer.toString("base64")}`;
 }

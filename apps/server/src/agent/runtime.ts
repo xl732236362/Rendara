@@ -637,6 +637,8 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                     { userId, workspaceId, accessToken },
                     {
                       canvasId,
+                      jobId: job.id,
+                      effectKey: "generated_asset_attached",
                       asset: {
                         type: "image",
                         objectPath: result.object_path,
@@ -814,6 +816,8 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                     { userId, workspaceId, accessToken },
                     {
                       canvasId,
+                      jobId: job.id,
+                      effectKey: "generated_asset_attached",
                       asset: {
                         type: "video",
                         signedUrl: result.signed_url,

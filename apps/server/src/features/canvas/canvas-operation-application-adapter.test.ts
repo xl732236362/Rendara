@@ -55,11 +55,16 @@ describe("canvas operation application adapter", () => {
         id: "canvas-1",
         name: "Canvas",
         projectId: "project-1",
+        revision: 3,
         content,
       })),
       saveCanvasContent: vi.fn(
-        async (_user: unknown, _canvasId: string, _content: typeof content) =>
-          undefined,
+        async (
+          _user: unknown,
+          _canvasId: string,
+          _revision: number,
+          _content: typeof content,
+        ) => ({ revision: 4 }),
       ),
     };
     const user = { id: "user-1", accessToken: "token", userMetadata: {} };
@@ -80,7 +85,7 @@ describe("canvas operation application adapter", () => {
       }),
     ).resolves.toMatchObject({ canvasId: "canvas-1", applied: 3 });
 
-    const saved = vi.mocked(canvasService.saveCanvasContent).mock.calls[0]?.[2];
+    const saved = vi.mocked(canvasService.saveCanvasContent).mock.calls[0]?.[3];
     expect(saved?.elements).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ id: "move-me", x: 40, y: 60 }),
@@ -123,9 +128,10 @@ describe("canvas operation application adapter", () => {
         id: "canvas-1",
         name: "Canvas",
         projectId: "project-1",
+        revision: 3,
         content,
       })),
-      saveCanvasContent: vi.fn(async () => undefined),
+      saveCanvasContent: vi.fn(async () => ({ revision: 4 })),
     };
     const adapter = createCanvasServiceOperationPort({
       canvasService,
@@ -167,6 +173,7 @@ describe("canvas operation application adapter", () => {
           id: "canvas-1",
           name: "Canvas",
           projectId: "project-1",
+          revision: 3,
           content,
         }),
         saveCanvasContent: async () => {
@@ -184,5 +191,53 @@ describe("canvas operation application adapter", () => {
       }),
     ).rejects.toThrow("save failed");
     expect(content).toEqual(before);
+  });
+
+  it("re-reads and reapplies replay-safe operations after a revision conflict", async () => {
+    const getCanvas = vi
+      .fn()
+      .mockResolvedValueOnce({
+        id: "canvas-1",
+        name: "Canvas",
+        projectId: "project-1",
+        revision: 2,
+        content: { elements: [], appState: {}, files: {} },
+      })
+      .mockResolvedValueOnce({
+        id: "canvas-1",
+        name: "Canvas",
+        projectId: "project-1",
+        revision: 3,
+        content: { elements: [], appState: {}, files: {} },
+      });
+    const saveCanvasContent = vi
+      .fn()
+      .mockRejectedValueOnce(
+        Object.assign(new Error("conflict"), {
+          code: "canvas_revision_conflict",
+        }),
+      )
+      .mockResolvedValueOnce({ revision: 4 });
+    const adapter = createCanvasServiceOperationPort({
+      canvasService: { getCanvas, saveCanvasContent },
+      toAuthenticatedUser: () => ({ id: "user-1" }) as never,
+    });
+
+    await adapter.apply({
+      principal: { userId: "user-1", workspaceId: "workspace-1" },
+      canvasId: "canvas-1",
+      operations: [{ action: "add_text", text: "retry", x: 1, y: 2 }],
+    });
+
+    expect(getCanvas).toHaveBeenCalledTimes(2);
+    expect(saveCanvasContent).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      "canvas-1",
+      3,
+      expect.objectContaining({
+        elements: [expect.objectContaining({ text: "retry" })],
+      }),
+    );
   });
 });

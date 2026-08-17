@@ -1,9 +1,10 @@
-import type { CanvasContent, CanvasDetail, Json } from "@loomic/shared";
+import type { CanvasContent, CanvasDetail } from "@loomic/shared";
 
 import type {
   AuthenticatedUser,
   UserSupabaseClient,
 } from "../../supabase/user.js";
+import { createCanvasRepository } from "./canvas-repository.js";
 
 export class CanvasServiceError extends Error {
   readonly statusCode: number;
@@ -25,8 +26,9 @@ export type CanvasService = {
   saveCanvasContent(
     user: AuthenticatedUser,
     canvasId: string,
+    expectedRevision: number,
     content: CanvasContent,
-  ): Promise<void>;
+  ): Promise<{ revision: number }>;
 };
 
 /**
@@ -39,40 +41,28 @@ const CANVAS_FILES_BUCKET = "project-assets";
 export function createCanvasService(options: {
   createUserClient: (accessToken: string) => UserSupabaseClient;
 }): CanvasService {
+  const repository = createCanvasRepository(options);
   return {
     async getCanvas(user, canvasId) {
       const client = options.createUserClient(user.accessToken);
-      const { data, error } = await client
-        .from("canvases")
-        .select("id, name, project_id, content")
-        .eq("id", canvasId)
-        .single();
-
-      if (error || !data) {
-        throw new CanvasServiceError(
-          "canvas_not_found",
-          "Canvas not found.",
-          404,
-        );
-      }
-
-      const content = (data.content as CanvasContent) ?? {
-        elements: [],
-        appState: {},
-      };
+      const canvas = await repository.read(user, canvasId);
 
       // Resolve OSS-stored files back to base64 dataURLs for the frontend
-      const resolvedContent = await resolveFilesFromStorage(client, content);
+      const resolvedContent = await resolveFilesFromStorage(
+        client,
+        canvas.content,
+      );
 
       return {
-        id: data.id,
-        name: data.name,
-        projectId: data.project_id,
+        id: canvas.id,
+        name: canvas.name,
+        projectId: canvas.projectId,
+        revision: canvas.revision,
         content: resolvedContent,
       };
     },
 
-    async saveCanvasContent(user, canvasId, content) {
+    async saveCanvasContent(user, canvasId, expectedRevision, content) {
       const client = options.createUserClient(user.accessToken);
 
       // Extract base64 files to Storage, replacing dataURLs with oss:// markers
@@ -82,18 +72,14 @@ export function createCanvasService(options: {
         content,
       );
 
-      const { error } = await client
-        .from("canvases")
-        .update({ content: leanContent as unknown as Json })
-        .eq("id", canvasId);
-
-      if (error) {
-        throw new CanvasServiceError(
-          "canvas_save_failed",
-          "Unable to save canvas.",
-          500,
-        );
-      }
+      const committed = await repository.commit(user, {
+        canvasId,
+        expectedRevision,
+        content: leanContent,
+        eventType: "canvas.updated",
+        eventPayload: { canvasId, actorUserId: user.id, source: "browser" },
+      });
+      return { revision: committed.revision };
     },
   };
 }

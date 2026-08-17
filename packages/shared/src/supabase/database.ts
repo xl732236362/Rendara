@@ -311,6 +311,7 @@ export type Database = {
           is_primary: boolean;
           name: string;
           project_id: string;
+          revision: number;
           updated_at: string;
         };
         Insert: {
@@ -321,6 +322,7 @@ export type Database = {
           is_primary?: boolean;
           name: string;
           project_id: string;
+          revision?: number;
           updated_at?: string;
         };
         Update: {
@@ -331,6 +333,7 @@ export type Database = {
           is_primary?: boolean;
           name?: string;
           project_id?: string;
+          revision?: number;
           updated_at?: string;
         };
         Relationships: [

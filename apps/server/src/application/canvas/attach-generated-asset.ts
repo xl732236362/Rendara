@@ -9,6 +9,8 @@ const placementSchema = z.object({
 });
 const requestSchema = z.object({
   canvasId: z.string().min(1),
+  jobId: z.string().uuid(),
+  effectKey: z.string().trim().min(1).max(100),
   placement: placementSchema.optional(),
   asset: z.discriminatedUnion("type", [
     z.object({

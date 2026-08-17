@@ -30,29 +30,49 @@ export function createCanvasServiceOperationPort(options: {
   return {
     async apply(command) {
       const user = options.toAuthenticatedUser(command.principal);
-      const canvas = await options.canvasService.getCanvas(
-        user,
-        command.canvasId,
-      );
-      const outcome = applyCanvasOperations(canvas.content, command.operations);
-      if (
-        outcome.issues.length > 0 ||
-        outcome.applied !== command.operations.length
-      ) {
-        throw new CanvasOperationError(outcome.issues);
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const canvas = await options.canvasService.getCanvas(
+          user,
+          command.canvasId,
+        );
+        const outcome = applyCanvasOperations(
+          canvas.content,
+          command.operations,
+        );
+        if (
+          outcome.issues.length > 0 ||
+          outcome.applied !== command.operations.length
+        ) {
+          throw new CanvasOperationError(outcome.issues);
+        }
+        try {
+          await options.canvasService.saveCanvasContent(
+            user,
+            command.canvasId,
+            canvas.revision,
+            outcome.content,
+          );
+          return {
+            canvasId: canvas.id,
+            applied: outcome.applied,
+            descriptions: outcome.descriptions,
+            createdIds: outcome.createdIds,
+            errors: outcome.errors,
+          };
+        } catch (error) {
+          if (!isRevisionConflict(error) || attempt === 3) throw error;
+          await new Promise((resolve) => setTimeout(resolve, attempt * 10));
+        }
       }
-      await options.canvasService.saveCanvasContent(
-        user,
-        command.canvasId,
-        outcome.content,
-      );
-      return {
-        canvasId: canvas.id,
-        applied: outcome.applied,
-        descriptions: outcome.descriptions,
-        createdIds: outcome.createdIds,
-        errors: outcome.errors,
-      };
+      throw new Error("Canvas operation retry exhausted.");
     },
   };
+}
+
+function isRevisionConflict(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "canvas_revision_conflict"
+  );
 }
