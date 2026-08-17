@@ -3,13 +3,14 @@ import { z } from "zod";
 import { AppError } from "../../errors/app-error.js";
 import {
   type CanvasOperation,
-  canvasOperationSchema,
+  CanvasOperationError,
+  strictCanvasOperationSchema,
 } from "../../features/canvas/canvas-operation-engine.js";
 import type { StructuredLogger } from "../generation/ports.js";
 
 const applyCanvasOperationsRequestSchema = z.object({
   canvasId: z.string().trim().min(1),
-  operations: z.array(canvasOperationSchema).min(1).max(100),
+  operations: z.array(strictCanvasOperationSchema).min(1).max(100),
 });
 
 const canvasOperationOutcomeSchema = z.object({
@@ -54,7 +55,7 @@ export function createApplyCanvasOperations(options: {
         statusCode: 400,
         message: "Invalid canvas operation request.",
         expose: true,
-        details: { issues: parsed.error.issues },
+        details: { issues: boundedCanvasIssues(parsed.error.issues) },
       });
     }
 
@@ -75,6 +76,9 @@ export function createApplyCanvasOperations(options: {
       );
       if (outcome.canvasId !== request.canvasId) {
         throw new Error("Canvas operation outcome identity mismatch");
+      }
+      if (outcome.applied !== request.operations.length) {
+        throw new Error("Canvas operation outcome count mismatch");
       }
 
       options.logger.info("Canvas operations applied", {
@@ -100,8 +104,28 @@ export function createApplyCanvasOperations(options: {
   };
 }
 
+function boundedCanvasIssues(
+  issues: z.core.$ZodIssue[],
+): Array<{ index: number; message: string }> {
+  return issues.slice(0, 20).map((issue) => ({
+    index:
+      issue.path.find((part): part is number => typeof part === "number") ?? 0,
+    message: issue.message.slice(0, 200),
+  }));
+}
+
 function normalizeCanvasOperationError(error: unknown): AppError {
   if (error instanceof AppError) return error;
+  if (error instanceof CanvasOperationError) {
+    return new AppError({
+      code: "invalid_request",
+      statusCode: 400,
+      message: "Invalid canvas operations.",
+      expose: true,
+      details: { issues: error.issues },
+      cause: error,
+    });
+  }
   if (
     error instanceof Error &&
     "code" in error &&

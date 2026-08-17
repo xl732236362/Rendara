@@ -66,4 +66,34 @@ describe("manipulate_canvas operation engine parity", () => {
       summary: expected.descriptions.join("; "),
     });
   });
+
+  it("does not write a skipped batch", async () => {
+    let writeCount = 0;
+    const canvasTool = createManipulateCanvasTool({
+      createUserClient: () => ({
+        from: () => ({
+          select: () => ({
+            eq: () => ({
+              single: async () => ({
+                data: { content: { elements: [], appState: {}, files: {} } },
+                error: null,
+              }),
+            }),
+          }),
+          update: () => {
+            writeCount += 1;
+            return { eq: async () => ({ error: null }) };
+          },
+        }),
+      }),
+    });
+
+    const result = await canvasTool.invoke(
+      { operations: [{ action: "delete", element_id: "missing" }] },
+      { configurable: { access_token: "token", canvas_id: "canvas-1" } },
+    );
+
+    expect(writeCount).toBe(0);
+    expect(JSON.parse(result)).toMatchObject({ error: "invalid_operations" });
+  });
 });

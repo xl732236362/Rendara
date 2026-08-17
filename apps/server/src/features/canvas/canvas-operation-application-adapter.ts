@@ -4,7 +4,10 @@ import type {
 } from "../../application/canvas/apply-canvas-operations.js";
 import type { ResourceAuthorization } from "../../security/resource-authorization.js";
 import type { AuthenticatedUser } from "../../supabase/user.js";
-import { applyCanvasOperations } from "./canvas-operation-engine.js";
+import {
+  CanvasOperationError,
+  applyCanvasOperations,
+} from "./canvas-operation-engine.js";
 import type { CanvasService } from "./canvas-service.js";
 
 export function createCanvasAuthorizationPort(options: {
@@ -32,6 +35,12 @@ export function createCanvasServiceOperationPort(options: {
         command.canvasId,
       );
       const outcome = applyCanvasOperations(canvas.content, command.operations);
+      if (
+        outcome.issues.length > 0 ||
+        outcome.applied !== command.operations.length
+      ) {
+        throw new CanvasOperationError(outcome.issues);
+      }
       await options.canvasService.saveCanvasContent(
         user,
         command.canvasId,

@@ -662,7 +662,7 @@ export async function importFromGitHub(
     manifest,
     skillContent,
     files,
-    sourceUrl: repoUrl,
+    sourceUrl: safeCanonicalSourceUrl(repoUrl),
   };
 }
 
@@ -888,7 +888,7 @@ export async function importFromTarballUrl(
     manifest,
     skillContent,
     files,
-    sourceUrl: url,
+    sourceUrl: safeCanonicalSourceUrl(url),
   };
 }
 
@@ -918,6 +918,13 @@ export async function importSkillFromUrl(
     `[skill-import] Import requested: source=${safeUrlOrigin(url)} type=${source}`,
   );
 
+  if (hasUrlCredentials(url)) {
+    throw new SkillImportError(
+      "unsupported_source",
+      "URL credentials are not allowed for skill imports.",
+    );
+  }
+
   switch (source) {
     case "github":
       return importFromGitHub(url, dependencies);
@@ -946,6 +953,24 @@ function safeUrlOrigin(value: string): string {
     return `${url.protocol}//${url.host}`;
   } catch {
     return "invalid-url";
+  }
+}
+
+function safeCanonicalSourceUrl(value: string): string {
+  const url = new URL(value);
+  url.username = "";
+  url.password = "";
+  url.search = "";
+  url.hash = "";
+  return url.href;
+}
+
+function hasUrlCredentials(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.username.length > 0 || url.password.length > 0;
+  } catch {
+    return false;
   }
 }
 

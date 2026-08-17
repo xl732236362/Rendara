@@ -136,12 +136,186 @@ export const manipulateCanvasSchema = z.object({
     .describe("List of operations to apply"),
 });
 
-// Flat operation type — all fields optional except `action`.
-export type CanvasOperation = z.infer<typeof canvasOperationSchema>;
-type Operation = CanvasOperation;
+// The LLM tool keeps the flat schema above because Gemini rejects oneOf/anyOf.
+const identifierSchema = z.string().trim().min(1).max(200);
+const coordinateSchema = z.number().finite();
+const positiveSchema = z.number().finite().positive();
+const opacitySchema = z.number().finite().min(0).max(100);
+const colorSchema = z.string().trim().min(1).max(100);
+const strictLabelSchema = z
+  .object({
+    text: z.string().min(1).max(10_000),
+    fontSize: positiveSchema.default(20),
+    strokeColor: colorSchema.default("#000000"),
+  })
+  .strict();
+
+export const strictCanvasOperationSchema = z
+  .discriminatedUnion("action", [
+    z
+      .object({
+        action: z.literal("move"),
+        element_id: identifierSchema,
+        x: coordinateSchema,
+        y: coordinateSchema,
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("resize"),
+        element_id: identifierSchema,
+        width: positiveSchema,
+        height: positiveSchema,
+      })
+      .strict(),
+    z
+      .object({ action: z.literal("delete"), element_id: identifierSchema })
+      .strict(),
+    z
+      .object({
+        action: z.literal("update_style"),
+        element_id: identifierSchema,
+        strokeColor: colorSchema.optional(),
+        backgroundColor: colorSchema.optional(),
+        opacity: opacitySchema.optional(),
+        fontSize: positiveSchema.optional(),
+        strokeWidth: positiveSchema.optional(),
+        fillStyle: z.enum(["solid", "hachure", "cross-hatch"]).optional(),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("add_text"),
+        text: z.string().min(1).max(10_000),
+        x: coordinateSchema,
+        y: coordinateSchema,
+        strokeColor: colorSchema.optional(),
+        fontSize: positiveSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("add_shape"),
+        shape: z.enum(["rectangle", "ellipse", "diamond"]),
+        x: coordinateSchema,
+        y: coordinateSchema,
+        width: positiveSchema,
+        height: positiveSchema,
+        strokeColor: colorSchema.optional(),
+        backgroundColor: colorSchema.optional(),
+        fillStyle: z.enum(["solid", "hachure", "cross-hatch"]).optional(),
+        label: strictLabelSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("add_line"),
+        line_type: z.enum(["line", "arrow"]),
+        points: z
+          .array(
+            z.object({ x: coordinateSchema, y: coordinateSchema }).strict(),
+          )
+          .min(2)
+          .optional(),
+        start_element_id: identifierSchema.optional(),
+        end_element_id: identifierSchema.optional(),
+        x: coordinateSchema.optional(),
+        y: coordinateSchema.optional(),
+        strokeColor: colorSchema.optional(),
+        strokeWidth: positiveSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("reorder"),
+        element_id: identifierSchema,
+        position: z.enum(["front", "back"]),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("align"),
+        element_ids: z.array(identifierSchema).min(2).max(100),
+        alignment: z.enum([
+          "left",
+          "right",
+          "center",
+          "top",
+          "bottom",
+          "middle",
+        ]),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("distribute"),
+        element_ids: z.array(identifierSchema).min(3).max(100),
+        direction: z.enum(["horizontal", "vertical"]),
+      })
+      .strict(),
+    z
+      .object({
+        action: z.literal("update_text"),
+        element_id: identifierSchema,
+        text: z.string().min(1).max(10_000),
+        fontSize: positiveSchema.optional(),
+      })
+      .strict(),
+  ])
+  .superRefine((operation, context) => {
+    if (
+      operation.action === "update_style" &&
+      Object.keys(operation).length === 2
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "At least one style field is required.",
+      });
+    }
+    if (
+      operation.action === "add_line" &&
+      !operation.points &&
+      !operation.start_element_id &&
+      !operation.end_element_id
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Line points or a binding are required.",
+      });
+    }
+  });
+
+const strictCanvasOperationsSchema = z
+  .array(strictCanvasOperationSchema)
+  .min(1)
+  .max(100);
+export type CanvasOperation = z.infer<typeof strictCanvasOperationSchema>;
+type Operation = z.infer<typeof canvasOperationSchema>;
+export type CanvasOperationIssue = { index: number; message: string };
+
+export class CanvasOperationError extends Error {
+  readonly code = "invalid_request";
+  readonly statusCode = 400;
+  readonly issues: CanvasOperationIssue[];
+
+  constructor(issues: CanvasOperationIssue[]) {
+    super("Invalid canvas operations.");
+    this.name = "CanvasOperationError";
+    this.issues = issues.slice(0, 20).map((issue) => ({ ...issue }));
+  }
+}
 
 export function parseCanvasOperations(input: unknown): CanvasOperation[] {
-  return manipulateCanvasSchema.shape.operations.parse(input);
+  const parsed = strictCanvasOperationsSchema.safeParse(input);
+  if (!parsed.success) {
+    throw new CanvasOperationError(
+      parsed.error.issues.slice(0, 20).map((issue) => ({
+        index: typeof issue.path[0] === "number" ? issue.path[0] : 0,
+        message: issue.message.slice(0, 200),
+      })),
+    );
+  }
+  return parsed.data;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,6 +407,7 @@ function applyUpdateStyle(
     "opacity",
     "fontSize",
     "strokeWidth",
+    "fillStyle",
   ] as const;
   for (const key of props) {
     if (op[key] !== undefined) {
@@ -788,17 +963,21 @@ export type CanvasOperationEngineResult = {
   applied: number;
   descriptions: string[];
   errors: string[];
+  issues: CanvasOperationIssue[];
   createdIds: Record<string, string>;
 };
 
 /** Applies the existing Agent operation contract without transport or persistence concerns. */
 export function applyCanvasOperations(
   content: CanvasContent,
-  operations: CanvasOperation[],
+  rawOperations: unknown,
 ): CanvasOperationEngineResult {
-  const elements = (content.elements ?? []) as CanvasElement[];
+  const operations = parseCanvasOperations(rawOperations);
+  const clonedContent = structuredClone(content);
+  const elements = (clonedContent.elements ?? []) as CanvasElement[];
   const descriptions: string[] = [];
   const errors: string[] = [];
+  const issues: CanvasOperationIssue[] = [];
   const createdIds: Record<string, string> = {};
 
   for (let index = 0; index < operations.length; index += 1) {
@@ -807,21 +986,25 @@ export function applyCanvasOperations(
       const result = handlers[operation.action](elements, operation);
       if (result.description.startsWith("[skip]")) {
         errors.push(result.description);
+        issues.push({ index, message: result.description.slice(0, 200) });
       } else {
         descriptions.push(result.description);
         if (result.createdId) createdIds[`op_${index}`] = result.createdId;
       }
     } catch (error) {
-      errors.push(`[error] ${operation.action}: ${(error as Error).message}`);
+      const message = `[error] ${operation.action}: ${(error as Error).message}`;
+      errors.push(message);
+      issues.push({ index, message: message.slice(0, 200) });
     }
   }
 
   validateBindings(elements);
   return {
-    content: { ...content, elements },
+    content: { ...clonedContent, elements },
     applied: descriptions.length,
     descriptions,
     errors,
+    issues,
     createdIds,
   };
 }

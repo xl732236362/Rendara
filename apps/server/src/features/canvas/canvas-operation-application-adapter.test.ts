@@ -49,6 +49,7 @@ describe("canvas operation application adapter", () => {
       appState: {},
       files: {},
     };
+    const original = structuredClone(content);
     const canvasService = {
       getCanvas: vi.fn(async () => ({
         id: "canvas-1",
@@ -87,5 +88,101 @@ describe("canvas operation application adapter", () => {
         expect.objectContaining({ type: "text", text: "New note" }),
       ]),
     );
+    expect(content).toEqual(original);
+  });
+
+  it.each([
+    ["all skipped", [{ action: "delete", element_id: "missing" }]],
+    [
+      "mixed applied and skipped",
+      [
+        { action: "move", element_id: "move-me", x: 10, y: 20 },
+        { action: "delete", element_id: "missing" },
+      ],
+    ],
+  ])("does not save an atomic batch when %s", async (_label, operations) => {
+    const content = {
+      elements: [
+        {
+          id: "move-me",
+          type: "rectangle",
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 100,
+          version: 1,
+          versionNonce: 1,
+        },
+      ],
+      appState: {},
+      files: {},
+    };
+    const before = structuredClone(content);
+    const canvasService = {
+      getCanvas: vi.fn(async () => ({
+        id: "canvas-1",
+        name: "Canvas",
+        projectId: "project-1",
+        content,
+      })),
+      saveCanvasContent: vi.fn(async () => undefined),
+    };
+    const adapter = createCanvasServiceOperationPort({
+      canvasService,
+      toAuthenticatedUser: () => ({ id: "user-1" }) as never,
+    });
+
+    await expect(
+      adapter.apply({
+        principal: { userId: "user-1", workspaceId: "workspace-1" },
+        canvasId: "canvas-1",
+        operations: operations as never,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request", statusCode: 400 });
+    expect(canvasService.saveCanvasContent).not.toHaveBeenCalled();
+    expect(content).toEqual(before);
+  });
+
+  it("does not mutate loaded content when saving fails", async () => {
+    const content = {
+      elements: [
+        {
+          id: "element-1",
+          type: "rectangle",
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 100,
+          version: 1,
+          versionNonce: 1,
+        },
+      ],
+      appState: {},
+      files: {},
+    };
+    const before = structuredClone(content);
+    const adapter = createCanvasServiceOperationPort({
+      canvasService: {
+        getCanvas: async () => ({
+          id: "canvas-1",
+          name: "Canvas",
+          projectId: "project-1",
+          content,
+        }),
+        saveCanvasContent: async () => {
+          throw new Error("save failed");
+        },
+      },
+      toAuthenticatedUser: () => ({ id: "user-1" }) as never,
+    });
+
+    await expect(
+      adapter.apply({
+        principal: { userId: "user-1", workspaceId: "workspace-1" },
+        canvasId: "canvas-1",
+        operations: [{ action: "move", element_id: "element-1", x: 10, y: 20 }],
+      }),
+    ).rejects.toThrow("save failed");
+    expect(content).toEqual(before);
   });
 });

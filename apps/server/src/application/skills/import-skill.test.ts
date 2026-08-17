@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { SkillImportError } from "../../features/skills/skill-import-service.js";
+import { SafeFetchError } from "../../security/safe-fetch.js";
 import type { StructuredLogger } from "../generation/ports.js";
 import { type SkillImportPorts, createImportSkill } from "./import-skill.js";
 
@@ -50,6 +52,94 @@ describe("ImportSkill", () => {
     expect(ports.importer.importFromUrl).not.toHaveBeenCalled();
   });
 
+  it("rejects URL credentials before calling the importer", async () => {
+    const { importSkill, ports } = setup();
+
+    await expect(
+      importSkill(principal, {
+        url: "https://user:password@github.com/acme/design-skill",
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request", statusCode: 400 });
+    expect(ports.importer.importFromUrl).not.toHaveBeenCalled();
+  });
+
+  it("passes required query data but returns a canonical safe source URL", async () => {
+    const secretUrl = `${sourceUrl}?token=super-secret#fragment`;
+    const { importSkill, ports } = setup();
+    vi.mocked(ports.importer.importFromUrl).mockResolvedValue(
+      imported(secretUrl),
+    );
+
+    const result = await importSkill(principal, { url: secretUrl });
+
+    expect(ports.importer.importFromUrl).toHaveBeenCalledWith(secretUrl);
+    expect(result.imported.sourceUrl).toBe(sourceUrl);
+    expect(JSON.stringify(result)).not.toContain("super-secret");
+  });
+
+  it.each([
+    [
+      "unsupported_source",
+      "invalid_request",
+      400,
+      "Invalid skill import source.",
+    ],
+    ["manifest_parse_error", "invalid_request", 400, "Invalid skill manifest."],
+    [
+      "skill_archive_limit_exceeded",
+      "invalid_request",
+      400,
+      "Skill archive exceeds import limits.",
+    ],
+    [
+      "github_fetch_error",
+      "upstream_error",
+      502,
+      "Skill source is unavailable.",
+    ],
+    [
+      "tarball_extract_error",
+      "upstream_error",
+      502,
+      "Skill source is unavailable.",
+    ],
+  ] as const)(
+    "maps real %s failures to a fixed safe boundary",
+    async (serviceCode, code, statusCode, message) => {
+      const { importSkill, ports } = setup();
+      vi.mocked(ports.importer.importFromUrl).mockRejectedValue(
+        new SkillImportError(serviceCode, "private source details"),
+      );
+
+      await expect(
+        importSkill(principal, { url: sourceUrl }),
+      ).rejects.toMatchObject({ code, statusCode, message });
+    },
+  );
+
+  it.each([
+    ["upstream_error", "upstream_error", 502],
+    ["request_timeout", "upstream_error", 502],
+    ["unsafe_url", "invalid_request", 400],
+    ["invalid_content_type", "invalid_request", 400],
+    ["response_too_large", "invalid_request", 400],
+  ] as const)(
+    "maps safe-fetch %s without exposing its message",
+    async (fetchCode, code, statusCode) => {
+      const { importSkill, ports } = setup();
+      vi.mocked(ports.importer.importFromUrl).mockRejectedValue(
+        new SafeFetchError(fetchCode, "private network details"),
+      );
+
+      await expect(
+        importSkill(principal, { url: sourceUrl }),
+      ).rejects.toMatchObject({
+        code,
+        statusCode,
+      });
+    },
+  );
+
   it("returns imported skills disabled and requiring review", async () => {
     const { importSkill } = setup();
 
@@ -96,8 +186,9 @@ describe("ImportSkill", () => {
     await expect(
       importSkill(principal, { url: secretUrl }),
     ).rejects.toMatchObject({
-      code: "skill_import_failed",
-      statusCode: 400,
+      code: "application_error",
+      statusCode: 500,
+      expose: false,
       message: "Skill import failed.",
     });
     const logs = JSON.stringify(vi.mocked(logger.error).mock.calls);

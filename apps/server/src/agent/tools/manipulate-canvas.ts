@@ -38,6 +38,13 @@ export function createManipulateCanvasTool(deps: {
       }
 
       const outcome = applyCanvasOperations(data.content, input.operations);
+      if (outcome.issues.length > 0) {
+        return JSON.stringify({
+          error: "invalid_operations",
+          message: "Canvas operations were not applied.",
+          issues: outcome.issues,
+        });
+      }
       const { error: writeError } = await client
         .from("canvases")
         .update({ content: outcome.content })

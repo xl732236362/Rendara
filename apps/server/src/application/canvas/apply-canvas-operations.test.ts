@@ -70,6 +70,45 @@ describe("ApplyCanvasOperations", () => {
     expect(ports.operations.apply).not.toHaveBeenCalled();
   });
 
+  it("rejects a move missing coordinates without mutation", async () => {
+    const { apply, ports } = setup();
+
+    await expect(
+      apply(principal, {
+        canvasId: "canvas-1",
+        operations: [{ action: "move", element_id: "element-1" }],
+      }),
+    ).rejects.toMatchObject({ code: "invalid_request", statusCode: 400 });
+
+    expect(ports.operations.apply).not.toHaveBeenCalled();
+  });
+
+  it("bounds validation details to safe indexed issues", async () => {
+    const { apply } = setup();
+
+    const failure = (await apply(principal, {
+      canvasId: "canvas-1",
+      operations: Array.from({ length: 50 }, (_, index) => ({
+        action: "move",
+        element_id: `element-${index}`,
+      })),
+    }).catch((error: unknown) => error)) as {
+      code: string;
+      details: { issues: Array<{ index: number; message: string }> };
+    };
+
+    expect(failure).toMatchObject({ code: "invalid_request" });
+    expect(failure.details.issues).toHaveLength(20);
+    const [firstIssue] = failure.details.issues;
+    expect(firstIssue).toBeDefined();
+    if (!firstIssue) throw new Error("Expected a validation issue");
+    expect(firstIssue).toEqual({
+      index: 0,
+      message: expect.any(String),
+    });
+    expect(Object.keys(firstIssue)).toEqual(["index", "message"]);
+  });
+
   it("normalizes service failures without exposing private messages", async () => {
     const { apply, logger, ports } = setup();
     vi.mocked(ports.operations.apply).mockRejectedValue(

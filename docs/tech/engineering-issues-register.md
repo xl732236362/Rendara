@@ -207,7 +207,7 @@
 - 证据：`CanvasService` 只提供整份读取和保存；Worker 的 `canvas-element-writer.ts` 与 Agent 的 `manipulate-canvas.ts` 均直接访问 `canvases.content`，各自实现读改写、错误处理和文件策略。
 - 影响：权限、revision、校验、迁移、日志和冲突处理无法在一个边界统一实施；未来修改存储模型需要同时改动多个调用方。
 - 建议方向：建立 canvas repository/application service，暴露 `applyOperations`、`insertArtifact` 等用例；所有写入统一经过校验、并发控制、审计日志和事件发布。
-- 阶段 1 进展：已建立 transport-neutral `ApplyCanvasOperations`、显式授权/操作端口与复用 `CanvasService` 的适配器；Agent 工具和该适配器共用同一纯操作 schema/engine，并覆盖授权顺序、输入/输出运行时校验和脱敏日志。Agent/Worker 现有整份 JSON 读写入口尚未统一迁移，并发控制、revision 与事件发布仍属于后续阶段，因此本项仅为部分解决。
+- 阶段 1 进展：已建立 transport-neutral `ApplyCanvasOperations`、显式授权/操作端口与复用 `CanvasService` 的适配器；Agent 工具和该适配器共用同一纯操作 engine，应用侧采用逐 action 严格 schema，批处理在 skip/error 时原子拒绝且基于深克隆执行，并覆盖授权顺序、输入/输出运行时校验和脱敏日志。Agent/Worker 现有整份 JSON 读写入口尚未统一迁移，并发控制、revision 与事件发布仍属于后续阶段，因此本项仅为部分解决。
 
 ### ENG-018：画布领域缺少针对性测试
 

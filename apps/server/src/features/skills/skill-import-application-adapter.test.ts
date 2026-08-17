@@ -19,8 +19,8 @@ describe("skill import application adapter", () => {
     console.log = (...values: unknown[]) => logs.push(values.join(" "));
     try {
       for (const secretUrl of [
-        "https://user:password@github.com/acme/skill?token=query-secret#hash-secret",
-        "https://user:password@registry.npmjs.org/pkg/-/pkg.tgz?token=query-secret#hash-secret",
+        "https://github.com/acme/skill?token=query-secret#hash-secret",
+        "https://registry.npmjs.org/pkg/-/pkg.tgz?token=query-secret#hash-secret",
       ]) {
         await importSkillFromUrl(secretUrl, {
           safeFetch: async () => {
