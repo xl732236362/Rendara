@@ -45,7 +45,23 @@ export type QueueMessageRejection = {
 export type QueueMessageResolution =
   | { status: "ready"; dispatch: QueueDispatch }
   | QueueMessageRejection
+  | {
+      status: "retryable";
+      jobId: string;
+      code: "job_lookup_unavailable";
+      message: string;
+    }
   | { status: "poison"; code: "unidentifiable_queue_message"; message: string };
+
+type QueueSettlementActions = {
+  markDeadLetter: (
+    jobId: string,
+    code: string,
+    message: string,
+  ) => Promise<void>;
+  archive: () => Promise<unknown>;
+  refund: (jobId: string) => Promise<void>;
+};
 
 const QUEUE_TYPES: Record<string, BackgroundJobType> = {
   image_generation_jobs: "image_generation",
@@ -100,10 +116,10 @@ export async function resolveGenerationQueueMessage(options: {
     job = await options.lookupJob(jobId);
   } catch {
     return {
-      status: "rejected",
+      status: "retryable",
       jobId,
-      code: "invalid_queue_message",
-      message: "Unable to load the authoritative job for queue validation.",
+      code: "job_lookup_unavailable",
+      message: "Authoritative job lookup is temporarily unavailable.",
     };
   }
 
@@ -186,15 +202,7 @@ export async function resolveGenerationQueueMessage(options: {
 
 export async function settleRejectedGenerationQueueMessage(
   rejection: QueueMessageRejection,
-  actions: {
-    markDeadLetter: (
-      jobId: string,
-      code: string,
-      message: string,
-    ) => Promise<void>;
-    archive: () => Promise<unknown>;
-    refund: (jobId: string) => Promise<void>;
-  },
+  actions: QueueSettlementActions,
 ): Promise<void> {
   await actions.markDeadLetter(
     rejection.jobId,
@@ -203,6 +211,22 @@ export async function settleRejectedGenerationQueueMessage(
   );
   await actions.archive();
   await actions.refund(rejection.jobId);
+}
+
+export async function settleNonReadyGenerationQueueMessage(
+  resolution: Exclude<QueueMessageResolution, { status: "ready" }>,
+  actions: QueueSettlementActions,
+): Promise<"retry" | "archived" | "dead_lettered"> {
+  if (resolution.status === "retryable") {
+    return "retry";
+  }
+  if (resolution.status === "poison") {
+    await actions.archive();
+    return "archived";
+  }
+
+  await settleRejectedGenerationQueueMessage(resolution, actions);
+  return "dead_lettered";
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

@@ -23,7 +23,7 @@ import {
 import { createJobService } from "./features/jobs/job-service.js";
 import {
   resolveGenerationQueueMessage,
-  settleRejectedGenerationQueueMessage,
+  settleNonReadyGenerationQueueMessage,
 } from "./features/jobs/queue-message.js";
 import { type PgmqMessage, createPgmqClient } from "./queue/pgmq-client.js";
 import { createAdminSupabaseClient } from "./supabase/admin.js";
@@ -186,23 +186,19 @@ async function processMessage(
     message: msg.message,
     lookupJob: (jobId) => ctx.jobService.getJobAdmin(jobId),
   });
-  if (resolution.status === "poison") {
-    console.error(`${tag} Queue message rejected`, {
+  if (resolution.status !== "ready") {
+    const logFields = {
       code: resolution.code,
       queue,
       msgId: msg.msg_id,
-    });
-    await ctx.pgmq.archive(queue, msg.msg_id);
-    return;
-  }
-  if (resolution.status === "rejected") {
-    console.error(`${tag} Recoverable queue message rejected`, {
-      code: resolution.code,
-      jobId: resolution.jobId,
-      queue,
-      msgId: msg.msg_id,
-    });
-    await settleRejectedGenerationQueueMessage(resolution, {
+      ...(resolution.status !== "poison" ? { jobId: resolution.jobId } : {}),
+    };
+    if (resolution.status === "retryable") {
+      console.warn(`${tag} Queue message deferred`, logFields);
+    } else {
+      console.error(`${tag} Queue message rejected`, logFields);
+    }
+    await settleNonReadyGenerationQueueMessage(resolution, {
       markDeadLetter: (jobId, code, message) =>
         ctx.jobService.markDeadLetter(jobId, code, message),
       archive: () => ctx.pgmq.archive(queue, msg.msg_id),

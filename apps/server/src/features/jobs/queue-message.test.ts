@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createGenerationQueueMessage,
   resolveGenerationQueueMessage,
+  settleNonReadyGenerationQueueMessage,
   settleRejectedGenerationQueueMessage,
 } from "./queue-message.js";
 
@@ -93,6 +94,39 @@ describe("generation queue boundary", () => {
       jobId: ids.job,
       code: "queue_type_mismatch",
     });
+  });
+
+  it("leaves message and job state untouched when authoritative lookup is unavailable", async () => {
+    const actions = {
+      markDeadLetter: vi.fn().mockResolvedValue(undefined),
+      archive: vi.fn().mockResolvedValue(undefined),
+      refund: vi.fn().mockResolvedValue(undefined),
+    };
+    const resolution = await resolveGenerationQueueMessage({
+      queue: "image_generation_jobs",
+      message: {
+        job_id: ids.job,
+        job_type: "image_generation",
+        workspace_id: ids.workspace,
+      },
+      lookupJob: vi.fn().mockRejectedValue(new Error("database unavailable")),
+    });
+
+    expect(resolution).toMatchObject({
+      status: "retryable",
+      jobId: ids.job,
+      code: "job_lookup_unavailable",
+    });
+    if (resolution.status === "ready") {
+      throw new Error("Expected non-ready queue resolution.");
+    }
+
+    expect(
+      await settleNonReadyGenerationQueueMessage(resolution, actions),
+    ).toBe("retry");
+    expect(actions.markDeadLetter).not.toHaveBeenCalled();
+    expect(actions.archive).not.toHaveBeenCalled();
+    expect(actions.refund).not.toHaveBeenCalled();
   });
 
   it.each([
