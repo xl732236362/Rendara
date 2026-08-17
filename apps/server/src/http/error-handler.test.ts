@@ -94,6 +94,50 @@ describe("Fastify error boundary", () => {
     await app.close();
   });
 
+  it("snapshots and deep-freezes AppError details before caller mutation", async () => {
+    const app = createTestApp();
+    const details: Record<string, unknown> = {
+      project: { id: "project-original" },
+    };
+    const error = new AppError({
+      code: "project_not_found",
+      statusCode: 404,
+      message: "Project not found",
+      expose: true,
+      details,
+    });
+    (details.project as { id: string }).id = "post-construction-secret";
+    details.self = details;
+    Object.defineProperty(details, "hostile", {
+      enumerable: true,
+      get() {
+        throw new Error("details-getter-secret");
+      },
+    });
+    app.get("/mutated-details", async () => {
+      throw error;
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/mutated-details",
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({
+      error: {
+        code: "project_not_found",
+        message: "Project not found",
+        details: { project: { id: "project-original" } },
+      },
+    });
+    expect(response.body).not.toContain("post-construction-secret");
+    expect(response.body).not.toContain("details-getter-secret");
+    expect(Object.isFrozen(error.details)).toBe(true);
+    expect(Object.isFrozen(error.details?.project)).toBe(true);
+    await app.close();
+  });
+
   it("hides unknown internal error messages and request data", async () => {
     const { app, records } = createLoggedTestApp();
     app.post("/unknown", async () => {

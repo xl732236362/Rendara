@@ -34,18 +34,41 @@ export class AppError extends Error {
     if (options.message.trim().length === 0) {
       throw new TypeError("AppError message must not be empty");
     }
-    if (options.details && !isJsonSafe(options.details, new WeakSet())) {
-      throw new TypeError("AppError details must contain JSON-safe values");
-    }
+    const details = options.details
+      ? snapshotDetails(options.details)
+      : undefined;
 
     super(options.message, { cause: options.cause });
     this.name = "AppError";
     this.code = options.code;
     this.statusCode = options.statusCode;
     this.expose = options.expose ?? false;
-    this.details = options.details;
+    this.details = details;
     this.cause = options.cause;
   }
+}
+
+function snapshotDetails(details: SafeErrorDetails): SafeErrorDetails {
+  try {
+    if (!isJsonSafe(details, new WeakSet())) {
+      throw new TypeError("invalid details");
+    }
+    const serialized = JSON.stringify(details);
+    const snapshot = JSON.parse(serialized) as SafeErrorDetails;
+    return deepFreeze(snapshot);
+  } catch {
+    throw new TypeError("AppError details must contain JSON-safe values");
+  }
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) {
+    return value;
+  }
+  for (const child of Object.values(value)) {
+    deepFreeze(child);
+  }
+  return Object.freeze(value);
 }
 
 function isJsonSafe(value: unknown, ancestors: WeakSet<object>): boolean {

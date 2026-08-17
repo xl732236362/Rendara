@@ -19,12 +19,12 @@ const ABORT_CODES = new Set([
   "ECONNRESET",
   "ERR_STREAM_PREMATURE_CLOSE",
 ]);
-const FALLBACK_ENVELOPE = {
-  error: {
+const FALLBACK_ENVELOPE = Object.freeze({
+  error: Object.freeze({
     code: "application_error",
     message: "An unexpected error occurred",
-  },
-} as const;
+  }),
+} as const);
 
 type ClassifiedError = {
   code: AppErrorCode;
@@ -49,21 +49,37 @@ export function registerErrorHandler(app: FastifyInstance): void {
       return reply;
     }
 
-    const parsedEnvelope = errorEnvelopeSchema.safeParse({
+    const serialized = serializeEnvelope(classified);
+    return reply.code(serialized.statusCode).send(serialized.envelope);
+  });
+}
+
+function serializeEnvelope(classified: ClassifiedError): {
+  statusCode: number;
+  envelope: unknown;
+} {
+  try {
+    const parsed = errorEnvelopeSchema.safeParse({
       error: {
         code: classified.code,
         message: classified.message,
         ...(classified.details ? { details: classified.details } : {}),
       },
     });
-    const envelope = parsedEnvelope.success
-      ? parsedEnvelope.data
-      : FALLBACK_ENVELOPE;
+    if (!parsed.success) {
+      return { statusCode: 500, envelope: FALLBACK_ENVELOPE };
+    }
 
-    return reply
-      .code(parsedEnvelope.success ? classified.statusCode : 500)
-      .send(envelope);
-  });
+    // Exercise the same JSON boundary Fastify will use and detach the payload
+    // from any mutable or accessor-bearing source object.
+    const jsonSnapshot = JSON.parse(JSON.stringify(parsed.data)) as unknown;
+    const snapshot = errorEnvelopeSchema.safeParse(jsonSnapshot);
+    return snapshot.success
+      ? { statusCode: classified.statusCode, envelope: snapshot.data }
+      : { statusCode: 500, envelope: FALLBACK_ENVELOPE };
+  } catch {
+    return { statusCode: 500, envelope: FALLBACK_ENVELOPE };
+  }
 }
 
 function classifyError(
