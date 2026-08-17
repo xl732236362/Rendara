@@ -41,6 +41,32 @@ async function workspacePackageManifests() {
   );
 }
 
+async function sourceFiles(directory) {
+  const ignoredDirectories = new Set([
+    ".next",
+    "dist",
+    "generated",
+    "node_modules",
+  ]);
+  const files = [];
+
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      if (!ignoredDirectories.has(entry.name)) {
+        files.push(...(await sourceFiles(entryPath)));
+      }
+      continue;
+    }
+
+    if (/\.[cm]?[jt]sx?$/.test(entry.name)) {
+      files.push(entryPath);
+    }
+  }
+
+  return files;
+}
+
 test("root manifest exposes dev, build, test, and lint scripts", async () => {
   const manifest = await readJson("package.json");
 
@@ -147,6 +173,33 @@ test("every workspace Zod consumer resolves major 4", async () => {
       4,
       `${directory} resolves Zod ${resolvedManifest.version}`,
     );
+  }
+});
+
+test("every package importing Zod declares the central catalog dependency", async () => {
+  const manifests = await workspacePackageManifests();
+  const workspace = await readText("pnpm-workspace.yaml");
+
+  assert.match(workspace, /catalog:\s*[\s\S]*?zod:\s*\^4(?:\.|$)/);
+
+  for (const { directory, manifest } of manifests) {
+    const files = await sourceFiles(path.join(rootDir, directory));
+    const importers = [];
+
+    for (const file of files) {
+      const source = await readFile(file, "utf8");
+      if (/(?:from\s+|import\s*\()\s*["']zod["']/.test(source)) {
+        importers.push(path.relative(rootDir, file));
+      }
+    }
+
+    if (importers.length > 0) {
+      assert.equal(
+        manifest.dependencies?.zod,
+        "catalog:",
+        `${directory} imports Zod in ${importers.join(", ")} but does not declare the central catalog dependency`,
+      );
+    }
   }
 });
 
