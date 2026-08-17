@@ -52,11 +52,13 @@ Verification evidence: registered-route regression tests cover projects, canvase
 
 **Files:** `packages/config/src/env.ts`, `packages/config/src/index.ts`, `packages/config/src/env.test.ts`, `packages/config/package.json`, `apps/server/src/config/env.ts`, `apps/server/src/config/env.test.ts`, `.env.example`, `railway.json`, `vercel.json`, `scripts/validate-env-template.mjs`, `tests/workspace.test.mjs`
 
-- [ ] Write failing tests for invalid ports/ranges/enums/URLs, whitespace normalization, exact boolean parsing, process-specific required settings, safe redaction metadata, and provider-dependent requirements.
-- [ ] Define environment descriptors and Zod schemas in `@loomic/config`; expose server/API/worker parsing without exporting resolved secrets to browser modules.
-- [ ] Refactor `loadServerEnv` to parse once and fail with one actionable issue list; retain explicit test overrides through a validated merge.
-- [ ] Add a validator that parses `.env.example` keys and deployment declarations against descriptors without requiring secret values.
-- [ ] Run config/server/workspace tests and verify malformed configuration fails before clients/routes/workers are constructed.
+- [x] Write failing tests for invalid ports/ranges/enums/URLs, whitespace normalization, exact boolean parsing, process-specific required settings, safe redaction metadata, and provider-dependent requirements.
+- [x] Define environment descriptors and Zod schemas in `@loomic/config`; expose server/API/worker parsing without exporting resolved secrets to browser modules.
+- [x] Refactor `loadServerEnv` to parse once and fail with one actionable issue list; retain explicit test overrides through a validated merge.
+- [x] Add a validator that parses `.env.example` keys and deployment declarations against descriptors without requiring secret values.
+- [x] Run config/server/workspace tests and verify malformed configuration fails before clients/routes/workers are constructed.
+
+Verification evidence: Config 29/29, Server environment 10/10, and Workspace 63/63 tests cover exact parsing, aggregated redacted failures, process/provider requirements, browser import isolation, 53 environment descriptors, deployment declarations, Docker filesystem entrypoints, and fail-fast startup ordering.
 
 ## Task 5: Create Explicit Provider And Executor Registries
 
@@ -114,25 +116,29 @@ Task 8 evidence: `entrypoint-architecture.test.ts`, `jobs.application-wiring.tes
 
 **Files:** `tests/workspace.test.mjs`, `package.json`, `biome.json` or a focused architecture script
 
-- [ ] Add failing architecture tests forbidding module-global registries, route-local Zod duck typing, unchecked Web response casts, and direct job orchestration from migrated adapters.
-- [ ] Add the architecture test to `ci:check` through the existing workspace test command.
-- [ ] Run `pnpm test:workspace`, then intentionally confirm each rule points to actionable file/line evidence before restoring green state.
+- [x] Add failing architecture tests forbidding module-global registries, route-local Zod duck typing, unchecked Web response casts, and direct job orchestration from migrated adapters.
+- [x] Add the architecture test to `ci:check` through the existing workspace test command.
+- [x] Run `pnpm test:workspace`, then intentionally confirm each rule points to actionable file/line evidence before restoring green state.
+
+Verification evidence: TypeScript-AST rules cover alias/namespace and namespaced-call bypasses, ignore comments/string/template false positives, fail closed on malformed TypeScript, and report actionable file/line diagnostics. The real-source enforcement test and 37 negative fixtures run through `test:workspace` and therefore `ci:check`.
 
 ## Task 11: Documentation And Strict Acceptance
 
 **Files:** `docs/tech/engineering-issues-register.md`, `docs/tech/phase-1-verification.md`, `.codemap/`, plan checklist
 
-- [ ] Run focused unit/contract/adapter tests with cache disabled, then `pnpm ci:check --force` or equivalent uncached package commands.
-- [ ] Run `supabase db reset --yes`, `supabase test db`, Docker build, and container `dist/app.js` load smoke test.
-- [ ] Run `git diff --check`, architecture searches, `pnpm why zod`, and verify no new Biome warnings beyond the recorded baseline.
-- [ ] Update each covered ENG item conservatively as solved/partially solved with commit and test evidence; do not close items whose target architecture belongs to later phases.
-- [ ] Record exact commands, test counts, environment-independent results, known deferred items, commit SHA, and acceptance conclusion in `phase-1-verification.md`.
+- [x] Run focused unit/contract/adapter tests with cache disabled, then `pnpm ci:check --force` or equivalent uncached package commands.
+- [x] Run `supabase db reset --yes`, `supabase test db`, Docker build, and container `dist/app.js` load smoke test.
+- [x] Run `git diff --check`, architecture searches, `pnpm why zod`, and verify no new Biome warnings beyond the recorded baseline.
+- [x] Update each covered ENG item conservatively as solved/partially solved with commit and test evidence; do not close items whose target architecture belongs to later phases.
+- [x] Record exact commands, test counts, environment-independent results, known deferred items, commit SHA, and acceptance conclusion in `phase-1-verification.md`.
+
+Acceptance evidence: `docs/tech/phase-1-verification.md` records the uncached 458-test evidence, exact warning baseline, Supabase CLI 2.114.0 reset and 14 database tests, `loomic-server:phase1` build/app/API/Worker probes, dependency audit (including the isolated `shadcn` build-tool Zod 3 graph), architecture scope, implementation SHA, and deferred Phase 2/3/4 work.
 
 ## Acceptance Matrix
 
 | Requirement | Evidence |
 | --- | --- |
-| One Zod major | manifests, lockfile, `pnpm why zod`, workspace test |
+| One Zod major for Loomic contract consumers | manifests, lockfile, `pnpm why zod`, workspace test; isolated `shadcn` build-tool graph documented |
 | Shared HTTP/WS/queue contracts | shared contract tests and adapter parsing tests |
 | Unified errors | global handler tests and absence of route-local Zod mapping |
 | Fail-fast configuration | config matrix tests and template/deployment validator |

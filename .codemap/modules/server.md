@@ -2,33 +2,32 @@
 
 ### `apps/server/src/app.ts`
 
-Composition root for Fastify, environment loading, infrastructure clients, services, security boundaries, routes, WebSocket state, and provider registration. Phase 1 moves mutable registries and application use cases into explicit dependencies created here.
+Composition root for Fastify, validated environment loading, infrastructure clients, services, security boundaries, routes, WebSocket state, sealed registries, and frozen application-use-case dependencies.
 
 ### `apps/server/src/http/`
 
-REST interface adapters. They authenticate, parse boundary input, call services, and serialize responses. Many routes currently repeat Zod detection and error mapping; phase 1 replaces this with a shared `AppError` boundary and global error handler.
+REST interface adapters authenticate, parse shared boundary schemas, call application use cases/services, and serialize responses. A global `AppError` boundary owns canonical error envelopes; workspace architecture tests reject route-local Zod duck typing and migrated orchestration bypasses.
 
 ### `apps/server/src/ws/`
 
-WebSocket commands, connection identity, event buffering, and logging. Commands use shared schemas and resource authorization, but Agent run orchestration still needs to converge on application use cases.
+WebSocket commands, connection identity, event buffering, and logging. Commands use shared schemas and resource authorization. Run-scoped `agent.cancel` deliberately remains an Agent lifecycle operation, distinct from background-job cancellation.
 
 ### `apps/server/src/agent/`
 
-LangGraph/DeepAgents runtime, persistence, tools, prompts, and backends. `runtime.ts` currently contains generation submission and cancellation orchestration also present in HTTP routes.
+LangGraph/DeepAgents runtime, persistence, tools, prompts, and backends. Queued generation and canvas mutation consume injected application use cases; streaming and run lifecycle remain runtime responsibilities.
 
 ### `apps/server/src/features/`
 
-Domain-oriented services for jobs, credits, canvas, chat, projects, skills, payments, settings, uploads, and Agent run metadata. Services often bind directly to Supabase; phase 1 introduces application orchestration without attempting the phase 2 database consistency redesign.
+Domain-oriented services and adapters for jobs, credits, canvas, chat, projects, skills, payments, settings, uploads, and Agent run metadata. The `application/` layer composes narrow ports without introducing the phase 2 database consistency redesign.
 
 ### `apps/server/src/generation/`
 
-Image/video provider interfaces and implementations. Provider selection uses module-global mutable maps; phase 1 replaces them with an explicit registry that rejects duplicate provider and model identifiers.
+Image/video provider interfaces and implementations. Provider selection uses an instance-based sealed registry that rejects duplicate provider/model identifiers and exposes immutable catalogs and frozen execution facades.
 
 ### `apps/server/src/worker.ts`
 
-PGMQ polling process. It resolves job executors, renews visibility, executes generation, and acknowledges/retries messages. Executor registration currently relies on import side effects and module-global state.
+PGMQ polling process. It receives an explicit sealed executor/provider catalog, validates versioned queue envelopes against authoritative jobs, renews visibility, executes generation, and acknowledges/retries messages.
 
 ### `apps/server/src/security/`
 
 Phase 0 boundaries: resource authorization, safe external fetches, HTTP rate limiting, and WebSocket command budgets. Keep these fail-closed while application boundaries move.
-

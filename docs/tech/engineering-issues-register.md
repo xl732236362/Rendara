@@ -42,16 +42,16 @@
 | ENG-014 | P1 | 已确认 | 节点扩展性 | 节点识别、渲染和交互分散在多个组件，缺少统一注册机制 |
 | ENG-015 | P2 | 已确认 | 演进能力 | 持久化时移除删除标记，不利于撤销、合并和实时协作扩展 |
 | ENG-016 | P1 | 已确认 | 媒体持久化 | 已存储媒体在加载后回灌为 data URL，后续保存会重复上传 |
-| ENG-017 | P1 | 已确认 | 模块边界 | Agent 和 Worker 绕过 CanvasService 直接读写画布 JSON |
+| ENG-017 | P1 | 部分解决 | 模块边界 | Agent 和 Worker 绕过 CanvasService 直接读写画布 JSON |
 | ENG-018 | P2 | 已确认 | 画布测试 | 画布服务、节点协议和并发保存缺少针对性测试 |
-| ENG-019 | P1 | 已确认 | 应用层 | 同一生成与扣费流程在 HTTP、Agent 等入口重复编排 |
-| ENG-020 | P1 | 已确认 | API 契约 | 请求和响应的运行时校验策略不一致 |
-| ENG-021 | P2 | 已确认 | 错误处理 | 路由层重复实现鉴权、Zod 和领域错误映射 |
+| ENG-019 | P1 | 部分解决 | 应用层 | 同一生成与扣费流程在 HTTP、Agent 等入口重复编排 |
+| ENG-020 | P1 | 部分解决 | API 契约 | 请求和响应的运行时校验策略不一致 |
+| ENG-021 | P2 | 已解决 | 错误处理 | 路由层重复实现鉴权、Zod 和领域错误映射 |
 | ENG-022 | P1 | 已解决 | 配置管理 | 环境配置已由共享 schema、进程约束和部署模板校验统一管理 |
 | ENG-023 | P1 | 已确认 | 模型目录 | 模型能力、价格、权限和默认值存在多个事实源 |
-| ENG-024 | P2 | 已确认 | 扩展注册 | Provider 与 Executor registry 使用进程级可变全局状态 |
-| ENG-025 | P2 | 已确认 | 架构治理 | 模块依赖方向和边界没有自动化约束 |
-| ENG-026 | P2 | 已确认 | 依赖治理 | 工作区同时使用 Zod 3 与 Zod 4 处理跨包契约 |
+| ENG-024 | P2 | 已解决 | 扩展注册 | Provider 与 Executor registry 使用进程级可变全局状态 |
+| ENG-025 | P2 | 部分解决 | 架构治理 | 模块依赖方向和边界没有自动化约束 |
+| ENG-026 | P2 | 已解决 | 依赖治理 | Loomic 源码契约曾同时使用 Zod 3 与 Zod 4 |
 | ENG-027 | P0 | 部分解决 | Agent 安全 | Production execute 并未隔离容器文件系统与网络 |
 | ENG-028 | P0 | 已解决 | WebSocket 授权 | 画布事件订阅与运行取消缺少资源所有权校验 |
 | ENG-029 | P0 | 已解决 | 外部请求安全 | 图片代理与 skill 导入存在 SSRF 和无界下载风险 |
@@ -203,7 +203,7 @@
 ### ENG-017：画布写入绕过统一领域服务
 
 - 严重度：P1
-- 状态：已确认
+- 状态：部分解决
 - 证据：`CanvasService` 只提供整份读取和保存；Worker 的 `canvas-element-writer.ts` 与 Agent 的 `manipulate-canvas.ts` 均直接访问 `canvases.content`，各自实现读改写、错误处理和文件策略。
 - 影响：权限、revision、校验、迁移、日志和冲突处理无法在一个边界统一实施；未来修改存储模型需要同时改动多个调用方。
 - 建议方向：建立 canvas repository/application service，暴露 `applyOperations`、`insertArtifact` 等用例；所有写入统一经过校验、并发控制、审计日志和事件发布。
@@ -220,26 +220,29 @@
 ### ENG-019：业务用例在多个入口重复编排
 
 - 严重度：P1
-- 状态：已确认
+- 状态：部分解决
 - 证据：图片/视频任务创建、套餐校验、积分扣减和任务 metadata 分别在 `http/jobs.ts`、`http/generate.ts` 与 `agent/runtime.ts` 中编排；同步与异步路径还维护各自的异常和退款逻辑。
 - 影响：新增生成类型、调整计费顺序或修复补偿逻辑时需要修改多个入口，违反 DRY 和单一职责原则；不同入口容易出现价格、权限、状态和日志行为不一致。
 - 建议方向：把“提交生成任务”“执行同步生成”“结算/补偿”建模为应用层 use case。HTTP、WebSocket 和 Agent tool 只负责协议适配与身份上下文，不直接组合多个领域服务。
+- 阶段 1 结果：新增 `SubmitGeneration`/`CancelGeneration` 及窄口径 ports，队列化 HTTP 图像/视频、Agent 图像/视频与 HTTP 后台任务取消已复用同一用例。同步立即返回媒体的路径仍有不同生命周期，任务创建/扣费/入队的原子性也属于阶段 2，因此保持“部分解决”。关联提交：`ebb1183`、`1bf1e31`、`170a4a6`；验证见 generation application 与 entrypoint wiring 测试。
 
 ### ENG-020：API 运行时契约执行不一致
 
 - 严重度：P1
-- 状态：已确认
+- 状态：部分解决
 - 证据：部分服务端路由使用共享 Zod schema 解析请求和响应，另一些路由通过 `request.body as ...` 直接断言；Web 客户端大多数响应通过 `(await response.json()) as ResponseType` 断言，没有执行共享 response schema。
 - 影响：TypeScript 类型不会验证网络数据。后端部署版本不一致、字段缺失或错误响应结构变化时，问题会在 UI 深处以空值或运行时错误出现，契约漂移不能在边界被及时发现。
 - 建议方向：统一请求、成功响应和错误响应的 schema；服务端在框架 schema/compiler 层执行，客户端由通用 fetcher 在边界 parse。对性能敏感接口可评估开发/测试强校验和生产轻量校验策略。
+- 阶段 1 结果：HTTP/WS/队列边界已有共享 Zod 4 契约，路由外部输入统一 parse；Web `server-api.ts` 已全部经过 schema-aware `apiFetch` 校验成功/错误响应。尚未宣称所有服务端对外成功响应都在序列化时强制 parse，因此保持“部分解决”。关联提交：`ca01de6`、`997685f`、`a1c009e`、`f34e5d9`；验证见 Shared 契约、路由迁移和 Web API client 测试。
 
 ### ENG-021：路由层错误映射重复且不一致
 
 - 严重度：P2
-- 状态：已确认
+- 状态：已解决
 - 证据：`canvases.ts`、`chat.ts`、`brand-kits.ts`、`jobs.ts` 等分别实现近似的 `sendUnauthorized`、`isZodError` 和领域错误到 HTTP 的映射；fallback code、状态码和响应正文存在差异。
 - 影响：新增领域错误时需要逐个路由维护，容易返回错误状态或泄漏不一致的消息；大量样板代码降低路由可读性，违反 DRY。
 - 建议方向：定义统一 `AppError`/error code 契约，通过 Fastify error handler 或插件集中映射认证、校验、冲突、限流和内部错误；领域服务只抛稳定错误，不依赖 HTTP reply。
+- 阶段 1 结果：已建立 canonical `AppError`/错误 envelope 和 Fastify 全局边界，迁移全部路由并移除局部 Zod duck typing/重复 envelope 发送。恶意 thrown value、循环 details 和私有错误均有脱敏回归；架构测试持续禁止回退。关联提交：`1894160`、`997685f`、`2adfd3a`；验证见 error-handler 与 route migration 测试。关闭于 2026-08-18。
 
 ### ENG-022：配置加载缺少统一 schema
 
@@ -261,26 +264,29 @@
 ### ENG-024：扩展 registry 使用全局可变状态
 
 - 严重度：P2
-- 状态：已确认
+- 状态：已解决
 - 证据：Provider 和 Executor 分别保存在模块级 `Map`；`buildApp` 每次调用都会执行 `registerAllProviders`，注册时同名条目直接覆盖且没有重复检测或生命周期隔离。
 - 影响：测试、热重载、多应用实例和未来动态配置之间可能互相污染；依赖在函数签名中不可见，降低可测试性。重复 provider/model ID 也无法在启动时明确失败。
 - 建议方向：保留 registry 模式，但改为由 composition root 创建的显式实例，启动时验证 provider 名、model ID 和 executor type 唯一性，再注入应用服务与 Worker。
+- 阶段 1 结果：Provider/Executor registry 已改为 composition root 构建、校验、seal 后注入的实例；重复 provider/model/executor 在启动时失败，多实例隔离和深冻结快照均有测试。架构门禁禁止模块级 registry 状态回归。关联提交：`2c9a105`、`ee99f44`、`50dff13`、`1290f27`；验证见 registry/executor 重复、隔离与不可变测试。关闭于 2026-08-18。
 
 ### ENG-025：架构边界仅依靠目录约定
 
 - 严重度：P2
-- 状态：已确认
+- 状态：部分解决
 - 证据：当前 lint/tsconfig 未定义跨层 import 规则，Agent、HTTP、Worker 和 feature 模块可以直接访问 Supabase、queue 或其他 feature 内部实现；已有多处绕过 service 的实例。
 - 影响：随着团队和功能增长，依赖方向会逐渐形成环和隐式耦合，目录分层无法阻止实现层反向依赖入口层；重构影响范围难以预测。
 - 建议方向：明确 domain/application/infrastructure/interface 的允许依赖方向，用 package exports、目录 public API、dependency-cruiser 或等价 lint 规则自动约束，并在 CI 中加入循环依赖检查。
+- 阶段 1 结果：工作区测试已用 TypeScript AST 强制本阶段关键边界：全局 registry、路由 Zod duck typing、Web 未校验 fetch/cast、适配器直接队列编排、HTTP 直调 Skill importer 及 Agent 画布写入绕行均会给出文件/行号。它已进入 `ci:check`；但完整跨层 import 图和循环依赖门禁尚未建立，因此保持“部分解决”。关联提交：`8e5656c`至 `2904479`；验证见 Workspace 63 项测试。
 
 ### ENG-026：跨包契约使用两个 Zod 主版本
 
 - 严重度：P2
-- 状态：已确认
+- 状态：已解决
 - 证据：`@loomic/shared` 依赖 Zod 3，`@loomic/server` 直接依赖 Zod 4；服务端同时导入共享 schema 和本地 schema，并通过错误名称而非稳定统一类型判断 ZodError。
 - 影响：错误类型、schema API 和类型推导行为可能不一致，升级时更容易出现难定位的兼容问题；重复运行时也增加依赖和认知成本。
 - 建议方向：统一工作区 Zod 主版本，通过 workspace catalog/overrides 和依赖检查避免再次漂移；迁移前补充共享契约与错误处理兼容测试。
+- 阶段 1 结果：Loomic 所有源码导入方均显式声明 workspace catalog Zod 4，共享契约和服务端统一解析为 `4.3.6`；工作区测试会发现真实 import 并禁止 Zod 3 声明。`shadcn` 构建工具的传递依赖仍在 lockfile 中携带 Zod 3，但不是 Loomic 跨包/运行时契约。关联提交：`ca01de6`、`e9f6c4a`；验证见 Shared 契约、Workspace Zod import 发现与 `pnpm why zod -r`。源码契约的双主版本问题关闭于 2026-08-18。
 
 ### ENG-027：Production execute 不是真正的安全沙箱
 

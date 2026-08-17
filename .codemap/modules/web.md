@@ -14,9 +14,12 @@ Client lifecycle and server-state orchestration. Hooks currently call domain API
 
 ### `apps/web/src/lib/server-api.ts`
 
-Primary REST client. It duplicates headers and error handling and casts JSON responses without runtime validation. Phase 1 introduces a schema-aware fetcher while preserving the public domain helper API.
+Primary domain REST helpers. Every helper delegates to schema-aware `apiFetch`, which validates success/error payloads, distinguishes caller abort from timeout, supports JSON/FormData/empty responses, and preserves the public helper signatures.
+
+### `apps/web/src/lib/api-client.ts`
+
+Shared HTTP transport boundary. It joins base paths safely, specializes canonical 401 errors, cleans abort listeners/timers, and rejects malformed or schema-invalid responses before data reaches UI code.
 
 ### `apps/web/src/lib/env.ts`
 
 Browser-safe server URL configuration. Server-only secrets must never be imported into this package or exposed through public configuration.
-

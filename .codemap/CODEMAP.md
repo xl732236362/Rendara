@@ -1,16 +1,17 @@
 # Loomic - Codemap
 
 > **Version**: 0.0.0 | **Stack**: TypeScript, Next.js, Fastify, LangGraph, Supabase | **Architecture**: pnpm monorepo
-> **Created**: 2026-08-17 | **Updated**: 2026-08-17
+> **Created**: 2026-08-17 | **Updated**: 2026-08-18
 
 ## L1: Project Panorama
 
 Loomic is an AI creative workspace. The browser owns interactive canvas and chat state; Fastify exposes REST and WebSocket adapters; LangGraph/DeepAgents orchestrates tools; PGMQ workers perform long-running generation; Supabase provides authentication, PostgreSQL, storage, and persistence.
 
 ```text
-Next.js web -> REST/WebSocket -> Fastify adapters -> services/agent runtime
-                                             |-> PGMQ -> worker -> model providers
-                                             `-> Supabase DB/Auth/Storage
+Next.js web -> schema-aware REST/WebSocket -> Fastify adapters -> application use cases
+                                                               |-> services/agent runtime
+                                                               |-> PGMQ -> worker -> model providers
+                                                               `-> Supabase DB/Auth/Storage
 ```
 
 | Area | Technology | Entry points |
@@ -37,8 +38,9 @@ Next.js web -> REST/WebSocket -> Fastify adapters -> services/agent runtime
 ```text
 apps/web -> packages/shared
 apps/server -> packages/shared
-apps/server interfaces -> feature services / agent runtime -> Supabase, PGMQ, providers
-worker -> job executors -> generation providers / Supabase / storage
+apps/server interfaces -> application use cases -> feature adapters -> Supabase / PGMQ
+agent runtime -> injected use cases / LangGraph tools
+worker -> sealed executor registry -> generation providers / Supabase / storage
 ```
 
 ## Development Index
@@ -57,4 +59,4 @@ worker -> job executors -> generation providers / Supabase / storage
 | Date | Change | Scope |
 | --- | --- | --- |
 | 2026-08-17 | Initial codemap after phase 0 | Entire repository |
-
+| 2026-08-18 | Phase 1 contracts, application boundaries, explicit registries, and architecture gates | Server, Web, packages, quality |
