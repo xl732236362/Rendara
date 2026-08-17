@@ -278,9 +278,10 @@ export function createJobService(options: {
         .eq("id", jobId);
       if (error) {
         console.error("[job-service] setCreditsInfo update failed", {
+          event: "job_credit_attachment_failed",
+          stage: "credit_attachment",
           jobId,
-          code: error.code,
-          message: error.message,
+          errorCode: sanitizeDiagnosticCode(error.code),
         });
         throw new JobServiceError(
           "job_create_failed",
@@ -369,4 +370,10 @@ export function createJobService(options: {
       return { attempt_count: 1, max_attempts: 3 };
     },
   };
+}
+
+function sanitizeDiagnosticCode(code: unknown): string {
+  return typeof code === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(code)
+    ? code
+    : "unknown";
 }

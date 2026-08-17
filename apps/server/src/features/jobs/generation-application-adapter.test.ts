@@ -25,8 +25,9 @@ describe("createJobServiceGenerationPorts", () => {
       .spyOn(console, "error")
       .mockImplementation(() => undefined);
     const databaseError = {
-      message: "internal database detail",
+      message: "internal database detail token=super-secret",
       code: "XX000",
+      details: "authorization=Bearer secret-token",
     };
     const jobService = createJobService({
       createUserClient: vi.fn() as never,
@@ -44,8 +45,17 @@ describe("createJobServiceGenerationPorts", () => {
     });
     expect(errorLog).toHaveBeenCalledWith(
       "[job-service] setCreditsInfo update failed",
-      { jobId, code: "XX000", message: "internal database detail" },
+      {
+        event: "job_credit_attachment_failed",
+        stage: "credit_attachment",
+        jobId,
+        errorCode: "XX000",
+      },
     );
+    const serializedLog = JSON.stringify(errorLog.mock.calls);
+    expect(serializedLog).not.toContain("super-secret");
+    expect(serializedLog).not.toContain("secret-token");
+    expect(serializedLog).not.toContain("internal database detail");
     errorLog.mockRestore();
   });
 
