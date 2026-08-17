@@ -11,15 +11,15 @@ const AUTH_PATTERN =
   /jwt|token|unauthorized|forbidden|credential|service.account/i;
 const INFRA_PATTERN =
   /econnrefused|econnreset|etimedout|dns|socket|tls|certificate/i;
-const SECRET_ASSIGNMENT_PATTERN =
-  /(password|token|secret|authorization|api[_-]?key)(\s*(?:[:=]|\bis\b)\s*)([^\s,;]+)/gi;
+const SENSITIVE_FIELD_PATTERN =
+  /\b(password|token|secret|authorization|api[_-]?key|prompt|input|instruction|content|message(?:[_-]?content)?|payload|body|query)(\s*(?:[:=]|\bis\b)\s*)(?:"[^"]*"|'[^']*'|[^,;\r\n]+)/gi;
 const BEARER_PATTERN = /\bbearer\s+[a-z0-9._~+/-]+=*/gi;
 
 export type SanitizedErrorDiagnostic = {
   errorName: string;
   errorMessage: string;
   errorCode?: string;
-  errorStack?: string;
+  stackFingerprint?: string;
   errorCause?: SanitizedErrorDiagnostic;
 };
 
@@ -42,7 +42,9 @@ export function sanitizeErrorForLog(
     diagnostic.errorCode = sanitizeDiagnosticText(code);
   }
   if (error instanceof Error && error.stack) {
-    diagnostic.errorStack = sanitizeDiagnosticText(error.stack, 4_000);
+    diagnostic.stackFingerprint = createHash("sha256")
+      .update(error.stack)
+      .digest("hex");
   }
   if (depth < 2 && record && "cause" in record && record.cause !== undefined) {
     diagnostic.errorCause = sanitizeErrorForLog(record.cause, depth + 1);
@@ -52,7 +54,7 @@ export function sanitizeErrorForLog(
 
 function sanitizeDiagnosticText(value: string, maxLength = 1_000): string {
   return value
-    .replace(SECRET_ASSIGNMENT_PATTERN, "$1$2[REDACTED]")
+    .replace(SENSITIVE_FIELD_PATTERN, "$1$2[REDACTED]")
     .replace(BEARER_PATTERN, "Bearer [REDACTED]")
     .slice(0, maxLength);
 }
@@ -125,3 +127,4 @@ export function sanitizeErrorForClient(error: unknown): string {
   // Short, non-technical messages can pass through
   return "请求处理失败，请重试。";
 }
+import { createHash } from "node:crypto";

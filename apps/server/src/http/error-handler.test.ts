@@ -97,12 +97,21 @@ describe("Fastify error boundary", () => {
   it("hides unknown internal error messages and request data", async () => {
     const { app, records } = createLoggedTestApp();
     app.post("/unknown", async () => {
-      throw Object.assign(
-        new Error("database password is hunter2", {
-          cause: new Error("provider token=upstream-token"),
-        }),
+      const cause = new Error(
+        "input=private-input; instruction=private-instruction; content=private-content",
+      );
+      cause.stack =
+        "Error: prompt=private-cause-prompt\n at internal (C:\\secret\\provider.ts:1:1)";
+      const error = Object.assign(
+        new Error(
+          "prompt=private-prompt; token=secret-token; Authorization=Bearer private-bearer; api_key=private-api-key",
+          { cause },
+        ),
         { code: "DB_FAILURE" },
       );
+      error.stack =
+        "Error: prompt=private-stack-prompt token=private-stack-token\n at internal (C:\\workspace\\secret.ts:10:2)";
+      throw error;
     });
 
     const response = await app.inject({
@@ -118,7 +127,7 @@ describe("Fastify error boundary", () => {
         message: "An unexpected error occurred",
       },
     });
-    expect(response.body).not.toContain("hunter2");
+    expect(response.body).not.toContain("private-prompt");
     const boundaryLog = records.find(
       (record) => record.fields.event === "http_request_failed",
     );
@@ -127,17 +136,33 @@ describe("Fastify error boundary", () => {
       errorName: "Error",
       errorMessage: expect.any(String),
       errorCode: "DB_FAILURE",
-      errorStack: expect.any(String),
+      stackFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
       errorCause: {
         errorName: "Error",
         errorMessage: expect.any(String),
+        stackFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
       },
       requestId: expect.any(String),
     });
-    expect(JSON.stringify(boundaryLog?.fields)).toContain("[REDACTED]");
-    expect(JSON.stringify(boundaryLog?.fields)).not.toContain("hunter2");
-    expect(JSON.stringify(boundaryLog?.fields)).not.toContain("private prompt");
-    expect(JSON.stringify(boundaryLog?.fields)).not.toContain("secret-token");
+    const serializedLog = JSON.stringify(boundaryLog?.fields);
+    expect(serializedLog).toContain("[REDACTED]");
+    for (const secret of [
+      "private-prompt",
+      "secret-token",
+      "private-bearer",
+      "private-api-key",
+      "private-input",
+      "private-instruction",
+      "private-content",
+      "private-cause-prompt",
+      "private-stack-prompt",
+      "private-stack-token",
+      "provider.ts",
+      "secret.ts",
+    ]) {
+      expect(serializedLog).not.toContain(secret);
+    }
+    expect(boundaryLog?.fields).not.toHaveProperty("errorStack");
     await app.close();
   });
 
