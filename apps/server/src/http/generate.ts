@@ -4,10 +4,10 @@ import { z } from "zod";
 
 import {
   type ImageQualityLevel,
-  type VideoResolution,
   applicationErrorResponseSchema,
   unauthenticatedErrorResponseSchema,
 } from "@loomic/shared";
+import type { SubmitGeneration } from "../application/generation/submit-generation.js";
 
 import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
 import type { CreditService } from "../features/credits/credit-service.js";
@@ -54,6 +54,7 @@ export async function registerGenerateRoutes(
     jobService?: JobService;
     providerRegistry: ProviderCatalog;
     tierGuard?: TierGuard;
+    submitGeneration?: SubmitGeneration;
     uploadService: UploadService;
     viewerService: ViewerService;
   },
@@ -176,7 +177,7 @@ export async function registerGenerateRoutes(
 
     const payload = parseRequest(generateVideoRequestSchema, request.body);
 
-    if (!options.jobService) {
+    if (!options.jobService || !options.submitGeneration) {
       return raiseBoundaryError(
         {
           error: {
@@ -191,40 +192,14 @@ export async function registerGenerateRoutes(
 
     const model = payload.model ?? "google-official/veo-3.1-generate-preview";
 
-    // ── Tier guard + credit checks ──
     const viewer = await options.viewerService.ensureViewer(user);
     const workspaceId = viewer.workspace.id;
-    let creditsCost = 0;
-
-    if (options.creditService && options.tierGuard) {
-      const sub = await options.creditService.getSubscription(workspaceId);
-      options.tierGuard.checkModelAccess(sub.plan, model);
-      if (payload.resolution) {
-        options.tierGuard.checkVideoResolution(
-          sub.plan,
-          payload.resolution as VideoResolution,
-        );
-      }
-      await options.tierGuard.checkConcurrency(workspaceId, sub.plan);
-      creditsCost = options.tierGuard.calculateCreditCost(
-        model,
-        "video_generation",
-        {
-          ...(payload.duration != null ? { duration: payload.duration } : {}),
-          ...(payload.resolution
-            ? { resolution: payload.resolution as VideoResolution }
-            : {}),
-        },
-      );
-    }
-
-    // ── Create job ──
-    let job: Awaited<ReturnType<JobService["createJob"]>>;
+    let jobId: string;
     try {
-      job = await options.jobService.createJob(user, {
-        workspaceId,
-        jobType: "video_generation",
-        payload: {
+      const submitted = await options.submitGeneration(
+        { userId: user.id, workspaceId, accessToken: user.accessToken },
+        {
+          type: "video_generation",
           prompt: payload.prompt,
           model,
           ...(payload.duration != null ? { duration: payload.duration } : {}),
@@ -234,7 +209,8 @@ export async function registerGenerateRoutes(
             ? { input_images: payload.inputImages }
             : {}),
         },
-      });
+      );
+      jobId = submitted.jobId;
     } catch (error) {
       request.log.error({ err: error }, "video generation job creation failed");
       if (error instanceof JobServiceError) {
@@ -247,23 +223,6 @@ export async function registerGenerateRoutes(
       });
     }
 
-    // ── Deduct credits BEFORE generation ──
-    if (options.creditService && creditsCost > 0) {
-      try {
-        const txId = await options.creditService.deductCredits(
-          workspaceId,
-          user.id,
-          creditsCost,
-          job.id,
-          `Direct video generation: ${model}`,
-        );
-        await options.jobService.setCreditsInfo(job.id, creditsCost, txId);
-      } catch (deductError) {
-        await options.jobService.cancelJob(user, job.id).catch(() => {});
-        throw deductError;
-      }
-    }
-
     // ── Poll until terminal state ──
     const POLL_INTERVAL = 3_000;
     const MAX_WAIT = 300_000; // 5 minutes
@@ -272,7 +231,7 @@ export async function registerGenerateRoutes(
     try {
       result = await pollJobUntilDone(
         options.jobService,
-        job.id,
+        jobId,
         POLL_INTERVAL,
         MAX_WAIT,
       );

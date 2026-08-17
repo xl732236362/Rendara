@@ -1,9 +1,7 @@
 import { tool } from "langchain";
 
+import type { ApplyCanvasOperations } from "../../application/canvas/apply-canvas-operations.js";
 import {
-  type CanvasOperationEngineResult,
-  CanvasOperationError,
-  applyCanvasOperations,
   manipulateCanvasSchema,
   measureTextWidth,
 } from "../../features/canvas/canvas-operation-engine.js";
@@ -11,7 +9,8 @@ import {
 export { measureTextWidth };
 
 export function createManipulateCanvasTool(deps: {
-  createUserClient: (accessToken: string) => any;
+  applyCanvasOperations: ApplyCanvasOperations;
+  resolveWorkspaceId(accessToken: string): Promise<string>;
 }) {
   return tool(
     async (input, config) => {
@@ -26,51 +25,42 @@ export function createManipulateCanvasTool(deps: {
         });
       }
 
-      const client = deps.createUserClient(accessToken);
-      const { data, error } = await client
-        .from("canvases")
-        .select("content")
-        .eq("id", canvasId)
-        .single();
-      if (error || !data) {
+      try {
+        const workspaceId = await deps.resolveWorkspaceId(accessToken);
+        const outcome = await deps.applyCanvasOperations(
+          { userId: "agent", workspaceId, accessToken },
+          { canvasId, operations: input.operations },
+        );
+        return JSON.stringify({
+          success: true,
+          applied: outcome.applied,
+          summary: (outcome.descriptions ?? []).join("; "),
+          ...(Object.keys(outcome.createdIds ?? {}).length > 0
+            ? { createdIds: outcome.createdIds }
+            : {}),
+          ...(outcome.errors?.length ? { errors: outcome.errors } : {}),
+        });
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          "details" in error &&
+          typeof error.details === "object" &&
+          error.details &&
+          "issues" in error.details
+        ) {
+          return invalidOperationsResult(
+            (
+              error.details as {
+                issues: Array<{ index: number; message: string }>;
+              }
+            ).issues,
+          );
+        }
         return JSON.stringify({
           error: "canvas_not_found",
           message: "Canvas not found or access denied.",
         });
       }
-
-      let outcome: CanvasOperationEngineResult;
-      try {
-        outcome = applyCanvasOperations(data.content, input.operations);
-      } catch (error) {
-        if (error instanceof CanvasOperationError) {
-          return invalidOperationsResult(error.issues);
-        }
-        throw error;
-      }
-      if (outcome.issues.length > 0) {
-        return invalidOperationsResult(outcome.issues);
-      }
-      const { error: writeError } = await client
-        .from("canvases")
-        .update({ content: outcome.content })
-        .eq("id", canvasId);
-      if (writeError) {
-        return JSON.stringify({
-          error: "write_failed",
-          message: `Failed to save canvas: ${writeError.message}`,
-        });
-      }
-
-      return JSON.stringify({
-        success: true,
-        applied: outcome.applied,
-        summary: outcome.descriptions.join("; "),
-        ...(Object.keys(outcome.createdIds).length > 0
-          ? { createdIds: outcome.createdIds }
-          : {}),
-        ...(outcome.errors.length > 0 ? { errors: outcome.errors } : {}),
-      });
     },
     {
       name: "manipulate_canvas",

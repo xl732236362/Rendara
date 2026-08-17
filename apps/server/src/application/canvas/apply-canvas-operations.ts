@@ -16,7 +16,14 @@ const applyCanvasOperationsRequestSchema = z.object({
 const canvasOperationOutcomeSchema = z.object({
   canvasId: z.string().min(1),
   applied: z.number().int().nonnegative(),
+  descriptions: z.array(z.string()).optional(),
+  createdIds: z.record(z.string(), z.string()).optional(),
+  errors: z.array(z.string()).optional(),
 });
+
+export type ApplyCanvasOperations = ReturnType<
+  typeof createApplyCanvasOperations
+>;
 
 export type CanvasOperationPrincipal = {
   userId: string;

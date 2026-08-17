@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
 
+import { AppError } from "../errors/app-error.js";
 import { SkillImportError } from "../features/skills/skill-import-service.js";
 import { registerErrorHandler } from "./error-handler.js";
 import { registerSkillRoutes } from "./skills.js";
@@ -18,7 +19,12 @@ describe("skill import route", () => {
       },
       importSkill: async () => {
         importerCalled = true;
-        throw new Error("importer must not be reached");
+        throw new AppError({
+          code: "capability_disabled",
+          statusCode: 403,
+          message: "External skill import is disabled.",
+          expose: true,
+        });
       },
       viewerService: {
         ensureViewer: async () => {
@@ -37,7 +43,7 @@ describe("skill import route", () => {
     expect(response.json()).toMatchObject({
       error: { code: "capability_disabled" },
     });
-    expect(importerCalled).toBe(false);
+    expect(importerCalled).toBe(true);
     await app.close();
   });
 

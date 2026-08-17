@@ -32,13 +32,15 @@ const importedSkillSchema = z.object({
   sourceUrl: z.url(),
 });
 
-export type SkillImportPrincipal = { userId: string; workspaceId: string };
+export type SkillImportPrincipal = { userId: string; workspaceId?: string };
 export type ImportedSkillOutcome = z.infer<typeof importedSkillSchema>;
 
 export type SkillImportPorts = {
   capability: { externalImportEnabled(): boolean };
   importer: { importFromUrl(url: string): Promise<unknown> };
 };
+
+export type ImportSkill = ReturnType<typeof createImportSkill>;
 
 export function createImportSkill(options: {
   ports: SkillImportPorts;

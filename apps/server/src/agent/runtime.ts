@@ -21,13 +21,12 @@ import {
   type ImageQualityLevel,
   getPlanConfig,
 } from "@loomic/shared";
+import type { ApplyCanvasOperations } from "../application/canvas/apply-canvas-operations.js";
+import type { AttachGeneratedAsset } from "../application/canvas/attach-generated-asset.js";
+import type { SubmitGeneration } from "../application/generation/submit-generation.js";
 import type { ServerEnv } from "../config/env.js";
 import type { AgentRunMetadataService } from "../features/agent-runs/agent-run-service.js";
 import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
-import {
-  insertImageElement,
-  insertVideoElement,
-} from "../features/canvas/canvas-element-writer.js";
 import type { CreditService } from "../features/credits/credit-service.js";
 import {
   type TierGuard,
@@ -267,6 +266,8 @@ type RuntimeRunRecord = RunCreateRequest & {
 
 type CreateAgentRuntimeOptions = {
   agentPersistenceService?: AgentPersistenceService;
+  applyCanvasOperations?: ApplyCanvasOperations;
+  attachGeneratedAsset?: AttachGeneratedAsset;
   agentFactory?: LoomicAgentFactory;
   agentRunMetadataService?: AgentRunMetadataService;
   connectionManager?: ConnectionManager;
@@ -280,6 +281,7 @@ type CreateAgentRuntimeOptions = {
   now?: () => string;
   runIdFactory?: () => string;
   tierGuard?: TierGuard;
+  submitGeneration?: SubmitGeneration;
   viewerService?: ViewerService;
 };
 
@@ -298,6 +300,25 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         providerRegistry: options.providerRegistry,
         ...(options.createUserClient
           ? { createUserClient: options.createUserClient }
+          : {}),
+        ...(options.applyCanvasOperations && options.createUserClient
+          ? {
+              applyCanvasOperations: options.applyCanvasOperations,
+              resolveWorkspaceId: async (accessToken: string) => {
+                const client = options.createUserClient!(
+                  accessToken,
+                ) as UserSupabaseClient;
+                const { data, error } = await client
+                  .from("workspaces")
+                  .select("id")
+                  .eq("type", "personal")
+                  .limit(1)
+                  .single();
+                if (error || !data?.id)
+                  throw new Error("No personal workspace found");
+                return data.id;
+              },
+            }
           : {}),
       }));
 
@@ -463,11 +484,13 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
       let submitVideoJob: SubmitVideoJobFn | undefined;
       if (
         options.jobService &&
+        options.submitGeneration &&
         options.createUserClient &&
         run.accessToken &&
         run.userId
       ) {
         const jobSvc = options.jobService;
+        const submitGeneration = options.submitGeneration;
         const createClient = options.createUserClient;
         const accessToken = run.accessToken;
         const userId = run.userId;
@@ -503,92 +526,23 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
             userMetadata: {},
           };
 
-          // ── Tier guard + credit checks (same as HTTP route) ──
           const workspaceId = ws.id;
-          let creditsCost = 0;
-          if (options.creditService && options.tierGuard) {
-            const sub =
-              await options.creditService.getSubscription(workspaceId);
-            const quality = (input.quality as ImageQualityLevel) ?? "hd";
-            try {
-              options.tierGuard.checkModelAccess(sub.plan, input.model);
-              options.tierGuard.checkResolution(sub.plan, quality);
-              await options.tierGuard.checkConcurrency(workspaceId, sub.plan);
-            } catch (err) {
-              if (err instanceof TierGuardError) {
-                pushBillingErrorAndAbort(
-                  run,
-                  canvasId,
-                  options,
-                  err.code,
-                  err.message,
-                );
-                throw err;
-              }
-              throw err;
-            }
-            creditsCost = options.tierGuard.calculateCreditCost(
-              input.model,
-              "image_generation",
-              { quality },
-            );
-          }
-
-          // ── Balance pre-check: stop run immediately if insufficient ──
-          if (options.creditService && creditsCost > 0) {
-            const balanceInfo =
-              await options.creditService.getBalance(workspaceId);
-            if (balanceInfo.balance < creditsCost) {
-              pushBillingErrorAndAbort(
-                run,
-                canvasId,
-                options,
-                "insufficient_credits",
-                "Insufficient credits",
-                {
-                  currentBalance: balanceInfo.balance,
-                  requiredAmount: creditsCost,
-                  plan: balanceInfo.plan,
-                  dailyClaimed: balanceInfo.dailyClaimed,
-                },
-              );
-              throw new Error("Insufficient credits");
-            }
-          }
-
-          const job = await jobSvc.createJob(user, {
-            workspaceId,
-            ...(canvasId ? { canvasId } : {}),
-            ...(sessionId ? { sessionId } : {}),
-            jobType: "image_generation",
-            payload: {
+          const submitted = await submitGeneration(
+            { userId, workspaceId, accessToken },
+            {
+              type: "image_generation",
               prompt: input.prompt,
               title: input.title,
               model: input.model,
               aspect_ratio: input.aspectRatio,
               ...(input.inputImages ? { input_images: input.inputImages } : {}),
+              ...(canvasId ? { canvas_id: canvasId } : {}),
+              ...(sessionId ? { session_id: sessionId } : {}),
             },
-          });
-
-          // Deduct credits after job creation
-          if (options.creditService && creditsCost > 0) {
-            try {
-              const txId = await options.creditService.deductCredits(
-                workspaceId,
-                userId,
-                creditsCost,
-                job.id,
-                `Image generation: ${input.model}`,
-              );
-              await jobSvc.setCreditsInfo(job.id, creditsCost, txId);
-            } catch (deductError) {
-              await jobSvc.cancelJob(user, job.id).catch(() => {});
-              throw deductError;
-            }
-          }
+          );
+          const job = { id: submitted.jobId };
           jobLap("job_created", {
             jobId: job.id,
-            creditsCost,
             sessionId,
             runId,
           });
@@ -622,33 +576,44 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
 
               // Write element directly to canvas (backend-driven insertion)
               let elementId: string | undefined;
-              if (canvasId && result.object_path) {
+              if (
+                canvasId &&
+                result.object_path &&
+                options.attachGeneratedAsset
+              ) {
                 try {
-                  const writerClient = createClient(
-                    accessToken,
-                  ) as UserSupabaseClient;
+                  const placementInput = input as typeof input & {
+                    placementX?: number;
+                    placementY?: number;
+                    placementWidth?: number;
+                    placementHeight?: number;
+                  };
                   const explicitPlacement =
-                    (input as any).placementX != null &&
-                    (input as any).placementY != null
+                    placementInput.placementX != null &&
+                    placementInput.placementY != null
                       ? {
-                          x: (input as any).placementX,
-                          y: (input as any).placementY,
-                          width: (input as any).placementWidth ?? 512,
-                          height: (input as any).placementHeight ?? 512,
+                          x: placementInput.placementX,
+                          y: placementInput.placementY,
+                          width: placementInput.placementWidth ?? 512,
+                          height: placementInput.placementHeight ?? 512,
                         }
                       : undefined;
-
-                  const insertResult = await insertImageElement(
-                    writerClient,
+                  const insertResult = await options.attachGeneratedAsset(
+                    { userId, workspaceId, accessToken },
                     {
                       canvasId,
-                      objectPath: result.object_path,
-                      width: result.width ?? 1024,
-                      height: result.height ?? 1024,
-                      mimeType: result.mime_type ?? "image/png",
-                      title: input.title,
+                      asset: {
+                        type: "image",
+                        objectPath: result.object_path,
+                        width: result.width ?? 1024,
+                        height: result.height ?? 1024,
+                        mimeType: result.mime_type ?? "image/png",
+                        title: input.title,
+                      },
+                      ...(explicitPlacement
+                        ? { placement: explicitPlacement }
+                        : {}),
                     },
-                    explicitPlacement,
                   );
                   elementId = insertResult.elementId;
 
@@ -737,74 +702,11 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
             userMetadata: {},
           };
 
-          // ── Tier guard + credit checks (same as HTTP route) ──
           const workspaceId = ws.id;
-          let creditsCost = 0;
-          if (options.creditService && options.tierGuard) {
-            const sub =
-              await options.creditService.getSubscription(workspaceId);
-            try {
-              options.tierGuard.checkModelAccess(sub.plan, input.model);
-              if (input.resolution) {
-                options.tierGuard.checkVideoResolution(
-                  sub.plan,
-                  input.resolution as any,
-                );
-              }
-              await options.tierGuard.checkConcurrency(workspaceId, sub.plan);
-            } catch (err) {
-              if (err instanceof TierGuardError) {
-                pushBillingErrorAndAbort(
-                  run,
-                  canvasId,
-                  options,
-                  err.code,
-                  err.message,
-                );
-                throw err;
-              }
-              throw err;
-            }
-            creditsCost = options.tierGuard.calculateCreditCost(
-              input.model,
-              "video_generation",
-              {
-                ...(input.duration != null ? { duration: input.duration } : {}),
-                ...(input.resolution
-                  ? { resolution: input.resolution as any }
-                  : {}),
-              },
-            );
-          }
-
-          // ── Balance pre-check: stop run immediately if insufficient ──
-          if (options.creditService && creditsCost > 0) {
-            const balanceInfo =
-              await options.creditService.getBalance(workspaceId);
-            if (balanceInfo.balance < creditsCost) {
-              pushBillingErrorAndAbort(
-                run,
-                canvasId,
-                options,
-                "insufficient_credits",
-                "Insufficient credits",
-                {
-                  currentBalance: balanceInfo.balance,
-                  requiredAmount: creditsCost,
-                  plan: balanceInfo.plan,
-                  dailyClaimed: balanceInfo.dailyClaimed,
-                },
-              );
-              throw new Error("Insufficient credits");
-            }
-          }
-
-          const job = await jobSvc.createJob(user, {
-            workspaceId,
-            ...(canvasId ? { canvasId } : {}),
-            ...(sessionId ? { sessionId } : {}),
-            jobType: "video_generation",
-            payload: {
+          const submitted = await submitGeneration(
+            { userId, workspaceId, accessToken },
+            {
+              type: "video_generation",
               prompt: input.prompt,
               model: input.model,
               ...(input.duration != null ? { duration: input.duration } : {}),
@@ -815,28 +717,13 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               ...(input.enableAudio != null
                 ? { enable_audio: input.enableAudio }
                 : {}),
+              ...(canvasId ? { canvas_id: canvasId } : {}),
+              ...(sessionId ? { session_id: sessionId } : {}),
             },
-          });
-
-          // Deduct credits after job creation
-          if (options.creditService && creditsCost > 0) {
-            try {
-              const txId = await options.creditService.deductCredits(
-                workspaceId,
-                userId,
-                creditsCost,
-                job.id,
-                `Video generation: ${input.model}`,
-              );
-              await jobSvc.setCreditsInfo(job.id, creditsCost, txId);
-            } catch (deductError) {
-              await jobSvc.cancelJob(user, job.id).catch(() => {});
-              throw deductError;
-            }
-          }
+          );
+          const job = { id: submitted.jobId };
           jobLap("job_created", {
             jobId: job.id,
-            creditsCost,
             sessionId,
             runId,
           });
@@ -871,37 +758,46 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
 
               // Write element directly to canvas (backend-driven insertion)
               let elementId: string | undefined;
-              if (canvasId && result.signed_url) {
+              if (
+                canvasId &&
+                result.signed_url &&
+                options.attachGeneratedAsset
+              ) {
                 try {
-                  const writerClient = createClient(
-                    accessToken,
-                  ) as UserSupabaseClient;
+                  const placementInput = input as typeof input & {
+                    placementX?: number;
+                    placementY?: number;
+                    placementWidth?: number;
+                    placementHeight?: number;
+                  };
                   const explicitPlacement =
-                    (input as any).placementX != null &&
-                    (input as any).placementY != null
+                    placementInput.placementX != null &&
+                    placementInput.placementY != null
                       ? {
-                          x: (input as any).placementX,
-                          y: (input as any).placementY,
-                          width: (input as any).placementWidth ?? 640,
-                          height: (input as any).placementHeight ?? 360,
+                          x: placementInput.placementX,
+                          y: placementInput.placementY,
+                          width: placementInput.placementWidth ?? 640,
+                          height: placementInput.placementHeight ?? 360,
                         }
                       : undefined;
-
-                  const insertResult = await insertVideoElement(
-                    writerClient,
+                  const insertResult = await options.attachGeneratedAsset(
+                    { userId, workspaceId, accessToken },
                     {
                       canvasId,
-                      signedUrl: result.signed_url,
-                      width: result.width ?? 1280,
-                      height: result.height ?? 720,
-                      mimeType: result.mime_type ?? "video/mp4",
-                      ...(result.duration_seconds != null
-                        ? { durationSeconds: result.duration_seconds }
+                      asset: {
+                        type: "video",
+                        signedUrl: result.signed_url,
+                        width: result.width ?? 1280,
+                        height: result.height ?? 720,
+                        mimeType: result.mime_type ?? "video/mp4",
+                        ...(result.duration_seconds != null
+                          ? { durationSeconds: result.duration_seconds }
+                          : {}),
+                      },
+                      ...(explicitPlacement
+                        ? { placement: explicitPlacement }
                         : {}),
-                      title: (input as any).title,
-                      prompt: input.prompt,
                     },
-                    explicitPlacement,
                   );
                   elementId = insertResult.elementId;
 

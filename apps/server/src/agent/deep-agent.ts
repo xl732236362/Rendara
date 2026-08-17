@@ -8,6 +8,7 @@ import type {
 import { ChatOpenAI } from "@langchain/openai";
 import { createDeepAgent } from "deepagents";
 
+import type { ApplyCanvasOperations } from "../application/canvas/apply-canvas-operations.js";
 import {
   DEFAULT_AGENT_MODEL,
   DEFAULT_GOOGLE_AGENT_MODEL,
@@ -36,6 +37,7 @@ export type LoomicAgent = Pick<
 
 export type LoomicAgentFactory = (options: {
   backendResult?: AgentBackendResult;
+  applyCanvasOperations?: ApplyCanvasOperations;
   brandKitId?: string | null;
   canvasId?: string;
   checkpointer?: BaseCheckpointSaver;
@@ -50,10 +52,12 @@ export type LoomicAgentFactory = (options: {
   submitVideoJob?: SubmitVideoJobFn;
   store?: BaseStore;
   workspaceSkills?: WorkspaceSkillEntry[];
+  resolveWorkspaceId?: (accessToken: string) => Promise<string>;
 }) => LoomicAgent;
 
 export function createLoomicDeepAgent(options: {
   backendResult?: AgentBackendResult;
+  applyCanvasOperations?: ApplyCanvasOperations;
   brandKitId?: string | null;
   canvasId?: string;
   checkpointer?: BaseCheckpointSaver;
@@ -68,6 +72,7 @@ export function createLoomicDeepAgent(options: {
   submitVideoJob?: SubmitVideoJobFn;
   store?: BaseStore;
   workspaceSkills?: WorkspaceSkillEntry[];
+  resolveWorkspaceId?: (accessToken: string) => Promise<string>;
 }): LoomicAgent {
   const backendResult =
     options.backendResult ?? createAgentBackend(options.env, options.canvasId);
@@ -126,6 +131,12 @@ export function createLoomicDeepAgent(options: {
     subagents: [createVideoSubAgent(options.providerRegistry)],
     systemPrompt,
     tools: createMainAgentTools(backendResult.factory, {
+      ...(options.applyCanvasOperations && options.resolveWorkspaceId
+        ? {
+            applyCanvasOperations: options.applyCanvasOperations,
+            resolveWorkspaceId: options.resolveWorkspaceId,
+          }
+        : {}),
       createUserClient,
       providerRegistry: options.providerRegistry,
       ...(options.brandKitId != null ? { brandKitId: options.brandKitId } : {}),

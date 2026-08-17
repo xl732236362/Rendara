@@ -78,7 +78,7 @@ describe("canvas operation application adapter", () => {
           { action: "delete", element_id: "delete-me" },
         ],
       }),
-    ).resolves.toEqual({ canvasId: "canvas-1", applied: 3 });
+    ).resolves.toMatchObject({ canvasId: "canvas-1", applied: 3 });
 
     const saved = vi.mocked(canvasService.saveCanvasContent).mock.calls[0]?.[2];
     expect(saved?.elements).toEqual(

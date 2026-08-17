@@ -46,7 +46,13 @@ export function createCanvasServiceOperationPort(options: {
         command.canvasId,
         outcome.content,
       );
-      return { canvasId: canvas.id, applied: outcome.applied };
+      return {
+        canvasId: canvas.id,
+        applied: outcome.applied,
+        descriptions: outcome.descriptions,
+        createdIds: outcome.createdIds,
+        errors: outcome.errors,
+      };
     },
   };
 }

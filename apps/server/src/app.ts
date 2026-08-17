@@ -1,7 +1,14 @@
 import multipart from "@fastify/multipart";
 import websocket from "@fastify/websocket";
 import type { BaseLanguageModel } from "@langchain/core/language_models/base";
+import { getPlanConfig } from "@loomic/shared";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import { createApplyCanvasOperations } from "./application/canvas/apply-canvas-operations.js";
+import { createAttachGeneratedAsset } from "./application/canvas/attach-generated-asset.js";
+import { createCancelGeneration } from "./application/generation/cancel-generation.js";
+import { createSubmitGeneration } from "./application/generation/submit-generation.js";
+import { createImportSkill } from "./application/skills/import-skill.js";
+import type { UseCases } from "./application/use-cases.js";
 
 import type { LoomicAgentFactory } from "./agent/deep-agent.js";
 import {
@@ -27,9 +34,14 @@ import {
   createBrandKitService,
 } from "./features/brand-kit/brand-kit-service.js";
 import {
+  createCanvasAuthorizationPort,
+  createCanvasServiceOperationPort,
+} from "./features/canvas/canvas-operation-application-adapter.js";
+import {
   type CanvasService,
   createCanvasService,
 } from "./features/canvas/canvas-service.js";
+import { createGeneratedAssetPort } from "./features/canvas/generated-asset-application-adapter.js";
 import {
   type ChatService,
   createChatService,
@@ -46,6 +58,7 @@ import {
   type TierGuard,
   createTierGuard,
 } from "./features/credits/tier-guard.js";
+import { createJobServiceGenerationPorts } from "./features/jobs/generation-application-adapter.js";
 import {
   type JobService,
   createJobService,
@@ -64,6 +77,7 @@ import {
   type SettingsService,
   createSettingsService,
 } from "./features/settings/settings-service.js";
+import { createSkillImportApplicationPort } from "./features/skills/skill-import-application-adapter.js";
 import {
   type UploadService,
   createUploadService,
@@ -132,6 +146,7 @@ export type BuildAppOptions = {
   settingsService?: SettingsService;
   threadService?: ThreadService;
   viewerService?: ViewerService;
+  useCases?: Readonly<UseCases>;
 };
 
 export function buildAppFromEnv(
@@ -233,6 +248,136 @@ export function buildAppFromEnv(
   const creditService =
     options.creditService ?? createCreditService({ getAdminClient });
   const tierGuard = options.tierGuard ?? createTierGuard({ getAdminClient });
+  const toAuthenticatedUser = (principal: {
+    userId: string;
+    accessToken?: string;
+  }) => ({
+    id: principal.userId,
+    accessToken: principal.accessToken ?? "",
+    email: "",
+    userMetadata: {},
+  });
+  const logger = {
+    info: (message: string, context: Record<string, unknown>) =>
+      app.log.info(context, message),
+    warn: (message: string, context: Record<string, unknown>) =>
+      app.log.warn(context, message),
+    error: (message: string, context: Record<string, unknown>) =>
+      app.log.error(context, message),
+  };
+  const generationPorts = jobService
+    ? createJobServiceGenerationPorts({ jobService, toAuthenticatedUser })
+    : undefined;
+  const useCases: Readonly<UseCases> | undefined =
+    options.useCases ??
+    (generationPorts
+      ? Object.freeze({
+          submitGeneration: createSubmitGeneration({
+            logger,
+            ports: {
+              ...generationPorts,
+              models: {
+                resolveModel(type, requestedModel) {
+                  const fallback =
+                    type === "image_generation"
+                      ? "black-forest-labs/flux-kontext-pro"
+                      : "wan-video/wan-2.6";
+                  const model = requestedModel ?? fallback;
+                  if (type === "image_generation")
+                    providerRegistry.resolveImageProviderName(model);
+                  else providerRegistry.resolveVideoProviderName(model);
+                  return model;
+                },
+              },
+              tiers: {
+                async getPlan(workspaceId) {
+                  return (await creditService.getSubscription(workspaceId))
+                    .plan;
+                },
+                authorizeModel: (plan, model) =>
+                  tierGuard.checkModelAccess(plan, model),
+                authorizeMedia(plan, request) {
+                  if (request.type === "image_generation") {
+                    tierGuard.checkResolution(
+                      plan,
+                      getPlanConfig(plan).maxResolution,
+                    );
+                  } else if (
+                    request.resolution === "720p" ||
+                    request.resolution === "1080p" ||
+                    request.resolution === "4k"
+                  ) {
+                    tierGuard.checkVideoResolution(plan, request.resolution);
+                  }
+                },
+                authorizeConcurrency: (workspaceId, plan) =>
+                  tierGuard.checkConcurrency(workspaceId, plan),
+                calculateCreditCost(model, request) {
+                  return tierGuard.calculateCreditCost(
+                    model,
+                    request.type,
+                    request.type === "image_generation"
+                      ? { quality: "hd" }
+                      : {
+                          ...(request.duration !== undefined
+                            ? { duration: request.duration }
+                            : {}),
+                          ...(request.resolution === "720p" ||
+                          request.resolution === "1080p" ||
+                          request.resolution === "4k"
+                            ? { resolution: request.resolution }
+                            : {}),
+                        },
+                  );
+                },
+              },
+              credits: {
+                deduct: ({ workspaceId, userId, amount, jobId, description }) =>
+                  creditService.deductCredits(
+                    workspaceId,
+                    userId,
+                    amount,
+                    jobId,
+                    description,
+                  ),
+              },
+            },
+          }),
+          cancelGeneration: createCancelGeneration({
+            jobs: generationPorts.cancellation,
+            logger,
+          }),
+          applyCanvasOperations: createApplyCanvasOperations({
+            logger,
+            ports: {
+              authorization: createCanvasAuthorizationPort({
+                authorization: resourceAuthorization,
+                toAuthenticatedUser,
+              }),
+              operations: createCanvasServiceOperationPort({
+                canvasService,
+                toAuthenticatedUser,
+              }),
+            },
+          }),
+          attachGeneratedAsset: createAttachGeneratedAsset({
+            authorization: createCanvasAuthorizationPort({
+              authorization: resourceAuthorization,
+              toAuthenticatedUser,
+            }),
+            assets: createGeneratedAssetPort({ createUserClient }),
+          }),
+          importSkill: createImportSkill({
+            logger,
+            ports: {
+              capability: {
+                externalImportEnabled: () => env.allowExternalSkillImport,
+              },
+              importer: createSkillImportApplicationPort(),
+            },
+          }),
+        })
+      : undefined);
 
   // Payment service — only created when Lemon Squeezy is configured
   let paymentService: PaymentService | undefined = options.paymentService;
@@ -254,6 +399,12 @@ export function buildAppFromEnv(
   const eventBuffer = new CanvasEventBuffer();
   setInterval(() => eventBuffer.cleanup(), 5 * 60 * 1000);
   const agentRuns = createAgentRunService({
+    ...(useCases
+      ? {
+          applyCanvasOperations: useCases.applyCanvasOperations,
+          attachGeneratedAsset: useCases.attachGeneratedAsset,
+        }
+      : {}),
     agentPersistenceService,
     ...(options.agentFactory ? { agentFactory: options.agentFactory } : {}),
     agentRunMetadataService,
@@ -268,6 +419,7 @@ export function buildAppFromEnv(
     ...(jobService ? { jobService } : {}),
     creditService,
     tierGuard,
+    ...(useCases ? { submitGeneration: useCases.submitGeneration } : {}),
     viewerService,
   });
 
@@ -385,6 +537,7 @@ export function buildAppFromEnv(
     providerRegistry,
     uploadService,
     viewerService,
+    ...(useCases ? { submitGeneration: useCases.submitGeneration } : {}),
     ...(jobService ? { jobService } : {}),
     ...(tierGuard ? { tierGuard } : {}),
   });
@@ -392,16 +545,20 @@ export function buildAppFromEnv(
   if (jobService) {
     void registerJobRoutes(app, {
       auth,
-      creditService,
       jobService,
-      tierGuard,
+      ...(useCases
+        ? {
+            cancelGeneration: useCases.cancelGeneration,
+            submitGeneration: useCases.submitGeneration,
+          }
+        : {}),
       viewerService,
     });
   }
   void registerSkillRoutes(app, {
-    allowExternalSkillImport: env.allowExternalSkillImport,
     auth,
     createUserClient,
+    ...(useCases ? { importSkill: useCases.importSkill } : {}),
     viewerService,
   });
   void registerMarketplaceRoutes(app, {

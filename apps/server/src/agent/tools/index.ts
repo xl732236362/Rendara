@@ -1,6 +1,7 @@
 import type { StructuredTool } from "@langchain/core/tools";
 import type { BackendFactory, BackendProtocol } from "deepagents";
 
+import type { ApplyCanvasOperations } from "../../application/canvas/apply-canvas-operations.js";
 import type { ProviderCatalog } from "../../generation/providers/registry.js";
 import type { ConnectionManager } from "../../ws/connection-manager.js";
 import { createBrandKitTool } from "./brand-kit.js";
@@ -56,6 +57,8 @@ export function createMainAgentTools(
   backend: BackendProtocol | BackendFactory,
   deps: {
     createUserClient: (accessToken: string) => any;
+    applyCanvasOperations?: ApplyCanvasOperations;
+    resolveWorkspaceId?: (accessToken: string) => Promise<string>;
     brandKitId?: string | null;
     connectionManager?: ConnectionManager;
     persistImage?: PersistImageFn;
@@ -68,7 +71,6 @@ export function createMainAgentTools(
   const tools: StructuredTool[] = [
     createProjectSearchTool(backend),
     createInspectCanvasTool(deps),
-    createManipulateCanvasTool(deps),
     createImageGenerateTool({
       providerRegistry: deps.providerRegistry,
       ...(deps.persistImage ? { persistImage: deps.persistImage } : {}),
@@ -86,6 +88,14 @@ export function createMainAgentTools(
     // 因为 CompositeBackend 的 default backend 是 LocalShellBackend。
     // 不需要在这里手动注册。
   ];
+  if (deps.applyCanvasOperations && deps.resolveWorkspaceId) {
+    tools.push(
+      createManipulateCanvasTool({
+        applyCanvasOperations: deps.applyCanvasOperations,
+        resolveWorkspaceId: deps.resolveWorkspaceId,
+      }),
+    );
+  }
   if (deps.brandKitId) {
     tools.push(createBrandKitTool(deps, deps.brandKitId));
   }

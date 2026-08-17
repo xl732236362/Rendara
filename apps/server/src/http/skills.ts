@@ -13,11 +13,10 @@ import {
   workspaceSkillToggleRequestSchema,
 } from "@loomic/shared";
 
+import type { ImportSkill } from "../application/skills/import-skill.js";
 import {
   SkillImportError,
-  assertSkillImportEnabled,
   createImportedWorkspaceSkillRow,
-  importSkillFromUrl,
 } from "../features/skills/skill-import-service.js";
 
 import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
@@ -59,10 +58,10 @@ type SkillErrorCode =
 export async function registerSkillRoutes(
   app: FastifyInstance,
   options: {
-    allowExternalSkillImport: boolean;
+    allowExternalSkillImport?: boolean;
     auth: RequestAuthenticator;
     createUserClient: (accessToken: string) => UserSupabaseClient;
-    importSkill?: typeof importSkillFromUrl;
+    importSkill?: ImportSkill;
     viewerService: ViewerService;
   },
 ) {
@@ -237,15 +236,19 @@ export async function registerSkillRoutes(
     const user = await options.auth.authenticate(request);
     if (!user) return sendUnauthenticated(reply);
 
-    assertSkillImportEnabled(options.allowExternalSkillImport);
-
     const { url } = parseRequest(skillImportRequestSchema, request.body);
+    // Import skill from external URL (downloads SKILL.md + associated files)
+    if (!options.importSkill) throw new Error("Skill import is unavailable");
+    const { imported, requiresReview, enabled } = await options.importSkill(
+      { userId: user.id },
+      { url },
+    );
+    if (!requiresReview || enabled) {
+      throw new Error("Unsafe skill import outcome rejected");
+    }
     const viewer = await options.viewerService.ensureViewer(user);
     const workspaceId = viewer.workspace.id;
     const client = options.createUserClient(user.accessToken);
-
-    // Import skill from external URL (downloads SKILL.md + associated files)
-    const imported = await (options.importSkill ?? importSkillFromUrl)(url);
 
     const slug = generateSlug(imported.manifest.name);
 
@@ -338,7 +341,7 @@ export async function registerSkillRoutes(
     );
     return reply
       .code(201)
-      .send(skillDetailResponseSchema.parse({ skill, requiresReview: true }));
+      .send(skillDetailResponseSchema.parse({ skill, requiresReview }));
   });
 
   // PUT /api/skills/:id — update custom skill

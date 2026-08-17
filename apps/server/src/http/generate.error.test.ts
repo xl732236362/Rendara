@@ -194,6 +194,16 @@ async function createApp(uploadService: unknown = {}, jobService?: unknown) {
     uploadService: uploadService as never,
     providerRegistry: providerRegistry.seal(),
     ...(jobService ? { jobService: jobService as never } : {}),
+    ...(jobService
+      ? {
+          submitGeneration: (async () => {
+            const job = await (
+              jobService as { createJob(): Promise<{ id: string }> }
+            ).createJob();
+            return { jobId: job.id, status: "queued" as const };
+          }) as never,
+        }
+      : {}),
     viewerService: {
       ensureViewer: async () => ({ workspace: { id: "w1" } }),
     } as never,
