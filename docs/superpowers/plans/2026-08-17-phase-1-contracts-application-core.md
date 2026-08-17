@@ -145,4 +145,4 @@ Acceptance evidence: `docs/tech/phase-1-verification.md` records the uncached 45
 | Explicit registries | duplicate/isolation tests and composition-root injection |
 | Shared use cases | adapter spy tests plus architecture searches |
 | Web response validation | malformed-payload/abort/timeout tests and no unchecked casts |
-| Production readiness retained | uncached quality, DB, Docker, container, and diff gates |
+| Production delivery gates retained | uncached quality and DB gates, Docker image build, app-module import, Railway entrypoint target/image-layout/syntax consistency, and diff checks; API/Worker process startup is not claimed |
