@@ -544,6 +544,53 @@ const architectureBoundaryFixtures = [
       "// composition\nlet executorCatalog: Map<string, unknown> = new Map();",
   },
   {
+    name: "module-global registry in arbitrary server production module",
+    path: "apps/server/src/generation/providers/catalog.ts",
+    rule: "instance-owned-registries",
+    source: "// catalog\nconst active = new ProviderRegistry();",
+  },
+  {
+    name: "module-global direct provider registry factory",
+    path: "apps/server/src/app.ts",
+    rule: "instance-owned-registries",
+    source: "// composition\nconst active = registerAllProviders(env);",
+  },
+  {
+    name: "module-global aliased executor registry factory",
+    path: "apps/server/src/composition/jobs.ts",
+    rule: "instance-owned-registries",
+    source:
+      'import { registerAllExecutors as buildExecutors } from "../features/jobs/executors/register-all.js";\nconst active = buildExecutors(catalog);',
+  },
+  {
+    name: "module-global namespace provider registry factory",
+    path: "apps/server/src/composition/providers.ts",
+    rule: "instance-owned-registries",
+    source:
+      'import * as providers from "../generation/providers/register-all.js";\nconst active = providers.registerAllProviders(env);',
+  },
+  {
+    name: "typed module-global registry factory",
+    path: "apps/server/src/composition/providers.ts",
+    rule: "instance-owned-registries",
+    source:
+      "// composition\nconst active: ProviderRegistry = buildProviderCatalog(env);",
+  },
+  {
+    name: "aliased typed module-global registry factory",
+    path: "apps/server/src/composition/providers.ts",
+    rule: "instance-owned-registries",
+    source:
+      'import type { ProviderRegistry as Registry } from "../generation/providers/registry.js";\nconst active: Registry = buildProviderCatalog(env);',
+  },
+  {
+    name: "namespace typed module-global registry factory",
+    path: "apps/server/src/composition/jobs.ts",
+    rule: "instance-owned-registries",
+    source:
+      'import type * as registries from "../features/jobs/job-executor.js";\nconst active: registries.ExecutorRegistry = buildExecutorCatalog();',
+  },
+  {
     name: "route-local isZodError helper",
     path: "apps/server/src/http/projects.ts",
     rule: "shared-zod-boundary",
@@ -711,6 +758,29 @@ test("registry boundary allows unrelated module-global Maps", () => {
     {
       path: "apps/server/src/app.ts",
       source: "const requestTimers = new Map<string, number>();",
+    },
+  ]);
+
+  assert.deepEqual(findings, []);
+});
+
+test("registry boundary allows function-local registry factories", () => {
+  const findings = scanArchitectureSources([
+    {
+      path: "apps/server/src/generation/providers/catalog.ts",
+      source:
+        "export function build() {\nconst registry = registerAllProviders(env);\nreturn registry;\n}",
+    },
+  ]);
+
+  assert.deepEqual(findings, []);
+});
+
+test("registry boundary allows unrelated module-global factories", () => {
+  const findings = scanArchitectureSources([
+    {
+      path: "apps/server/src/app.ts",
+      source: "const formatter = registerAllFormatters(options);",
     },
   ]);
 

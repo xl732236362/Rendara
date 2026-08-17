@@ -11,8 +11,7 @@ const rules = [
     id: "instance-owned-registries",
     message:
       "provider and executor registries must be instance-owned and composed explicitly",
-    pathPattern:
-      /^apps\/server\/src\/(?:app|worker|generation\/providers\/(?:registry|register-all)|features\/jobs\/(?:job-executor|executors\/register-all))\.ts$/,
+    pathPrefix: `${serverSource}/`,
     scanner: scanTopLevelRegistries,
   },
   {
@@ -121,18 +120,29 @@ function scanTopLevelRegistries({ filePath, sourceFile }) {
     for (const declaration of statement.declarationList.declarations) {
       if (!ts.isIdentifier(declaration.name)) continue;
       const initializer = unwrapExpression(declaration.initializer);
-      if (!initializer || !ts.isNewExpression(initializer)) continue;
-
-      const constructorName = resolveRegistryConstructor(
-        initializer.expression,
-        imports,
-      );
-      const isRegistry = constructorName !== undefined;
+      const isRegistryType = isRegistryTypeNode(declaration.type, imports);
+      const isRegistryConstruction =
+        initializer &&
+        ts.isNewExpression(initializer) &&
+        resolveRegistrySymbol(initializer.expression, imports) !== undefined;
+      const isRegistryFactory =
+        initializer &&
+        ts.isCallExpression(initializer) &&
+        resolveRegistryFactory(initializer.expression, imports) !== undefined;
       const isSemanticMap =
+        initializer &&
+        ts.isNewExpression(initializer) &&
         ts.isIdentifier(initializer.expression) &&
         initializer.expression.text === "Map" &&
         /(?:provider|executor|registr|catalog)/i.test(declaration.name.text);
-      if (!isRegistry && !isSemanticMap) continue;
+      if (
+        !isRegistryType &&
+        !isRegistryConstruction &&
+        !isRegistryFactory &&
+        !isSemanticMap
+      ) {
+        continue;
+      }
 
       findings.push(findingAt(declaration, { filePath, sourceFile }));
     }
@@ -150,7 +160,7 @@ function registryImportBindings(sourceFile) {
     if (bindings && ts.isNamedImports(bindings)) {
       for (const element of bindings.elements) {
         const importedName = (element.propertyName ?? element.name).text;
-        if (/^(?:Provider|Executor)Registry$/.test(importedName)) {
+        if (isKnownRegistrySymbol(importedName)) {
           named.set(element.name.text, importedName);
         }
       }
@@ -161,22 +171,67 @@ function registryImportBindings(sourceFile) {
   return { named, namespaces };
 }
 
-function resolveRegistryConstructor(expression, imports) {
+function resolveRegistrySymbol(expression, imports) {
   if (ts.isIdentifier(expression)) {
-    if (/^(?:Provider|Executor)Registry$/.test(expression.text)) {
+    if (isKnownRegistryType(expression.text)) {
       return expression.text;
     }
-    return imports.named.get(expression.text);
+    const imported = imports.named.get(expression.text);
+    return isKnownRegistryType(imported) ? imported : undefined;
   }
   if (
     ts.isPropertyAccessExpression(expression) &&
     ts.isIdentifier(expression.expression) &&
     imports.namespaces.has(expression.expression.text) &&
-    /^(?:Provider|Executor)Registry$/.test(expression.name.text)
+    isKnownRegistryType(expression.name.text)
   ) {
     return expression.name.text;
   }
   return undefined;
+}
+
+function resolveRegistryFactory(expression, imports) {
+  if (ts.isIdentifier(expression)) {
+    if (isKnownRegistryFactory(expression.text)) return expression.text;
+    const imported = imports.named.get(expression.text);
+    return isKnownRegistryFactory(imported) ? imported : undefined;
+  }
+  if (
+    ts.isPropertyAccessExpression(expression) &&
+    ts.isIdentifier(expression.expression) &&
+    imports.namespaces.has(expression.expression.text) &&
+    isKnownRegistryFactory(expression.name.text)
+  ) {
+    return expression.name.text;
+  }
+  return undefined;
+}
+
+function isRegistryTypeNode(typeNode, imports) {
+  if (!typeNode || !ts.isTypeReferenceNode(typeNode)) return false;
+  const name = typeNode.typeName;
+  if (ts.isIdentifier(name)) {
+    if (isKnownRegistryType(name.text)) return true;
+    return isKnownRegistryType(imports.named.get(name.text));
+  }
+  return (
+    ts.isQualifiedName(name) &&
+    ts.isIdentifier(name.left) &&
+    imports.namespaces.has(name.left.text) &&
+    isKnownRegistryType(name.right.text)
+  );
+}
+
+function isKnownRegistrySymbol(name) {
+  return isKnownRegistryType(name) || isKnownRegistryFactory(name);
+}
+
+function isKnownRegistryType(name) {
+  return /^(?:Provider|Executor)Registry$/.test(name ?? "");
+}
+
+function isKnownRegistryFactory(name) {
+  return /^(?:registerAllProviders|registerAllExecutors)$/.test(name ?? "");
 }
 
 function scanRouteLocalZodChecks(context) {
