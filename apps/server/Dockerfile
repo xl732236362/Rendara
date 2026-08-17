@@ -16,6 +16,7 @@ COPY packages/config/ packages/config/
 COPY apps/server/ apps/server/
 
 RUN pnpm --filter @loomic/shared build
+RUN pnpm --filter @loomic/config build
 RUN pnpm --filter @loomic/server build
 RUN pnpm --filter @loomic/server deploy --prod --legacy /opt/server
 

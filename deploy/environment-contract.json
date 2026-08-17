@@ -4,6 +4,7 @@
       "platform": "railway",
       "configPath": "deploy/railway-api.json",
       "healthPath": "/api/health",
+      "runtimeEntrypoint": "dist/server.js",
       "binding": "Set this service's Railway Config File path to deploy/railway-api.json; variables are managed in the Railway dashboard.",
       "variables": [
         "LOOMIC_WEB_ORIGIN",
@@ -31,6 +32,7 @@
     "worker": {
       "platform": "railway",
       "configPath": "deploy/railway-worker.json",
+      "runtimeEntrypoint": "dist/worker.js",
       "binding": "Set this service's Railway Config File path to deploy/railway-worker.json; variables are managed in the Railway dashboard.",
       "variables": [
         "SUPABASE_URL",

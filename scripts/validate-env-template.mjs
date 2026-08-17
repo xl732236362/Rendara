@@ -17,6 +17,7 @@ export function validateEnvironmentContracts({
   envTemplate,
   deployments,
   requireCompleteTemplate = true,
+  serverDockerfileSource,
   serverHealthSource,
 }) {
   const issues = [];
@@ -46,9 +47,8 @@ export function validateEnvironmentContracts({
     const variables = new Set(deployment.metadata.variables ?? []);
     const config = deployment.config;
     if (deployment.metadata.platform === "railway") {
-      const expectedEntry =
-        deployment.metadata.process === "worker" ? "worker.js" : "server.js";
-      const expectedCommand = `sh -c "if [ -n \\"$GOOGLE_SERVICE_ACCOUNT_JSON\\" ]; then printf '%s' \\"$GOOGLE_SERVICE_ACCOUNT_JSON\\" > /app/credentials/vertex-ai-service-account.json && export GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/vertex-ai-service-account.json; fi; exec node apps/server/dist/${expectedEntry}"`;
+      const runtimeEntrypoint = deployment.metadata.runtimeEntrypoint;
+      const expectedCommand = `sh -c "if [ -n \\"$GOOGLE_SERVICE_ACCOUNT_JSON\\" ]; then printf '%s' \\"$GOOGLE_SERVICE_ACCOUNT_JSON\\" > /app/credentials/vertex-ai-service-account.json && export GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/vertex-ai-service-account.json; fi; exec node ${runtimeEntrypoint}"`;
       if (!config?.$schema?.includes("railway")) {
         issues.push(
           `${deployment.name}: invalid Railway ${deployment.metadata.process} service config`,
@@ -57,6 +57,18 @@ export function validateEnvironmentContracts({
       if (config?.deploy?.startCommand !== expectedCommand) {
         issues.push(
           `${deployment.name}: startCommand must use the exact ${deployment.metadata.process.toUpperCase()} entrypoint`,
+        );
+      }
+      if (
+        serverDockerfileSource &&
+        (!serverDockerfileSource.includes("WORKDIR /app") ||
+          !serverDockerfileSource.includes(
+            "COPY --from=builder /workspace/apps/server/dist ./dist",
+          ) ||
+          !serverDockerfileSource.includes(`node ${runtimeEntrypoint}`))
+      ) {
+        issues.push(
+          `${deployment.name}: runtime entrypoint does not match the Docker filesystem layout`,
         );
       }
       for (const reference of shellVariableReferences(
@@ -173,15 +185,21 @@ function shellVariableReferences(command) {
 
 async function main() {
   const root = new URL("../", import.meta.url);
-  const [envTemplate, contract, rootRailway, serverHealthSource] =
-    await Promise.all([
-      readFile(new URL(".env.example", root), "utf8"),
-      readFile(new URL("deploy/environment-contract.json", root), "utf8").then(
-        JSON.parse,
-      ),
-      readFile(new URL("railway.json", root), "utf8").then(JSON.parse),
-      readFile(new URL("apps/server/src/http/health.ts", root), "utf8"),
-    ]);
+  const [
+    envTemplate,
+    contract,
+    rootRailway,
+    serverDockerfileSource,
+    serverHealthSource,
+  ] = await Promise.all([
+    readFile(new URL(".env.example", root), "utf8"),
+    readFile(new URL("deploy/environment-contract.json", root), "utf8").then(
+      JSON.parse,
+    ),
+    readFile(new URL("railway.json", root), "utf8").then(JSON.parse),
+    readFile(new URL("apps/server/Dockerfile", root), "utf8"),
+    readFile(new URL("apps/server/src/http/health.ts", root), "utf8"),
+  ]);
   const deployments = await Promise.all(
     Object.entries(contract.services).map(async ([process, metadata]) => ({
       name: metadata.configPath,
@@ -202,6 +220,7 @@ async function main() {
   const issues = validateEnvironmentContracts({
     envTemplate,
     deployments,
+    serverDockerfileSource,
     serverHealthSource,
   });
   if (issues.length > 0) {

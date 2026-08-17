@@ -252,6 +252,30 @@ test("Railway validator rejects undeclared shell variables and inexact entrypoin
   );
 });
 
+test("Railway overrides target the Docker runtime filesystem layout", async () => {
+  const contract = await readJson("deploy/environment-contract.json");
+  const dockerfile = await readText("apps/server/Dockerfile");
+  const api = await readJson(contract.services.api.configPath);
+  const worker = await readJson(contract.services.worker.configPath);
+
+  assert.match(dockerfile, /WORKDIR \/app/);
+  assert.match(
+    dockerfile,
+    /COPY --from=builder \/workspace\/apps\/server\/dist \.\/dist/,
+  );
+  assert.equal(contract.services.api.runtimeEntrypoint, "dist/server.js");
+  assert.equal(contract.services.worker.runtimeEntrypoint, "dist/worker.js");
+  assert.match(api.deploy.startCommand, /exec node dist\/server\.js"$/);
+  assert.match(worker.deploy.startCommand, /exec node dist\/worker\.js"$/);
+  assert.match(dockerfile, /node dist\/server\.js/);
+  assert.match(dockerfile, /node dist\/worker\.js/);
+  assert.match(dockerfile, /pnpm --filter @loomic\/config build/);
+  assert.ok(
+    dockerfile.indexOf("pnpm --filter @loomic/config build") <
+      dockerfile.indexOf("pnpm --filter @loomic/server build"),
+  );
+});
+
 test("vitest workspace config exists for later package-level adoption", async () => {
   const workspaceConfig = await readText("vitest.workspace.ts");
 
@@ -286,7 +310,10 @@ test("@loomic/config exports a single low-drift package contract", async () => {
     /envDescriptors|parseServerEnvironment|serverEnvironmentSchema/,
   );
   assert.equal(manifest.exports["./server"].default, null);
-  assert.equal(typeof manifest.exports["./server"].node.import, "string");
+  assert.equal(typeof manifest.exports["./server"].types, "string");
+  assert.equal(manifest.exports["./server"].browser, null);
+  assert.equal(typeof manifest.exports["./server"].import, "string");
+  assert.match(manifest.scripts.build, /tsc --build[\s\S]*--force/);
 });
 
 test("web sources cannot import the server-only config boundary", async () => {

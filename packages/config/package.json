@@ -10,10 +10,9 @@
       "import": "./dist/index.js"
     },
     "./server": {
-      "node": {
-        "types": "./dist/env.d.ts",
-        "import": "./dist/env.js"
-      },
+      "types": "./dist/env.d.ts",
+      "browser": null,
+      "import": "./dist/env.js",
       "default": null
     }
   },
@@ -22,7 +21,7 @@
     "zod": "catalog:"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc --build tsconfig.json --force",
     "test": "vitest run src/env.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   }
