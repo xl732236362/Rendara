@@ -46,6 +46,65 @@ describe("apiFetch", () => {
     ).resolves.toEqual({ id: "p1" });
   });
 
+  it("preserves legacy application and auth error constructors", () => {
+    const legacy = new ApiApplicationError(
+      "legacy_provider_error",
+      "Legacy failure",
+    );
+    const customAuth = new ApiAuthError("Session expired");
+
+    expect(legacy).toMatchObject({
+      name: "ApiApplicationError",
+      code: "legacy_provider_error",
+      message: "Legacy failure",
+    });
+    expect(customAuth).toMatchObject({
+      name: "ApiAuthError",
+      code: "unauthorized",
+      message: "Session expired",
+    });
+  });
+
+  it.each([
+    ["http://localhost:3001", "/api/ok", "http://localhost:3001/api/ok"],
+    ["http://localhost:3001", "api/ok", "http://localhost:3001/api/ok"],
+    ["http://localhost:3001/", "/api/ok", "http://localhost:3001/api/ok"],
+    ["http://localhost:3001/", "api/ok", "http://localhost:3001/api/ok"],
+    [
+      "http://localhost:3001/gateway",
+      "/api/ok?q=one%20two",
+      "http://localhost:3001/gateway/api/ok?q=one%20two",
+    ],
+    [
+      "http://localhost:3001/gateway/",
+      "api/ok?q=one%20two",
+      "http://localhost:3001/gateway/api/ok?q=one%20two",
+    ],
+  ])("joins base %s and path %s", async (base, path, expected) => {
+    vi.stubEnv("NEXT_PUBLIC_SERVER_BASE_URL", base);
+    mockFetch.mockResolvedValue(jsonResponse({ ok: true }));
+
+    await apiFetch({
+      method: "GET",
+      path,
+      responseSchema: z.object({ ok: z.literal(true) }),
+    });
+
+    expect(mockFetch.mock.calls[0]?.[0]).toBe(expected);
+  });
+
+  it("rejects a malformed API base URL before fetch", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SERVER_BASE_URL", "not a valid URL");
+
+    await expect(
+      apiFetch({ method: "GET", path: "/api/ok", responseSchema: z.unknown() }),
+    ).rejects.toMatchObject({
+      name: "ApiProtocolError",
+      message: "API base URL is invalid",
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   it("throws a private protocol error for malformed successful JSON", async () => {
     mockFetch.mockResolvedValue(
       new Response("secret raw response", {

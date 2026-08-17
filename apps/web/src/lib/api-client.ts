@@ -13,12 +13,12 @@ export class ApiProtocolError extends Error {
 }
 
 export class ApiApplicationError extends Error {
-  readonly code: BoundaryErrorCode;
+  readonly code: string;
   readonly details: Record<string, unknown> | undefined;
   readonly status: number;
 
   constructor(
-    code: BoundaryErrorCode,
+    code: string,
     message: string,
     options: { details?: Record<string, unknown>; status?: number } = {},
   ) {
@@ -31,8 +31,8 @@ export class ApiApplicationError extends Error {
 }
 
 export class ApiAuthError extends ApiApplicationError {
-  constructor() {
-    super("unauthorized", "unauthorized", { status: 401 });
+  constructor(message = "unauthorized") {
+    super("unauthorized", message, { status: 401 });
     this.name = "ApiAuthError";
   }
 }
@@ -96,7 +96,7 @@ export async function apiFetch<TRequest, TResponse>(
       signal: abort.signal,
     };
     if (request.body !== undefined) init.body = request.body;
-    const response = await fetch(`${getServerBaseUrl()}${options.path}`, init);
+    const response = await fetch(buildApiUrl(options.path), init);
 
     if (!response.ok) {
       return await throwResponseError(response);
@@ -128,6 +128,24 @@ export async function apiFetch<TRequest, TResponse>(
   } finally {
     abort.cleanup();
   }
+}
+
+function buildApiUrl(path: string) {
+  let baseUrl: URL;
+  try {
+    baseUrl = new URL(getServerBaseUrl());
+  } catch {
+    throw new ApiProtocolError("API base URL is invalid");
+  }
+  if (baseUrl.protocol !== "http:" && baseUrl.protocol !== "https:") {
+    throw new ApiProtocolError("API base URL is invalid");
+  }
+
+  baseUrl.search = "";
+  baseUrl.hash = "";
+  const base = baseUrl.toString().replace(/\/+$/, "");
+  const relativePath = path.replace(/^\/+/, "");
+  return `${base}/${relativePath}`;
 }
 
 function prepareRequest<TRequest>(options: ApiFetchBaseOptions<TRequest>) {
