@@ -6,6 +6,10 @@ import {
 
 import { AppError } from "../../errors/app-error.js";
 import { normalizeGenerationError } from "./legacy-error.js";
+import {
+  parseCancellationOutcome,
+  parseSubmissionOutcome,
+} from "./outcome-validation.js";
 import type {
   GenerationApplicationPorts,
   GenerationPrincipal,
@@ -54,10 +58,12 @@ export function createSubmitGeneration(options: {
       );
 
       stage = "job_creation";
-      const job = await options.ports.jobs.create(
-        toCreateCommand(principal, request, model),
+      const submission = parseSubmissionOutcome(
+        await options.ports.jobs.create(
+          toCreateCommand(principal, request, model),
+        ),
       );
-      jobId = job.id;
+      jobId = submission.jobId;
 
       if (options.ports.credits && creditsCost > 0) {
         try {
@@ -145,7 +151,9 @@ async function cancelAfterFailure(
   failedStage: string,
 ) {
   try {
-    await options.ports.cancellation.cancel(principal, jobId);
+    parseCancellationOutcome(
+      await options.ports.cancellation.cancel(principal, jobId),
+    );
     options.logger.warn(
       "Generation job canceled after submission failure",
       logContext(principal, type, model, "cleanup_canceled", jobId),

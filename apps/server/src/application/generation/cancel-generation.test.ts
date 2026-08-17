@@ -15,6 +15,48 @@ const principal: GenerationPrincipal = {
 const jobId = "44444444-4444-4444-8444-444444444444";
 
 describe("CancelGeneration", () => {
+  it.each([
+    [{ id: jobId, status: "succeeded" }, "succeeded"],
+    [{ id: jobId, status: "failed" }, "failed"],
+    [{ id: jobId, status: "dead_letter" }, "dead_letter"],
+    [{ id: jobId, status: "unknown" }, "unknown"],
+    [{ id: jobId }, "missing"],
+    [{ id: "not-a-uuid", status: "canceled" }, "invalid id"],
+  ])(
+    "privately rejects an invalid cancellation adapter outcome: %s",
+    async (jobResult, _label) => {
+      const logger = silentLogger();
+      const jobs = {
+        cancel: vi.fn(async () => jobResult),
+      } as unknown as GenerationCancellationPort;
+      const cancel = createCancelGeneration({ jobs, logger });
+
+      await expect(cancel(principal, { jobId })).rejects.toMatchObject({
+        code: "application_error",
+        statusCode: 500,
+        expose: false,
+      });
+      expect(logger.info).not.toHaveBeenCalled();
+    },
+  );
+
+  it("returns and logs the actual canceling status", async () => {
+    const logger = silentLogger();
+    const jobs: GenerationCancellationPort = {
+      cancel: vi.fn(async () => ({ id: jobId, status: "canceling" as const })),
+    };
+    const cancel = createCancelGeneration({ jobs, logger });
+
+    await expect(cancel(principal, { jobId })).resolves.toEqual({
+      jobId,
+      status: "canceling",
+    });
+    expect(logger.info).toHaveBeenCalledWith(
+      "Generation cancellation accepted",
+      expect.objectContaining({ stage: "canceling", status: "canceling" }),
+    );
+  });
+
   it("delegates ownership enforcement to the job port and preserves status", async () => {
     const jobs: GenerationCancellationPort = {
       cancel: vi.fn(async () => ({ id: jobId, status: "canceled" as const })),

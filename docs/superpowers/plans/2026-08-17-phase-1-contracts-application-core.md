@@ -76,7 +76,7 @@ Verification evidence: registered-route regression tests cover projects, canvase
 - [x] Implement submission/cancellation by composing existing services without changing phase 2 transaction semantics; log operation identifiers and failure stage without prompts/tokens.
 - [x] Run focused tests and confirm Task 8 can reuse `SubmitGeneration` for queued HTTP/Agent paths while direct generation keeps its materially different result and lifecycle.
 
-Verification evidence: generation application tests cover shared media schema parsing, ordered model/tier/credit orchestration, post-create cleanup, cancellation delegation, identifier-safe logging, and strict normalization of real-shaped legacy service errors. `CancelGeneration` depends only on `GenerationCancellationPort`; queued submission does not expose a direct-generation mode.
+Verification evidence: generation application tests cover shared media schema parsing, ordered model/tier/credit orchestration, post-create cleanup, cancellation delegation, identifier-safe logging, strict normalization of real-shaped legacy service errors, and runtime validation of adapter outcomes. `CancelGeneration` depends only on `GenerationCancellationPort`; queued submission does not expose a direct-generation mode. Task 8 can use the explicit `createJobServiceGenerationPorts` wrapper rather than structurally treating the broader legacy `JobService` result as an application outcome.
 
 ## Task 7: Add ApplyCanvasOperations And ImportSkill Use Cases
 

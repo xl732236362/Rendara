@@ -5,6 +5,7 @@ import {
 
 import { AppError } from "../../errors/app-error.js";
 import { normalizeGenerationError } from "./legacy-error.js";
+import { parseCancellationOutcome } from "./outcome-validation.js";
 import type {
   GenerationCancellationPort,
   GenerationPrincipal,
@@ -33,15 +34,17 @@ export function createCancelGeneration(options: {
     }
     const { jobId } = parsed.data;
     try {
-      const job = await options.jobs.cancel(principal, jobId);
-      const status = job.status === "canceled" ? "canceled" : "canceling";
+      const outcome = parseCancellationOutcome(
+        await options.jobs.cancel(principal, jobId),
+      );
       options.logger.info("Generation cancellation accepted", {
-        stage: "canceled",
+        stage: outcome.status,
+        status: outcome.status,
         jobId,
         userId: principal.userId,
         workspaceId: principal.workspaceId,
       });
-      return { jobId, status };
+      return outcome;
     } catch (error) {
       const normalized = normalizeGenerationError(error);
       options.logger.error("Generation cancellation failed", {

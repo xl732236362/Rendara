@@ -85,6 +85,28 @@ function setup() {
 }
 
 describe("SubmitGeneration", () => {
+  it.each([
+    [{ id: ids.job, status: "running" }, "unexpected create status"],
+    [{ id: "not-a-uuid", status: "queued" }, "invalid create id"],
+    [{ id: ids.job }, "missing create status"],
+  ])(
+    "privately rejects an invalid job adapter result: %s",
+    async (jobResult, _label) => {
+      const { logger, ports, submit } = setup();
+      vi.mocked(ports.jobs.create).mockResolvedValue(jobResult as never);
+
+      await expect(
+        submit(principal, { type: "image_generation", prompt: "draw" }),
+      ).rejects.toMatchObject({
+        code: "application_error",
+        statusCode: 500,
+        expose: false,
+      });
+      expect(logger.info).not.toHaveBeenCalled();
+      expect(ports.credits?.deduct).not.toHaveBeenCalled();
+    },
+  );
+
   it("rejects invalid and media-mismatched payloads before calling ports", async () => {
     const { ports, submit } = setup();
 

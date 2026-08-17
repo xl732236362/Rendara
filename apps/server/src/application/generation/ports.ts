@@ -21,19 +21,18 @@ export type JobCreateCommand = {
   payload: Record<string, unknown>;
 };
 
-export type GenerationJob = {
+export type GenerationSubmissionOutcome = {
   id: string;
-  status:
-    | "queued"
-    | "running"
-    | "succeeded"
-    | "failed"
-    | "canceled"
-    | "dead_letter";
+  status: "queued";
+};
+
+export type GenerationCancellationOutcome = {
+  id: string;
+  status: "canceled" | "canceling";
 };
 
 export type GenerationJobSubmissionPort = {
-  create(command: JobCreateCommand): Promise<GenerationJob>;
+  create(command: JobCreateCommand): Promise<GenerationSubmissionOutcome>;
   attachCredits(
     jobId: string,
     creditsCost: number,
@@ -43,7 +42,10 @@ export type GenerationJobSubmissionPort = {
 
 export type GenerationCancellationPort = {
   /** The adapter enforces ownership and cancellable status atomically. */
-  cancel(principal: GenerationPrincipal, jobId: string): Promise<GenerationJob>;
+  cancel(
+    principal: GenerationPrincipal,
+    jobId: string,
+  ): Promise<GenerationCancellationOutcome>;
 };
 
 export type ModelCatalogPort = {
