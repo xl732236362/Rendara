@@ -1,6 +1,6 @@
+import { describe, expect, it, vi } from "vitest";
 import type { AdminSupabaseClient } from "../../supabase/admin.js";
 import { createCreditService } from "./credit-service.js";
-import { describe, expect, it, vi } from "vitest";
 
 const command = {
   workspaceId: "11111111-1111-4111-8111-111111111111",

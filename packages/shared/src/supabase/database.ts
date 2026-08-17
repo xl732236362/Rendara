@@ -64,6 +64,7 @@ export type Database = {
           byte_size: number | null;
           created_at: string;
           created_by: string | null;
+          generation_job_id: string | null;
           id: string;
           mime_type: string | null;
           object_path: string;
@@ -75,6 +76,7 @@ export type Database = {
           byte_size?: number | null;
           created_at?: string;
           created_by?: string | null;
+          generation_job_id?: string | null;
           id?: string;
           mime_type?: string | null;
           object_path: string;
@@ -86,6 +88,7 @@ export type Database = {
           byte_size?: number | null;
           created_at?: string;
           created_by?: string | null;
+          generation_job_id?: string | null;
           id?: string;
           mime_type?: string | null;
           object_path?: string;
@@ -93,6 +96,13 @@ export type Database = {
           workspace_id?: string;
         };
         Relationships: [
+          {
+            foreignKeyName: "asset_objects_generation_job_id_fkey";
+            columns: ["generation_job_id"];
+            isOneToOne: true;
+            referencedRelation: "background_jobs";
+            referencedColumns: ["id"];
+          },
           {
             foreignKeyName: "asset_objects_project_workspace_fkey";
             columns: ["project_id", "workspace_id"];

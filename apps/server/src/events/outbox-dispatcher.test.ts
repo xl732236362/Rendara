@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { dispatchOutboxBatch } from "./outbox-dispatcher.js";
 import { CanvasEventBuffer } from "../ws/event-buffer.js";
+import { createDomainEventPublisher } from "./domain-event-publisher.js";
+import { dispatchOutboxBatch } from "./outbox-dispatcher.js";
 
 const event = {
   event_id: "11111111-1111-4111-8111-111111111111",
@@ -24,6 +25,39 @@ function setup(events: unknown[] = [event]) {
 }
 
 describe("domain outbox dispatcher", () => {
+  it("publishes generation events to the owning user instead of silently acknowledging", async () => {
+    const sendToUser = vi.fn(() => true);
+    const publish = createDomainEventPublisher({
+      pushCanvas: vi.fn(),
+      sendToUser,
+      rememberCanvasEvent: vi.fn(() => true),
+    });
+    await publish({
+      ...event,
+      aggregate_type: "generation_job",
+      event_type: "generation.job.succeeded",
+      payload: { jobId: event.aggregate_id, userId: "user-1" },
+    });
+    expect(sendToUser).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({
+        type: "domain.event",
+        eventId: event.event_id,
+        eventType: "generation.job.succeeded",
+      }),
+    );
+  });
+
+  it("rejects unsupported aggregate types so they are retried, not acknowledged", async () => {
+    const publish = createDomainEventPublisher({
+      pushCanvas: vi.fn(),
+      sendToUser: vi.fn(),
+      rememberCanvasEvent: vi.fn(() => true),
+    });
+    await expect(
+      publish({ ...event, aggregate_type: "unknown" }),
+    ).rejects.toMatchObject({ code: "unsupported_outbox_aggregate" });
+  });
   it("publishes then acknowledges a bounded claim", async () => {
     const deps = setup();
     await expect(dispatchOutboxBatch(deps)).resolves.toEqual({

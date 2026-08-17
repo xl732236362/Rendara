@@ -8,6 +8,7 @@ import { createCancelGeneration } from "./application/generation/cancel-generati
 import { createSubmitGeneration } from "./application/generation/submit-generation.js";
 import { createImportSkill } from "./application/skills/import-skill.js";
 import type { UseCases } from "./application/use-cases.js";
+import { createDomainEventPublisher } from "./events/domain-event-publisher.js";
 import { startOutboxDispatcher } from "./events/outbox-dispatcher.js";
 
 import type { LoomicAgentFactory } from "./agent/deep-agent.js";
@@ -266,7 +267,8 @@ export function buildAppFromEnv(
   const brandKitService =
     options.brandKitService ?? createBrandKitService({ createUserClient });
   const canvasService =
-    options.canvasService ?? createCanvasService({ createUserClient });
+    options.canvasService ??
+    createCanvasService({ createUserClient, getAdminClient });
   const threadService =
     options.threadService ?? createThreadService({ createUserClient });
   const chatService =
@@ -336,7 +338,10 @@ export function buildAppFromEnv(
             authorization: resourceAuthorization,
             toAuthenticatedUser,
           }),
-          assets: createGeneratedAssetPort({ createUserClient }),
+          assets: createGeneratedAssetPort({
+            createUserClient,
+            getAdminClient,
+          }),
         }),
       }),
       skills: Object.freeze({
@@ -449,6 +454,14 @@ export function buildAppFromEnv(
   const connectionManager =
     options.connectionManager ?? new ConnectionManager();
   const eventBuffer = new CanvasEventBuffer();
+  const publishDomainEvent = createDomainEventPublisher({
+    rememberCanvasEvent: (canvasId, eventId, event) =>
+      eventBuffer.pushDomainEvent(canvasId, eventId, event),
+    pushCanvas: (canvasId, event) =>
+      connectionManager.pushToCanvas(canvasId, event),
+    sendToUser: (userId, message) =>
+      connectionManager.sendToUser(userId, message),
+  });
   const eventBufferCleanupTimer = setInterval(
     () => eventBuffer.cleanup(),
     5 * 60 * 1000,
@@ -472,23 +485,7 @@ export function buildAppFromEnv(
           if (error) throw error;
           return data ?? [];
         },
-        publish: async (event) => {
-          if (event.aggregate_type !== "canvas") return;
-          const streamEvent = {
-            type: "canvas.sync" as const,
-            runId: event.event_id,
-            timestamp: event.occurred_at,
-          };
-          if (
-            eventBuffer.pushDomainEvent(
-              event.aggregate_id,
-              event.event_id,
-              streamEvent,
-            )
-          ) {
-            connectionManager.pushToCanvas(event.aggregate_id, streamEvent);
-          }
-        },
+        publish: publishDomainEvent,
         ack: async (eventId, workerId) => {
           const { error } = await callAdminRpc(
             getAdminClient(),

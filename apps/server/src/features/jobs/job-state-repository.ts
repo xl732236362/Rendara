@@ -1,4 +1,4 @@
-import { backgroundJobSchema, type BackgroundJob } from "@loomic/shared";
+import { type BackgroundJob, backgroundJobSchema } from "@loomic/shared";
 import { z } from "zod";
 
 import type { AtomicJobSubmissionCommand } from "../../application/generation/ports.js";
@@ -36,6 +36,15 @@ const settlementSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("terminal"), job: backgroundJobSchema }),
 ]);
 
+const effectAttemptSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("started"), replayed: z.boolean() }),
+  z.object({
+    kind: z.literal("completed"),
+    result: z.record(z.string(), z.unknown()),
+  }),
+  z.object({ kind: z.literal("ambiguous") }),
+]);
+
 export type JobClaim = z.infer<typeof claimSchema>;
 export type JobSettlement = z.infer<typeof settlementSchema>;
 
@@ -66,6 +75,10 @@ export type JobStateRepository = {
     workerId: string,
     leaseSeconds: number,
   ): Promise<JobClaim>;
+  beginEffect(
+    jobId: string,
+    leaseToken: string,
+  ): Promise<z.infer<typeof effectAttemptSchema>>;
   renew(
     jobId: string,
     leaseToken: string,
@@ -157,6 +170,18 @@ export function createJobStateRepository(options: {
       if (error) throw mapRpcError(error, "job_query_failed");
       const parsed = backgroundJobSchema.safeParse(data);
       if (!parsed.success) throw invalidRpcResult("generation lease renewal");
+      return parsed.data;
+    },
+
+    async beginEffect(jobId, leaseToken) {
+      const { data, error } = await callRpc(
+        options.getAdminClient(),
+        "begin_generation_effect",
+        { p_job_id: jobId, p_lease_token: leaseToken },
+      );
+      if (error) throw mapRpcError(error, "job_query_failed");
+      const parsed = effectAttemptSchema.safeParse(data);
+      if (!parsed.success) throw invalidRpcResult("generation effect attempt");
       return parsed.data;
     },
 

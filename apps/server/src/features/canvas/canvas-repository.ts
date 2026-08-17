@@ -2,6 +2,7 @@ import type { CanvasContent } from "@loomic/shared";
 import { z } from "zod";
 
 import { AppError } from "../../errors/app-error.js";
+import type { AdminSupabaseClient } from "../../supabase/admin.js";
 import type {
   AuthenticatedUser,
   UserSupabaseClient,
@@ -18,6 +19,7 @@ export type CanvasRepository = ReturnType<typeof createCanvasRepository>;
 
 export function createCanvasRepository(options: {
   createUserClient(accessToken: string): UserSupabaseClient;
+  getAdminClient(): AdminSupabaseClient;
 }) {
   return {
     async read(user: AuthenticatedUser, canvasId: string) {
@@ -52,17 +54,26 @@ export function createCanvasRepository(options: {
         eventPayload: Record<string, unknown>;
       },
     ) {
-      const client = options.createUserClient(user.accessToken);
-      const { data, error } = await callRpc(client, "commit_canvas_revision", {
-        p_canvas_id: command.canvasId,
-        p_actor_user_id: user.id,
-        p_expected_revision: command.expectedRevision,
-        p_content: command.content,
-        p_job_id: command.jobId ?? null,
-        p_effect_kind: command.effectKind ?? null,
-        p_event_type: command.eventType,
-        p_event_payload: command.eventPayload,
-      });
+      const trustedJobCommit = command.jobId !== undefined;
+      const client = trustedJobCommit
+        ? options.getAdminClient()
+        : options.createUserClient(user.accessToken);
+      const { data, error } = trustedJobCommit
+        ? await callRpc(client, "commit_canvas_revision", {
+            p_canvas_id: command.canvasId,
+            p_actor_user_id: user.id,
+            p_expected_revision: command.expectedRevision,
+            p_content: command.content,
+            p_job_id: command.jobId,
+            p_effect_kind: command.effectKind ?? null,
+            p_event_type: command.eventType,
+            p_event_payload: command.eventPayload,
+          })
+        : await callRpc(client, "save_canvas_revision", {
+            p_canvas_id: command.canvasId,
+            p_expected_revision: command.expectedRevision,
+            p_content: command.content,
+          });
       if (error) throw mapCommitError(error, command.expectedRevision);
       const parsed = commitResultSchema.safeParse(data);
       if (!parsed.success) {
@@ -78,7 +89,7 @@ export function createCanvasRepository(options: {
 }
 
 async function callRpc(
-  client: UserSupabaseClient,
+  client: UserSupabaseClient | AdminSupabaseClient,
   name: string,
   args: Record<string, unknown>,
 ): Promise<{ data: unknown; error: RpcError | null }> {

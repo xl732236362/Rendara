@@ -43,10 +43,10 @@ integration("Phase 2 real PostgreSQL concurrency", () => {
     );
     await pool.query(
       `insert into public.background_jobs
-       (id, workspace_id, queue_name, job_type, status, payload, created_by)
-       values ($1, $2, 'image_generation_jobs', 'image_generation', 'queued',
-         '{"prompt":"x"}', $3)`,
-      [jobId, workspaceId, userId],
+       (id, workspace_id, canvas_id, queue_name, job_type, status, payload, created_by)
+       values ($1, $2, $3, 'image_generation_jobs', 'image_generation', 'queued',
+         '{"prompt":"x"}', $4)`,
+      [jobId, workspaceId, canvasId, userId],
     );
   });
 
@@ -82,7 +82,7 @@ integration("Phase 2 real PostgreSQL concurrency", () => {
     const commit = (source: string) =>
       pool.query(
         `select public.commit_canvas_revision(
-          $1, $2, 0, $3::jsonb, null, null, 'canvas.updated', $4::jsonb)`,
+          $1, $2, 0, $3::jsonb, $4, $5, 'canvas.generated_asset_attached', $6::jsonb)`,
         [
           canvasId,
           userId,
@@ -91,6 +91,8 @@ integration("Phase 2 real PostgreSQL concurrency", () => {
             appState: {},
             files: {},
           }),
+          jobId,
+          `effect-${source}`,
           JSON.stringify({ source }),
         ],
       );
@@ -123,8 +125,8 @@ integration("Phase 2 real PostgreSQL concurrency", () => {
         client.query(
           `select public.commit_canvas_revision(
             $1, $2, $3, '{"elements":[],"appState":{},"files":{}}',
-            null, null, 'canvas.updated', '{}')`,
-          [canvasId, userId, Number(before.rows[0]?.revision)],
+            $4, 'fault-effect', 'canvas.generated_asset_attached', '{}')`,
+          [canvasId, userId, Number(before.rows[0]?.revision), jobId],
         ),
       ).rejects.toMatchObject({ detail: "before_canvas_commit" });
       await client.query("rollback");

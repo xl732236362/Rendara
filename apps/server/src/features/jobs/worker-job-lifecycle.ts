@@ -37,7 +37,7 @@ const NON_RETRYABLE_CODES = new Set([
 ]);
 
 export function createWorkerJobLifecycle(options: {
-  jobs: Pick<JobStateRepository, "claim" | "renew" | "settle">;
+  jobs: Pick<JobStateRepository, "claim" | "beginEffect" | "renew" | "settle">;
   executor(
     jobId: string,
     jobType: BackgroundJobType,
@@ -111,6 +111,32 @@ export function createWorkerJobLifecycle(options: {
         context: leaseContext,
       });
       try {
+        const effect = await options.jobs.beginEffect(
+          message.jobId,
+          claim.lease_token,
+        );
+        if (effect.kind === "completed") {
+          await options.jobs.settle({
+            jobId: message.jobId,
+            leaseToken: claim.lease_token,
+            outcome: "succeeded",
+            result: effect.result,
+          });
+          await options.queue.deleteMessage(message.queue, message.messageId);
+          return { disposition: "succeeded" };
+        }
+        if (effect.kind === "ambiguous") {
+          await options.jobs.settle({
+            jobId: message.jobId,
+            leaseToken: claim.lease_token,
+            outcome: "dead_letter",
+            errorCode: "ambiguous_external_effect",
+            errorMessage: "External generation replay was blocked.",
+          });
+          await options.queue.archiveMessage(message.queue, message.messageId);
+          options.logger.error("generation_job_ambiguous_effect", leaseContext);
+          return { disposition: "dead_lettered" };
+        }
         let result: Record<string, unknown>;
         try {
           result = await options.executor(
@@ -123,8 +149,9 @@ export function createWorkerJobLifecycle(options: {
           const deadLetter =
             claim.job.attempt_count >= claim.job.max_attempts ||
             NON_RETRYABLE_CODES.has(errorCode);
+          let settlement;
           try {
-            await options.jobs.settle({
+            settlement = await options.jobs.settle({
               jobId: message.jobId,
               leaseToken: claim.lease_token,
               outcome: deadLetter ? "dead_letter" : "failed",
@@ -137,22 +164,24 @@ export function createWorkerJobLifecycle(options: {
             }
             throw settleError;
           }
-          if (deadLetter) {
+          const settledAsDeadLetter = settlement.job.status === "dead_letter";
+          if (deadLetter || settledAsDeadLetter) {
             await options.queue.archiveMessage(
               message.queue,
               message.messageId,
             );
           }
-          options.logger[deadLetter ? "error" : "warn"](
+          const finalDeadLetter = deadLetter || settledAsDeadLetter;
+          options.logger[finalDeadLetter ? "error" : "warn"](
             "generation_job_failed",
             {
               ...leaseContext,
-              disposition: deadLetter ? "dead_lettered" : "retry",
+              disposition: finalDeadLetter ? "dead_lettered" : "retry",
               durationMs: Date.now() - startedAt,
               errorCode,
             },
           );
-          return { disposition: deadLetter ? "dead_lettered" : "retry" };
+          return { disposition: finalDeadLetter ? "dead_lettered" : "retry" };
         }
 
         let settlement;

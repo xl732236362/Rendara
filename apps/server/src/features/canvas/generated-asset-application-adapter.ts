@@ -1,4 +1,5 @@
 import type { AttachGeneratedAssetCommand } from "../../application/canvas/attach-generated-asset.js";
+import type { AdminSupabaseClient } from "../../supabase/admin.js";
 import type { UserSupabaseClient } from "../../supabase/user.js";
 import {
   insertImageElement,
@@ -9,6 +10,7 @@ import { createCanvasRepository } from "./canvas-repository.js";
 
 export function createGeneratedAssetPort(options: {
   createUserClient(accessToken: string): UserSupabaseClient;
+  getAdminClient(): AdminSupabaseClient;
 }) {
   const repository = createCanvasRepository(options);
   return {

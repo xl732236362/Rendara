@@ -16,6 +16,7 @@ function setup(
 ) {
   const jobs = {
     claim: vi.fn(async () => claim),
+    beginEffect: vi.fn(async () => ({ kind: "started" })),
     renew: vi.fn(async () => ({})),
     settle: vi.fn(async (command) => ({
       kind: command.outcome === "failed" ? "failed" : "terminal",
@@ -80,6 +81,31 @@ describe("worker job lifecycle", () => {
       queue.deleteMessage.mock.invocationCallOrder[0] ??
         Number.POSITIVE_INFINITY,
     );
+    expect(jobs.beginEffect).toHaveBeenCalledWith(
+      message.jobId,
+      "77777777-7777-4777-8777-777777777777",
+    );
+  });
+
+  it("does not repeat an external provider call after an ambiguous prior attempt", async () => {
+    const { lifecycle, jobs, executor, queue } = setup({
+      kind: "claimed",
+      lease_token: "77777777-7777-4777-8777-777777777777",
+      job: { attempt_count: 2, max_attempts: 3 },
+    });
+    jobs.beginEffect.mockResolvedValueOnce({ kind: "ambiguous" });
+
+    await expect(lifecycle.process(message)).resolves.toEqual({
+      disposition: "dead_lettered",
+    });
+    expect(executor).not.toHaveBeenCalled();
+    expect(jobs.settle).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "dead_letter",
+        errorCode: "ambiguous_external_effect",
+      }),
+    );
+    expect(queue.archiveMessage).toHaveBeenCalledOnce();
   });
 
   it("does not delete a stale worker result", async () => {
@@ -120,6 +146,31 @@ describe("worker job lifecycle", () => {
     );
     expect(queue.deleteMessage).not.toHaveBeenCalled();
     expect(queue.archiveMessage).not.toHaveBeenCalled();
+  });
+
+  it("archives when the database promotes an attempted external effect to dead letter", async () => {
+    const executor = vi.fn(async () => {
+      throw Object.assign(new Error("provider response unknown"), {
+        code: "provider_busy",
+      });
+    });
+    const { lifecycle, jobs, queue } = setup(
+      {
+        kind: "claimed",
+        lease_token: "77777777-7777-4777-8777-777777777777",
+        job: { attempt_count: 1, max_attempts: 3 },
+      },
+      executor,
+    );
+    jobs.settle.mockResolvedValueOnce({
+      kind: "terminal",
+      job: { status: "dead_letter" },
+    });
+
+    await expect(lifecycle.process(message)).resolves.toEqual({
+      disposition: "dead_lettered",
+    });
+    expect(queue.archiveMessage).toHaveBeenCalledOnce();
   });
 
   it("dead-letters a permanent failure and archives only after settlement", async () => {

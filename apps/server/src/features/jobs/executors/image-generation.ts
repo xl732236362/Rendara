@@ -132,8 +132,7 @@ export function createImageGenerationExecutor(
       }
 
       // Upload to Supabase Storage under the project-assets bucket
-      const timestamp = Date.now();
-      const objectPath = `${workspaceId}/generated/${timestamp}-${jobId}.png`;
+      const objectPath = `${workspaceId}/generated/${jobId}.png`;
 
       const { error: uploadError } = await admin.storage
         .from("project-assets")
@@ -156,6 +155,7 @@ export function createImageGenerationExecutor(
           object_path: objectPath,
           mime_type: generated.mimeType ?? "image/png",
           byte_size: buffer.length,
+          generation_job_id: jobId,
           ...(createdBy ? { created_by: createdBy } : {}),
         })
         .select("id")

@@ -2,8 +2,8 @@ import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 
 import { AppError } from "../errors/app-error.js";
-import { registerErrorHandler } from "./error-handler.js";
 import { registerCanvasRoutes } from "./canvases.js";
+import { registerErrorHandler } from "./error-handler.js";
 
 const user = {
   id: "11111111-1111-4111-8111-111111111111",

@@ -1,5 +1,6 @@
 import type { CanvasContent, CanvasDetail } from "@loomic/shared";
 
+import type { AdminSupabaseClient } from "../../supabase/admin.js";
 import type {
   AuthenticatedUser,
   UserSupabaseClient,
@@ -40,6 +41,7 @@ const CANVAS_FILES_BUCKET = "project-assets";
 
 export function createCanvasService(options: {
   createUserClient: (accessToken: string) => UserSupabaseClient;
+  getAdminClient: () => AdminSupabaseClient;
 }): CanvasService {
   const repository = createCanvasRepository(options);
   return {

@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(39);
+select plan(44);
 
 select has_column(
   'public',
@@ -353,6 +353,15 @@ reset role;
 
 select is(
   (
+    select public.claim_generation_job(second_job_id, 'worker-c', 60) ->> 'kind'
+    from phase2_fixture
+  ),
+  'busy',
+  'duplicate delivery cannot clear an active canceled worker lease'
+);
+
+select is(
+  (
     select public.settle_generation_job(
       second_job_id,
       second_lease_token,
@@ -363,8 +372,8 @@ select is(
     ) -> 'job' ->> 'status'
     from phase2_fixture
   ),
-  'canceled',
-  'cancellation wins when requested before the success transaction'
+  'succeeded',
+  'a committed generation result wins over a late cancellation request'
 );
 
 select throws_ok(
@@ -380,8 +389,8 @@ select throws_ok(
 
 select is(
   (select count(*)::integer from public.job_effect_receipts r join phase2_fixture f on f.second_job_id = r.job_id),
-  0,
-  'canceled settlement commits no generation success effect'
+  1,
+  'successful settlement after cancellation records exactly one generation effect'
 );
 
 with submitted as (
@@ -412,6 +421,22 @@ with claimed as (
 update phase2_fixture
 set third_lease_token = (claimed.result ->> 'lease_token')::uuid
 from claimed;
+
+update public.background_jobs j
+set lease_expires_at = now() - interval '1 second'
+from phase2_fixture f
+where j.id = f.third_job_id;
+
+select throws_ok(
+  format(
+    $sql$select public.settle_generation_job(%L::uuid,%L::uuid,'succeeded','{}'::jsonb,null,null)$sql$,
+    (select third_job_id from phase2_fixture),
+    (select third_lease_token from phase2_fixture)
+  ),
+  'P0001',
+  'STALE_JOB_LEASE',
+  'an expired lease cannot settle before another worker claims the job'
+);
 
 select throws_ok(
   format(
@@ -464,17 +489,47 @@ select is(
   'human compensation replay cannot duplicate a refund'
 );
 
+select throws_ok(
+  format(
+    $sql$select public.compensate_generation_charge(%L::uuid,'support-case-over',%L::uuid,%L::uuid,%L::uuid,8,'Over original debit')$sql$,
+    (select workspace_id from phase2_fixture),
+    (select first_job_id from phase2_fixture),
+    (select first_debit_id from phase2_fixture),
+    '10000000-0000-4000-8000-000000000001'
+  ),
+  '22023',
+  'COMPENSATION_EXCEEDS_DEBIT',
+  'human compensation cannot exceed the original debit'
+);
+
+select throws_ok(
+  format(
+    $sql$select public.compensate_generation_charge(%L::uuid,'support-case-duplicate',%L::uuid,%L::uuid,%L::uuid,5,'Duplicate compensation')$sql$,
+    (select workspace_id from phase2_fixture),
+    (select first_job_id from phase2_fixture),
+    (select first_debit_id from phase2_fixture),
+    '10000000-0000-4000-8000-000000000001'
+  ),
+  '22023',
+  'COMPENSATION_EXCEEDS_DEBIT',
+  'different keys cannot cumulatively compensate beyond the original debit'
+);
+
+select ok(
+  not has_function_privilege(
+    'authenticated',
+    'public.commit_canvas_revision(uuid,uuid,bigint,jsonb,uuid,text,text,jsonb)',
+    'execute'
+  ),
+  'authenticated clients cannot supply trusted Job effect or outbox fields'
+);
+
 select is(
   (
-    select public.commit_canvas_revision(
+    select public.save_canvas_revision(
       f.canvas_id,
-      '10000000-0000-4000-8000-000000000001',
       0,
-      '{"elements":[],"appState":{},"files":{}}'::jsonb,
-      null,
-      null,
-      'canvas.revision.committed',
-      '{}'::jsonb
+      '{"elements":[],"appState":{},"files":{}}'::jsonb
     ) ->> 'revision'
     from phase2_fixture f
   ),
@@ -484,9 +539,8 @@ select is(
 
 select throws_ok(
   format(
-    $sql$select public.commit_canvas_revision(%L::uuid,%L::uuid,0,'{"elements":[],"appState":{},"files":{}}'::jsonb,null,null,'canvas.revision.committed','{}'::jsonb)$sql$,
-    (select canvas_id from phase2_fixture),
-    '10000000-0000-4000-8000-000000000001'
+    $sql$select public.save_canvas_revision(%L::uuid,0,'{"elements":[],"appState":{},"files":{}}'::jsonb)$sql$,
+    (select canvas_id from phase2_fixture)
   ),
   '40001',
   'CANVAS_REVISION_CONFLICT',
@@ -498,7 +552,7 @@ select is(
     select count(*)::integer
     from public.domain_outbox o
     join phase2_fixture f on f.canvas_id = o.aggregate_id
-    where o.event_type = 'canvas.revision.committed'
+    where o.event_type = 'canvas.updated'
   ),
   1,
   'successful Canvas commit emits exactly one transactional outbox event'

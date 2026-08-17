@@ -148,8 +148,9 @@ function scanPhase2PersistenceBypasses({ filePath, sourceFile }) {
           text,
         );
       const lifecycleCompensation =
-        /(?:refundCredits|refund_credits|compensateGeneration)\s*\(/.test(text) &&
-        /(?:worker|jobs|generation)/.test(filePath);
+        /(?:refundCredits|refund_credits|compensateGeneration)\s*\(/.test(
+          text,
+        ) && /(?:worker|jobs|generation)/.test(filePath);
       if (directJobUpdate || directCanvasUpdate || lifecycleCompensation) {
         findings.push(findingAt(node, { filePath, sourceFile }));
       }

@@ -2,16 +2,16 @@
 
 import "@excalidraw/excalidraw/index.css";
 
+import { AlertTriangle, RefreshCw, X } from "lucide-react";
 import { useTheme } from "next-themes";
 import dynamic from "next/dynamic";
-import { AlertTriangle, RefreshCw, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { WebSocketHandle } from "../hooks/use-websocket";
+import { ApiApplicationError } from "../lib/api-client";
 import { blobToDataURL, isVideoUrl } from "../lib/canvas-elements";
 import { normalizeCanvasElements } from "../lib/canvas-normalize";
 import { getServerBaseUrl } from "../lib/env";
-import { ApiApplicationError } from "../lib/api-client";
 import { saveCanvas, uploadThumbnail } from "../lib/server-api";
 import { CanvasToolMenu } from "./canvas-tool-menu";
 import { VideoCanvasElement } from "./canvas/video-canvas-element";

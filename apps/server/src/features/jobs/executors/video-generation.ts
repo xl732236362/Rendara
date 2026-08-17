@@ -92,8 +92,7 @@ export function createVideoGenerationExecutor(
       lap("video_download_done");
 
       const ext = generated.mimeType === "video/webm" ? "webm" : "mp4";
-      const timestamp = Date.now();
-      const objectPath = `${workspaceId}/generated/${timestamp}-${jobId}.${ext}`;
+      const objectPath = `${workspaceId}/generated/${jobId}.${ext}`;
 
       const { error: uploadError } = await admin.storage
         .from("project-assets")
@@ -115,6 +114,7 @@ export function createVideoGenerationExecutor(
           object_path: objectPath,
           mime_type: generated.mimeType ?? "video/mp4",
           byte_size: buffer.length,
+          generation_job_id: jobId,
           ...(createdBy ? { created_by: createdBy } : {}),
         })
         .select("id")

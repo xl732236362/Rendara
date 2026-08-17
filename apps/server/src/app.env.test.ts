@@ -123,7 +123,7 @@ describe("application environment composition", () => {
     const videoResponse = await app.inject({
       method: "POST",
       url: "/api/agent/generate-video",
-      payload: { prompt: "hello" },
+      payload: { idempotency_key: "unavailable-video-1", prompt: "hello" },
     });
 
     expect(skillResponse.statusCode).toBe(403);
@@ -261,7 +261,12 @@ describe("application environment composition", () => {
           workspaceId: "22222222-2222-4222-8222-222222222222",
           accessToken: "token",
         },
-        { type: "image_generation", prompt: "draw", quality },
+        {
+          idempotency_key: `quality-${quality}`,
+          type: "image_generation",
+          prompt: "draw",
+          quality,
+        },
       );
     }
     await submit(
@@ -269,7 +274,11 @@ describe("application environment composition", () => {
         userId: "11111111-1111-4111-8111-111111111111",
         workspaceId: "22222222-2222-4222-8222-222222222222",
       },
-      { type: "image_generation", prompt: "draw with default quality" },
+      {
+        idempotency_key: "quality-default",
+        type: "image_generation",
+        prompt: "draw with default quality",
+      },
     );
 
     expect(checkResolution.mock.calls).toEqual([
@@ -326,6 +335,7 @@ describe("application environment composition", () => {
           workspaceId: "22222222-2222-4222-8222-222222222222",
         },
         {
+          idempotency_key: "quality-rejected",
           type: "image_generation",
           prompt: "draw",
           model: "image/model",
@@ -340,11 +350,14 @@ describe("application environment composition", () => {
 
 function generationJobService() {
   return {
-    createJob: async () => ({
-      id: "33333333-3333-4333-8333-333333333333",
-      status: "queued",
+    submitJob: async () => ({
+      job: {
+        id: "33333333-3333-4333-8333-333333333333",
+        status: "queued",
+      },
+      debitTransactionId: "44444444-4444-4444-8444-444444444444",
+      replayed: false,
     }),
-    setCreditsInfo: async () => {},
     cancelJob: async () => ({
       id: "33333333-3333-4333-8333-333333333333",
       status: "canceled",

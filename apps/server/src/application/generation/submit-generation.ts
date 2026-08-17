@@ -5,6 +5,7 @@ import {
   generationSubmissionRequestSchema,
 } from "@loomic/shared";
 
+import { createHash } from "node:crypto";
 import { AppError } from "../../errors/app-error.js";
 import { normalizeGenerationError } from "./legacy-error.js";
 import { parseSubmissionOutcome } from "./outcome-validation.js";
@@ -14,7 +15,6 @@ import type {
   GenerationPrincipal,
   StructuredLogger,
 } from "./ports.js";
-import { createHash } from "node:crypto";
 
 export type SubmitGeneration = (
   principal: GenerationPrincipal,
