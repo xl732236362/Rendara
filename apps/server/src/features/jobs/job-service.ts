@@ -31,11 +31,13 @@ export class JobServiceError extends Error {
     code: JobServiceError["code"],
     message: string,
     statusCode: number,
+    cause?: unknown,
   ) {
-    super(message);
+    super(message, { cause });
     this.name = "JobServiceError";
     this.code = code;
     this.statusCode = statusCode;
+    this.cause = cause;
   }
 }
 
@@ -267,15 +269,30 @@ export function createJobService(options: {
 
     async setCreditsInfo(jobId, creditsCost, transactionId) {
       const admin = options.getAdminClient();
-      await admin
+      const { error } = await admin
         .from("background_jobs")
         .update({
           credits_cost: creditsCost,
           credits_transaction_id: transactionId,
         })
         .eq("id", jobId);
+      if (error) {
+        console.error("[job-service] setCreditsInfo update failed", {
+          jobId,
+          code: error.code,
+          message: error.message,
+        });
+        throw new JobServiceError(
+          "job_create_failed",
+          "Failed to attach credits to job.",
+          500,
+          error,
+        );
+      }
     },
 
+    // TODO(phase-2): verify affected rows and centralize transition failures
+    // when job lifecycle updates move behind transactional state semantics.
     async markRunning(jobId) {
       const admin = options.getAdminClient();
       await admin
