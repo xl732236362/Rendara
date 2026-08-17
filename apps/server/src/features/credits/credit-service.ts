@@ -190,6 +190,13 @@ export function createCreditService(options: {
             409,
           );
         }
+        if (error.details === "compensation_exceeds_debit") {
+          throw new CreditServiceError(
+            "compensation_conflict",
+            "The compensation would exceed the original generation charge.",
+            409,
+          );
+        }
         throw new CreditServiceError(
           "credit_refund_failed",
           "Failed to compensate generation credits.",

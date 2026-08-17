@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(44);
+select plan(48);
 
 select has_column(
   'public',
@@ -353,6 +353,15 @@ reset role;
 
 select is(
   (
+    select public.begin_generation_effect(second_job_id, second_lease_token) ->> 'kind'
+    from phase2_fixture
+  ),
+  'canceled',
+  'cancellation before effect intent prevents the external effect from starting'
+);
+
+select is(
+  (
     select public.claim_generation_job(second_job_id, 'worker-c', 60) ->> 'kind'
     from phase2_fixture
   ),
@@ -449,6 +458,21 @@ select throws_ok(
   'a stale worker token cannot settle a running job'
 );
 
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000001', true);
+select public.request_generation_cancellation(third_job_id) from phase2_fixture;
+reset role;
+insert into public.generation_effect_attempts (job_id, lease_token, state)
+select third_job_id, third_lease_token, 'ambiguous' from phase2_fixture;
+select is(
+  (
+    select public.claim_generation_job(third_job_id, 'recovery-worker', 60) -> 'job' ->> 'status'
+    from phase2_fixture
+  ),
+  'dead_letter',
+  'expired cancellation with an ambiguous external effect cannot become canceled'
+);
+
 select is(
   (
     select public.compensate_generation_charge(
@@ -513,6 +537,25 @@ select throws_ok(
   '22023',
   'COMPENSATION_EXCEEDS_DEBIT',
   'different keys cannot cumulatively compensate beyond the original debit'
+);
+
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000001', true);
+select is(
+  (select public.request_generation_cancellation(first_job_id) -> 'job' ->> 'status' from phase2_fixture),
+  'canceled',
+  'queued cancellation reaches canceled without starting an effect'
+);
+reset role;
+
+select is(
+  (
+    select o.payload ->> 'userId' from public.domain_outbox o
+    join phase2_fixture f on f.first_job_id = o.aggregate_id
+    where o.event_type = 'generation.job.canceled'
+  ),
+  '10000000-0000-4000-8000-000000000001',
+  'generation cancellation events identify the owning user for publication'
 );
 
 select ok(

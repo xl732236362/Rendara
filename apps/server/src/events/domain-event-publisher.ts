@@ -37,7 +37,7 @@ export function createDomainEventPublisher(ports: PublisherPorts) {
       if (typeof userId !== "string" || userId.length === 0) {
         throw codedError("invalid_generation_event");
       }
-      ports.sendToUser(userId, {
+      const delivered = ports.sendToUser(userId, {
         type: "domain.event",
         eventId: event.event_id,
         eventType: event.event_type,
@@ -46,6 +46,7 @@ export function createDomainEventPublisher(ports: PublisherPorts) {
         payload: event.payload,
         occurredAt: event.occurred_at,
       });
+      if (!delivered) throw codedError("generation_event_not_delivered");
       return;
     }
 

@@ -108,6 +108,24 @@ describe("worker job lifecycle", () => {
     expect(queue.archiveMessage).toHaveBeenCalledOnce();
   });
 
+  it("does not start a Provider call when cancellation won before effect intent", async () => {
+    const { lifecycle, jobs, executor, queue } = setup({
+      kind: "claimed",
+      lease_token: "77777777-7777-4777-8777-777777777777",
+      job: { attempt_count: 1, max_attempts: 3 },
+    });
+    jobs.beginEffect.mockResolvedValueOnce({ kind: "canceled" });
+
+    await expect(lifecycle.process(message)).resolves.toEqual({
+      disposition: "canceled",
+    });
+    expect(executor).not.toHaveBeenCalled();
+    expect(jobs.settle).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "canceled" }),
+    );
+    expect(queue.deleteMessage).toHaveBeenCalledOnce();
+  });
+
   it("does not delete a stale worker result", async () => {
     const { lifecycle, jobs, queue } = setup({
       kind: "claimed",

@@ -97,7 +97,10 @@ begin
       where job_id = p_job_id and state in ('started', 'ambiguous', 'completed')
     ) into v_has_effect;
     update public.background_jobs
-    set status = case when v_has_effect then 'dead_letter' else 'canceled' end,
+    set status = case
+          when v_has_effect then 'dead_letter'::public.background_job_status
+          else 'canceled'::public.background_job_status
+        end,
         transition_version = transition_version + 1,
         canceled_at = case when v_has_effect then canceled_at else now() end,
         failed_at = case when v_has_effect then now() else failed_at end,
@@ -304,6 +307,9 @@ begin
   if p_job_id is null or p_effect_kind is null or char_length(btrim(p_effect_kind)) not between 1 and 100 then
     raise exception using errcode = '22023', message = 'INVALID_JOB_CANVAS_COMMIT', detail = 'invalid_request';
   end if;
+  if p_event_type <> 'canvas.generated_asset_attached' then
+    raise exception using errcode = '22023', message = 'INVALID_CANVAS_EVENT', detail = 'invalid_request';
+  end if;
   select c.* into v_canvas from public.canvases c join public.projects p on p.id = c.project_id
   join public.background_jobs j on j.id = p_job_id and j.workspace_id = p.workspace_id
     and j.canvas_id = c.id and j.created_by = p_actor_user_id
@@ -332,4 +338,3 @@ revoke all on function public.commit_canvas_revision(uuid, uuid, bigint, jsonb, 
 grant execute on function public.commit_canvas_revision(uuid, uuid, bigint, jsonb, uuid, text, text, jsonb) to service_role;
 revoke all on function public.save_canvas_revision(uuid, bigint, jsonb) from public, anon;
 grant execute on function public.save_canvas_revision(uuid, bigint, jsonb) to authenticated, service_role;
-

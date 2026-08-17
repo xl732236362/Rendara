@@ -43,6 +43,7 @@ const effectAttemptSchema = z.discriminatedUnion("kind", [
     result: z.record(z.string(), z.unknown()),
   }),
   z.object({ kind: z.literal("ambiguous") }),
+  z.object({ kind: z.literal("canceled") }),
 ]);
 
 export type JobClaim = z.infer<typeof claimSchema>;

@@ -48,6 +48,21 @@ describe("domain outbox dispatcher", () => {
     );
   });
 
+  it("rejects an offline generation delivery so the outbox remains pending", async () => {
+    const publish = createDomainEventPublisher({
+      pushCanvas: vi.fn(),
+      sendToUser: vi.fn(() => false),
+      rememberCanvasEvent: vi.fn(() => true),
+    });
+    await expect(
+      publish({
+        ...event,
+        aggregate_type: "generation_job",
+        payload: { jobId: event.aggregate_id, userId: "user-1" },
+      }),
+    ).rejects.toMatchObject({ code: "generation_event_not_delivered" });
+  });
+
   it("rejects unsupported aggregate types so they are retried, not acknowledged", async () => {
     const publish = createDomainEventPublisher({
       pushCanvas: vi.fn(),

@@ -137,6 +137,15 @@ export function createWorkerJobLifecycle(options: {
           options.logger.error("generation_job_ambiguous_effect", leaseContext);
           return { disposition: "dead_lettered" };
         }
+        if (effect.kind === "canceled") {
+          await options.jobs.settle({
+            jobId: message.jobId,
+            leaseToken: claim.lease_token,
+            outcome: "canceled",
+          });
+          await options.queue.deleteMessage(message.queue, message.messageId);
+          return { disposition: "canceled" };
+        }
         let result: Record<string, unknown>;
         try {
           result = await options.executor(

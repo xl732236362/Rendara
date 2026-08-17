@@ -74,4 +74,20 @@ describe("credit service generation compensation", () => {
       statusCode: 500,
     });
   });
+
+  it("maps cumulative over-compensation to an actionable business rejection", async () => {
+    const service = createCreditService({
+      getAdminClient: () =>
+        ({
+          rpc: vi.fn(async () => ({
+            data: null,
+            error: { details: "compensation_exceeds_debit" },
+          })),
+        }) as unknown as AdminSupabaseClient,
+    });
+    await expect(service.compensateGeneration(command)).rejects.toMatchObject({
+      code: "compensation_conflict",
+      statusCode: 409,
+    });
+  });
 });
