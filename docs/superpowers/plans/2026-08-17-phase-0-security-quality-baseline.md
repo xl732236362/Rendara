@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript, Fastify 5, `@fastify/rate-limit`, Zod, Vitest, GitHub Actions, Supabase CLI, Docker, Biome, Turborepo
 
-**完成记录（2026-08-17）：** 阶段实现整合提交为 `4a3e01e2e5ccda1b948b88045fe19ee36fb1af10`。由于开始执行时工作区已包含相关未提交修改，原计划中的多个任务级提交合并为一个阶段实现提交；行为、测试和验收步骤仍按任务逐项完成。
+**完成记录（2026-08-17）：** 阶段实现整合提交为 `4a3e01e2e5ccda1b948b88045fe19ee36fb1af10`，干净环境类型检查依赖修复提交为 `7310445`。由于开始执行时工作区已包含相关未提交修改，原计划中的多个任务级提交合并为一个阶段实现提交；行为、测试和验收步骤仍按任务逐项完成。
 
 ---
 
