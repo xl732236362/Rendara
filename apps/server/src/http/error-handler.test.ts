@@ -166,6 +166,83 @@ describe("Fastify error boundary", () => {
     await app.close();
   });
 
+  it("contains errors whose diagnostic getters throw", async () => {
+    const { app, records } = createLoggedTestApp();
+    app.get("/hostile-error", async () => {
+      const hostile = new Error("placeholder");
+      for (const property of [
+        "validation",
+        "statusCode",
+        "code",
+        "name",
+        "message",
+        "stack",
+        "cause",
+      ]) {
+        Object.defineProperty(hostile, property, {
+          configurable: true,
+          get() {
+            throw new Error(`getter-secret-${property}`);
+          },
+        });
+      }
+      throw hostile;
+    });
+
+    const response = await app.inject({ method: "GET", url: "/hostile-error" });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({
+      error: {
+        code: "application_error",
+        message: "An unexpected error occurred",
+      },
+    });
+    const serializedLog = JSON.stringify(
+      records.find((record) => record.fields.event === "http_request_failed")
+        ?.fields,
+    );
+    expect(serializedLog).toContain("requestId");
+    expect(serializedLog).not.toContain("getter-secret");
+    await app.close();
+  });
+
+  it("contains hostile thrown proxies without invoking trap data", async () => {
+    const { app, records } = createLoggedTestApp();
+    app.get("/hostile-proxy", async () => {
+      throw new Proxy(
+        {},
+        {
+          get() {
+            throw new Error("proxy-get-secret");
+          },
+          getPrototypeOf() {
+            throw new Error("proxy-prototype-secret");
+          },
+          ownKeys() {
+            throw new Error("proxy-keys-secret");
+          },
+        },
+      );
+    });
+
+    const response = await app.inject({ method: "GET", url: "/hostile-proxy" });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({
+      error: {
+        code: "application_error",
+        message: "An unexpected error occurred",
+      },
+    });
+    const serializedLogs = JSON.stringify(records);
+    expect(serializedLogs).toContain("requestId");
+    expect(serializedLogs).not.toContain("proxy-get-secret");
+    expect(serializedLogs).not.toContain("proxy-prototype-secret");
+    expect(serializedLogs).not.toContain("proxy-keys-secret");
+    await app.close();
+  });
+
   it("classifies a proven client disconnect without reporting a server defect", async () => {
     const { app, records } = createLoggedTestApp();
     app.get("/interrupted", async (request) => {

@@ -1,3 +1,12 @@
+import { createHash } from "node:crypto";
+
+import {
+  safeInstanceOf,
+  safeRead,
+  safeReadString,
+  safeString,
+} from "./safe-error-inspection.js";
+
 /**
  * Sanitize error messages before sending to the frontend.
  * Logs full error detail server-side, returns user-friendly message.
@@ -28,26 +37,30 @@ export function sanitizeErrorForLog(
   error: unknown,
   depth = 0,
 ): SanitizedErrorDiagnostic {
-  const record = isRecord(error) ? error : undefined;
+  const isError = safeInstanceOf(error, Error);
   const diagnostic: SanitizedErrorDiagnostic = {
     errorName: sanitizeDiagnosticText(
-      error instanceof Error ? error.name : "UnknownError",
+      isError ? (safeReadString(error, "name") ?? "Error") : "UnknownError",
     ),
     errorMessage: sanitizeDiagnosticText(
-      error instanceof Error ? error.message : String(error),
+      isError
+        ? (safeReadString(error, "message") ?? "Error message unavailable")
+        : safeString(error),
     ),
   };
-  const code = record?.code;
+  const code = safeRead(error, "code");
   if (typeof code === "string") {
     diagnostic.errorCode = sanitizeDiagnosticText(code);
   }
-  if (error instanceof Error && error.stack) {
+  const stack = isError ? safeReadString(error, "stack") : undefined;
+  if (stack) {
     diagnostic.stackFingerprint = createHash("sha256")
-      .update(error.stack)
+      .update(stack)
       .digest("hex");
   }
-  if (depth < 2 && record && "cause" in record && record.cause !== undefined) {
-    diagnostic.errorCause = sanitizeErrorForLog(record.cause, depth + 1);
+  const cause = safeRead(error, "cause");
+  if (depth < 2 && cause !== undefined) {
+    diagnostic.errorCause = sanitizeErrorForLog(cause, depth + 1);
   }
   return diagnostic;
 }
@@ -127,4 +140,3 @@ export function sanitizeErrorForClient(error: unknown): string {
   // Short, non-technical messages can pass through
   return "请求处理失败，请重试。";
 }
-import { createHash } from "node:crypto";

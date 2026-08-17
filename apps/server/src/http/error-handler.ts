@@ -8,6 +8,11 @@ import {
 } from "../errors/app-error.js";
 import { RequestValidationError } from "../errors/request-validation.js";
 import { sanitizeErrorForLog } from "../utils/error-sanitizer.js";
+import {
+  safeInstanceOf,
+  safeRead,
+  safeReadString,
+} from "../utils/safe-error-inspection.js";
 
 const ABORT_CODES = new Set([
   "ABORT_ERR",
@@ -31,8 +36,14 @@ type ClassifiedError = {
 
 export function registerErrorHandler(app: FastifyInstance): void {
   app.setErrorHandler((error, request, reply) => {
-    const classified = classifyError(error, request);
-    logFailure(request, error, classified);
+    let classified: ClassifiedError;
+    try {
+      classified = classifyError(error, request);
+      logFailure(request, error, classified);
+    } catch {
+      classified = internalError();
+      logFallbackFailure(request);
+    }
 
     if (reply.sent) {
       return reply;
@@ -59,11 +70,13 @@ function classifyError(
   error: unknown,
   request: FastifyRequest,
 ): ClassifiedError {
-  if (error instanceof RequestValidationError) {
-    return invalidRequest(error.issues);
+  if (safeInstanceOf(error, RequestValidationError)) {
+    return invalidRequest((error as RequestValidationError).issues);
   }
 
-  const validation = (error as FastifyError | null)?.validation;
+  const validation = safeRead(error, "validation") as
+    | FastifyError["validation"]
+    | undefined;
   if (Array.isArray(validation)) {
     return invalidRequest(
       validation.map((issue) => ({
@@ -76,17 +89,22 @@ function classifyError(
     );
   }
 
-  if (error instanceof AppError) {
+  if (safeInstanceOf(error, AppError)) {
+    const appError = error as AppError;
     return {
-      code: error.code,
-      statusCode: error.statusCode,
-      message: error.expose ? error.message : "An unexpected error occurred",
-      ...(error.expose && error.details ? { details: error.details } : {}),
+      code: appError.code,
+      statusCode: appError.statusCode,
+      message: appError.expose
+        ? appError.message
+        : "An unexpected error occurred",
+      ...(appError.expose && appError.details
+        ? { details: appError.details }
+        : {}),
       interrupted: false,
     };
   }
 
-  if ((error as FastifyError | null)?.statusCode === 400) {
+  if (safeRead(error, "statusCode") === 400) {
     return {
       code: "invalid_request",
       statusCode: 400,
@@ -107,6 +125,10 @@ function classifyError(
       interrupted: true,
     };
   }
+  return internalError();
+}
+
+function internalError(): ClassifiedError {
   return {
     code: "application_error",
     statusCode: 500,
@@ -126,13 +148,30 @@ function invalidRequest(issues: unknown[]): ClassifiedError {
 }
 
 function getErrorCode(error: unknown): string {
-  const code = (error as { code?: unknown } | null)?.code;
-  return typeof code === "string" ? code : "";
+  return safeReadString(error, "code") ?? "";
 }
 
 function getErrorName(error: unknown): string {
-  const name = (error as { name?: unknown } | null)?.name;
-  return typeof name === "string" ? name : "UnknownError";
+  return safeReadString(error, "name") ?? "UnknownError";
+}
+
+function logFallbackFailure(request: FastifyRequest): void {
+  try {
+    request.log.error(
+      {
+        event: "http_request_failed",
+        requestId: request.id,
+        method: request.method,
+        route: request.routeOptions.url,
+        statusCode: 500,
+        boundaryCode: "application_error",
+        errorName: "UninspectableError",
+      },
+      "HTTP request failed",
+    );
+  } catch {
+    // Logging must never prevent the canonical fallback response.
+  }
 }
 
 function logFailure(
