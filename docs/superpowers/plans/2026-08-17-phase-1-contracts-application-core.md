@@ -46,6 +46,8 @@
 - [x] Keep route adapters responsible only for auth, schema parse, use-case/service call, and response schema serialization.
 - [x] Prove by search that no route defines `isZodError` and by tests that phase 0 security error codes/statuses remain stable.
 
+Verification evidence: registered-route regression tests cover projects, canvases, chat, jobs, credits, skills, and payments; strict HTTP source scans enforce parsed external inputs, direct boundary throws with explicit statuses, and no broad catches in pure adapters.
+
 ## Task 4: Build Schema-Driven Environment Configuration
 
 **Files:** `packages/config/src/env.ts`, `packages/config/src/index.ts`, `packages/config/src/env.test.ts`, `packages/config/package.json`, `apps/server/src/config/env.ts`, `apps/server/src/config/env.test.ts`, `.env.example`, `railway.json`, `vercel.json`, `scripts/validate-env-template.mjs`, `tests/workspace.test.mjs`

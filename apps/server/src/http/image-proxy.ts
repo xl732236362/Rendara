@@ -1,11 +1,14 @@
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 
 import {
   SafeFetchError,
   type SafeFetchResult,
 } from "../security/safe-fetch.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
-import { throwRouteError } from "./route-errors.js";
+import { parseRequest, throwRouteError } from "./route-errors.js";
+
+const imageProxyQuerySchema = z.object({ url: z.string().min(1) });
 
 export type ImageSafeFetcher = (url: string) => Promise<SafeFetchResult>;
 
@@ -28,16 +31,11 @@ export async function registerImageProxyRoute(
         });
       }
 
-      const { url } = request.query;
-      if (!url || typeof url !== "string") {
-        throwRouteError({
-          code: "invalid_request",
-          statusCode: 400,
-          message: "A valid URL is required.",
-        });
-      }
+      const { url } = parseRequest(imageProxyQuerySchema, request.query);
 
       try {
+        // SafeFetchError carries transport-neutral security codes but no HTTP
+        // status; this adapter translation is intentionally route-specific.
         const result = await options.safeFetch(url);
         return reply
           .header("content-type", result.contentType)

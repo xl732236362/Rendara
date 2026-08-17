@@ -15,6 +15,7 @@ import {
 import type { RequestAuthenticator } from "../supabase/user.js";
 import {
   parseRequest,
+  parseStringParams,
   raiseBoundaryError,
   throwLegacyServiceError,
 } from "./route-errors.js";
@@ -29,17 +30,11 @@ export async function registerCanvasRoutes(
   app.get<{ Params: { canvasId: string } }>(
     "/api/canvases/:canvasId",
     async (request, reply) => {
-      try {
-        const user = await options.auth.authenticate(request);
-        if (!user) return sendUnauthorized(reply);
-        const canvas = await options.canvasService.getCanvas(
-          user,
-          request.params.canvasId,
-        );
-        return reply.code(200).send(canvasGetResponseSchema.parse({ canvas }));
-      } catch (error) {
-        return sendCanvasError(error, reply);
-      }
+      const user = await options.auth.authenticate(request);
+      if (!user) return sendUnauthorized(reply);
+      const { canvasId } = parseStringParams(request.params, ["canvasId"]);
+      const canvas = await options.canvasService.getCanvas(user, canvasId);
+      return reply.code(200).send(canvasGetResponseSchema.parse({ canvas }));
     },
   );
 
@@ -47,45 +42,30 @@ export async function registerCanvasRoutes(
     "/api/canvases/:canvasId",
     { bodyLimit: 50 * 1024 * 1024 }, // 50 MB — canvas content includes base64 image data
     async (request, reply) => {
-      try {
-        const user = await options.auth.authenticate(request);
-        if (!user) return sendUnauthorized(reply);
-        const payload = parseRequest(canvasSaveRequestSchema, request.body);
-        await options.canvasService.saveCanvasContent(
-          user,
-          request.params.canvasId,
-          payload.content,
-        );
-        const bodySize = JSON.stringify(request.body).length;
-        request.log.info(
-          { canvasId: request.params.canvasId, bodyBytes: bodySize },
-          "canvas.save OK",
-        );
-        return reply
-          .code(200)
-          .send(canvasSaveResponseSchema.parse({ ok: true }));
-      } catch (error) {
-        request.log.error(
-          { canvasId: request.params.canvasId, err: error },
-          "canvas.save FAILED",
-        );
-        return sendCanvasError(error, reply);
-      }
+      const user = await options.auth.authenticate(request);
+      if (!user) return sendUnauthorized(reply);
+      const payload = parseRequest(canvasSaveRequestSchema, request.body);
+      const { canvasId } = parseStringParams(request.params, ["canvasId"]);
+      await options.canvasService.saveCanvasContent(
+        user,
+        canvasId,
+        payload.content,
+      );
+      const bodySize = JSON.stringify(request.body).length;
+      request.log.info({ canvasId, bodyBytes: bodySize }, "canvas.save OK");
+      return reply.code(200).send(canvasSaveResponseSchema.parse({ ok: true }));
     },
   );
 }
 
 function sendUnauthorized(reply: FastifyReply) {
-  return reply.code(401).send(
-    raiseBoundaryError({
+  return raiseBoundaryError(
+    {
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
       },
-    }),
+    },
+    401,
   );
-}
-
-function sendCanvasError(error: unknown, reply: FastifyReply) {
-  throwLegacyServiceError(error);
 }

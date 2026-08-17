@@ -3,9 +3,13 @@ import {
   boundaryErrorCodeSchema,
 } from "@loomic/shared";
 import type { FastifyRequest } from "fastify";
+import { z } from "zod";
 
 import { AppError } from "../errors/app-error.js";
+import { MarketplaceError } from "../features/skills/marketplace-service.js";
+import { SkillImportError } from "../features/skills/skill-import-service.js";
 export { parseRequest } from "../errors/request-validation.js";
+import { parseRequest } from "../errors/request-validation.js";
 import type {
   AuthenticatedUser,
   RequestAuthenticator,
@@ -30,6 +34,33 @@ export async function authenticateOrThrow(
 
 /** Converts only the stable legacy service-error shape into an AppError. */
 export function normalizeLegacyServiceError(error: unknown): AppError | null {
+  if (error instanceof SkillImportError) {
+    return new AppError({
+      code:
+        error.code === "capability_disabled"
+          ? "capability_disabled"
+          : "skill_import_failed",
+      statusCode: error.code === "capability_disabled" ? 403 : 400,
+      message: error.message,
+      expose: true,
+      cause: error,
+    });
+  }
+  if (error instanceof MarketplaceError) {
+    const code =
+      error.code === "search_failed"
+        ? "marketplace_search_failed"
+        : error.code === "package_not_found"
+          ? "marketplace_detail_failed"
+          : "marketplace_install_failed";
+    return new AppError({
+      code,
+      statusCode: error.code === "package_not_found" ? 404 : 502,
+      message: error.message,
+      expose: true,
+      cause: error,
+    });
+  }
   if (!(error instanceof Error)) return null;
   const statusCode = safeRead(error, "statusCode");
   const parsedCode = boundaryErrorCodeSchema.safeParse(safeRead(error, "code"));
@@ -62,9 +93,17 @@ export function throwRouteError(options: {
   throw new AppError({ ...options, expose: true });
 }
 
+export function parseStringParams<const Key extends string>(
+  input: unknown,
+  keys: readonly Key[],
+): Record<Key, string> {
+  const shape = Object.fromEntries(keys.map((key) => [key, z.string().min(1)]));
+  return parseRequest(z.object(shape), input) as Record<Key, string>;
+}
+
 export function raiseBoundaryError(
   payload: unknown,
-  statusCode?: number,
+  statusCode: number,
 ): never {
   const error = safeRead(payload, "error");
   const parsedCode = boundaryErrorCodeSchema.safeParse(safeRead(error, "code"));
@@ -74,22 +113,7 @@ export function raiseBoundaryError(
   }
   throwRouteError({
     code: parsedCode.data,
-    statusCode: statusCode ?? inferStatusCode(parsedCode.data),
+    statusCode,
     message,
   });
-}
-
-function inferStatusCode(code: BoundaryErrorCode): number {
-  if (code === "unauthorized") return 401;
-  if (code === "forbidden" || code === "unsafe_url") return 403;
-  if (code === "invalid_request") return 400;
-  if (code === "insufficient_credits") return 402;
-  if (code === "capability_disabled") return 403;
-  if (code.endsWith("_not_found")) return 404;
-  if (code.endsWith("_slug_taken")) return 409;
-  if (code === "rate_limited" || code === "concurrency_limit") return 429;
-  if (code === "response_too_large") return 413;
-  if (code === "invalid_content_type") return 415;
-  if (code === "upstream_error") return 502;
-  return 500;
 }

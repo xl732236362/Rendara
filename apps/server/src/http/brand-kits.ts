@@ -19,6 +19,7 @@ import {
 import type { RequestAuthenticator } from "../supabase/user.js";
 import {
   parseRequest,
+  parseStringParams,
   raiseBoundaryError,
   throwLegacyServiceError,
 } from "./route-errors.js";
@@ -49,240 +50,207 @@ export async function registerBrandKitRoutes(
 ) {
   // GET /api/brand-kits — list kits
   app.get("/api/brand-kits", async (request, reply) => {
-    try {
-      const user = await options.auth.authenticate(request);
+    const user = await options.auth.authenticate(request);
 
-      if (!user) {
-        return sendUnauthenticated(reply);
-      }
-
-      const brandKits = await options.brandKitService.listKits(user);
-      return reply
-        .code(200)
-        .send(brandKitListResponseSchema.parse({ brandKits }));
-    } catch (error) {
-      return sendBrandKitError(error, reply, "brand_kit_query_failed");
+    if (!user) {
+      return sendUnauthenticated(reply);
     }
+
+    const brandKits = await options.brandKitService.listKits(user);
+    return reply
+      .code(200)
+      .send(brandKitListResponseSchema.parse({ brandKits }));
   });
 
   // POST /api/brand-kits — create kit
   app.post("/api/brand-kits", async (request, reply) => {
-    try {
-      const user = await options.auth.authenticate(request);
+    const user = await options.auth.authenticate(request);
 
-      if (!user) {
-        return sendUnauthenticated(reply);
-      }
-
-      const payload = parseRequest(brandKitCreateRequestSchema, request.body);
-      const kit = await options.brandKitService.createKit(user, payload);
-
-      return reply.code(201).send(brandKitDetailResponseSchema.parse(kit));
-    } catch (error) {
-      return sendBrandKitError(error, reply, "brand_kit_create_failed");
+    if (!user) {
+      return sendUnauthenticated(reply);
     }
+
+    const payload = parseRequest(brandKitCreateRequestSchema, request.body);
+    const kit = await options.brandKitService.createKit(user, payload);
+
+    return reply.code(201).send(brandKitDetailResponseSchema.parse(kit));
   });
 
   // GET /api/brand-kits/:kitId — get detail
   app.get("/api/brand-kits/:kitId", async (request, reply) => {
-    try {
-      const user = await options.auth.authenticate(request);
+    const user = await options.auth.authenticate(request);
 
-      if (!user) {
-        return sendUnauthenticated(reply);
-      }
-
-      const { kitId } = request.params as { kitId: string };
-      const kit = await options.brandKitService.getKit(user, kitId);
-
-      return reply.code(200).send(brandKitDetailResponseSchema.parse(kit));
-    } catch (error) {
-      return sendBrandKitError(error, reply, "brand_kit_not_found");
+    if (!user) {
+      return sendUnauthenticated(reply);
     }
+
+    const { kitId } = parseStringParams(request.params, ["kitId"]);
+    const kit = await options.brandKitService.getKit(user, kitId);
+
+    return reply.code(200).send(brandKitDetailResponseSchema.parse(kit));
   });
 
   // PATCH /api/brand-kits/:kitId — update kit
   app.patch("/api/brand-kits/:kitId", async (request, reply) => {
-    try {
-      const user = await options.auth.authenticate(request);
+    const user = await options.auth.authenticate(request);
 
-      if (!user) {
-        return sendUnauthenticated(reply);
-      }
-
-      const { kitId } = request.params as { kitId: string };
-      const payload = parseRequest(brandKitUpdateRequestSchema, request.body);
-      const kit = await options.brandKitService.updateKit(user, kitId, payload);
-
-      return reply.code(200).send(brandKitDetailResponseSchema.parse(kit));
-    } catch (error) {
-      return sendBrandKitError(error, reply, "brand_kit_update_failed");
+    if (!user) {
+      return sendUnauthenticated(reply);
     }
+
+    const { kitId } = parseStringParams(request.params, ["kitId"]);
+    const payload = parseRequest(brandKitUpdateRequestSchema, request.body);
+    const kit = await options.brandKitService.updateKit(user, kitId, payload);
+
+    return reply.code(200).send(brandKitDetailResponseSchema.parse(kit));
   });
 
   // POST /api/brand-kits/:kitId/duplicate — duplicate kit
   app.post("/api/brand-kits/:kitId/duplicate", async (request, reply) => {
-    try {
-      const user = await options.auth.authenticate(request);
+    const user = await options.auth.authenticate(request);
 
-      if (!user) {
-        return sendUnauthenticated(reply);
-      }
-
-      const { kitId } = request.params as { kitId: string };
-      const kit = await options.brandKitService.duplicateKit(user, kitId);
-
-      return reply.code(201).send(brandKitDetailResponseSchema.parse(kit));
-    } catch (error) {
-      return sendBrandKitError(error, reply, "brand_kit_create_failed");
+    if (!user) {
+      return sendUnauthenticated(reply);
     }
+
+    const { kitId } = parseStringParams(request.params, ["kitId"]);
+    const kit = await options.brandKitService.duplicateKit(user, kitId);
+
+    return reply.code(201).send(brandKitDetailResponseSchema.parse(kit));
   });
 
   // DELETE /api/brand-kits/:kitId — delete kit
   app.delete("/api/brand-kits/:kitId", async (request, reply) => {
-    try {
-      const user = await options.auth.authenticate(request);
+    const user = await options.auth.authenticate(request);
 
-      if (!user) {
-        return sendUnauthenticated(reply);
-      }
-
-      const { kitId } = request.params as { kitId: string };
-      await options.brandKitService.deleteKit(user, kitId);
-
-      return reply.code(204).send();
-    } catch (error) {
-      return sendBrandKitError(error, reply, "brand_kit_delete_failed");
+    if (!user) {
+      return sendUnauthenticated(reply);
     }
+
+    const { kitId } = parseStringParams(request.params, ["kitId"]);
+    await options.brandKitService.deleteKit(user, kitId);
+
+    return reply.code(204).send();
   });
 
   // POST /api/brand-kits/:kitId/assets/upload — upload file asset (logo/image)
   app.post("/api/brand-kits/:kitId/assets/upload", async (request, reply) => {
-    try {
-      const user = await options.auth.authenticate(request);
+    const user = await options.auth.authenticate(request);
 
-      if (!user) {
-        return sendUnauthenticated(reply);
-      }
-
-      const { kitId } = request.params as { kitId: string };
-
-      const file = await request.file();
-      if (!file) {
-        return reply.code(400).send(
-          raiseBoundaryError({
-            error: {
-              code: "brand_kit_asset_create_failed",
-              message: "No file provided.",
-            },
-          }),
-        );
-      }
-
-      const mimeType = file.mimetype;
-      if (!ALLOWED_UPLOAD_MIME_TYPES.has(mimeType)) {
-        return reply.code(400).send(
-          raiseBoundaryError({
-            error: {
-              code: "brand_kit_asset_create_failed",
-              message: `Unsupported file type: ${mimeType}. Allowed: ${[...ALLOWED_UPLOAD_MIME_TYPES].join(", ")}`,
-            },
-          }),
-        );
-      }
-
-      // Extract asset_type from multipart fields
-      const assetTypeField = file.fields.asset_type;
-      const assetType =
-        typeof assetTypeField === "object" &&
-        assetTypeField !== null &&
-        "value" in assetTypeField
-          ? String(assetTypeField.value)
-          : undefined;
-
-      if (assetType !== "logo" && assetType !== "image") {
-        return reply.code(400).send(
-          raiseBoundaryError({
-            error: {
-              code: "brand_kit_asset_create_failed",
-              message: "asset_type must be 'logo' or 'image'.",
-            },
-          }),
-        );
-      }
-
-      const fileBuffer = await file.toBuffer();
-      const asset = await options.brandKitService.uploadAsset(
-        user,
-        kitId,
-        assetType,
-        file.filename,
-        fileBuffer,
-        mimeType,
-      );
-
-      return reply.code(201).send(brandKitAssetResponseSchema.parse(asset));
-    } catch (error) {
-      return sendBrandKitError(error, reply, "brand_kit_asset_create_failed");
+    if (!user) {
+      return sendUnauthenticated(reply);
     }
+
+    const { kitId } = parseStringParams(request.params, ["kitId"]);
+
+    const file = await request.file();
+    if (!file) {
+      return raiseBoundaryError(
+        {
+          error: {
+            code: "brand_kit_asset_create_failed",
+            message: "No file provided.",
+          },
+        },
+        400,
+      );
+    }
+
+    const mimeType = file.mimetype;
+    if (!ALLOWED_UPLOAD_MIME_TYPES.has(mimeType)) {
+      return raiseBoundaryError(
+        {
+          error: {
+            code: "brand_kit_asset_create_failed",
+            message: `Unsupported file type: ${mimeType}. Allowed: ${[...ALLOWED_UPLOAD_MIME_TYPES].join(", ")}`,
+          },
+        },
+        400,
+      );
+    }
+
+    // Extract asset_type from multipart fields
+    const assetTypeField = file.fields.asset_type;
+    const assetType =
+      typeof assetTypeField === "object" &&
+      assetTypeField !== null &&
+      "value" in assetTypeField
+        ? String(assetTypeField.value)
+        : undefined;
+
+    if (assetType !== "logo" && assetType !== "image") {
+      return raiseBoundaryError(
+        {
+          error: {
+            code: "brand_kit_asset_create_failed",
+            message: "asset_type must be 'logo' or 'image'.",
+          },
+        },
+        400,
+      );
+    }
+
+    const fileBuffer = await file.toBuffer();
+    const asset = await options.brandKitService.uploadAsset(
+      user,
+      kitId,
+      assetType,
+      file.filename,
+      fileBuffer,
+      mimeType,
+    );
+
+    return reply.code(201).send(brandKitAssetResponseSchema.parse(asset));
   });
 
   // POST /api/brand-kits/:kitId/assets — create asset
   app.post("/api/brand-kits/:kitId/assets", async (request, reply) => {
-    try {
-      const user = await options.auth.authenticate(request);
+    const user = await options.auth.authenticate(request);
 
-      if (!user) {
-        return sendUnauthenticated(reply);
-      }
-
-      const { kitId } = request.params as { kitId: string };
-      const payload = parseRequest(
-        brandKitAssetCreateRequestSchema,
-        request.body,
-      );
-      const asset = await options.brandKitService.createAsset(
-        user,
-        kitId,
-        payload,
-      );
-
-      return reply.code(201).send(brandKitAssetResponseSchema.parse(asset));
-    } catch (error) {
-      return sendBrandKitError(error, reply, "brand_kit_asset_create_failed");
+    if (!user) {
+      return sendUnauthenticated(reply);
     }
+
+    const { kitId } = parseStringParams(request.params, ["kitId"]);
+    const payload = parseRequest(
+      brandKitAssetCreateRequestSchema,
+      request.body,
+    );
+    const asset = await options.brandKitService.createAsset(
+      user,
+      kitId,
+      payload,
+    );
+
+    return reply.code(201).send(brandKitAssetResponseSchema.parse(asset));
   });
 
   // PATCH /api/brand-kits/:kitId/assets/:assetId — update asset
   app.patch(
     "/api/brand-kits/:kitId/assets/:assetId",
     async (request, reply) => {
-      try {
-        const user = await options.auth.authenticate(request);
+      const user = await options.auth.authenticate(request);
 
-        if (!user) {
-          return sendUnauthenticated(reply);
-        }
-
-        const { kitId, assetId } = request.params as {
-          kitId: string;
-          assetId: string;
-        };
-        const payload = parseRequest(
-          brandKitAssetUpdateRequestSchema,
-          request.body,
-        );
-        const asset = await options.brandKitService.updateAsset(
-          user,
-          kitId,
-          assetId,
-          payload,
-        );
-
-        return reply.code(200).send(brandKitAssetResponseSchema.parse(asset));
-      } catch (error) {
-        return sendBrandKitError(error, reply, "brand_kit_update_failed");
+      if (!user) {
+        return sendUnauthenticated(reply);
       }
+
+      const { kitId, assetId } = parseStringParams(request.params, [
+        "kitId",
+        "assetId",
+      ]);
+      const payload = parseRequest(
+        brandKitAssetUpdateRequestSchema,
+        request.body,
+      );
+      const asset = await options.brandKitService.updateAsset(
+        user,
+        kitId,
+        assetId,
+        payload,
+      );
+
+      return reply.code(200).send(brandKitAssetResponseSchema.parse(asset));
     },
   );
 
@@ -290,42 +258,31 @@ export async function registerBrandKitRoutes(
   app.delete(
     "/api/brand-kits/:kitId/assets/:assetId",
     async (request, reply) => {
-      try {
-        const user = await options.auth.authenticate(request);
+      const user = await options.auth.authenticate(request);
 
-        if (!user) {
-          return sendUnauthenticated(reply);
-        }
-
-        const { kitId, assetId } = request.params as {
-          kitId: string;
-          assetId: string;
-        };
-        await options.brandKitService.deleteAsset(user, kitId, assetId);
-
-        return reply.code(204).send();
-      } catch (error) {
-        return sendBrandKitError(error, reply, "brand_kit_delete_failed");
+      if (!user) {
+        return sendUnauthenticated(reply);
       }
+
+      const { kitId, assetId } = parseStringParams(request.params, [
+        "kitId",
+        "assetId",
+      ]);
+      await options.brandKitService.deleteAsset(user, kitId, assetId);
+
+      return reply.code(204).send();
     },
   );
 }
 
 function sendUnauthenticated(reply: FastifyReply) {
-  return reply.code(401).send(
-    raiseBoundaryError({
+  return raiseBoundaryError(
+    {
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
       },
-    }),
+    },
+    401,
   );
-}
-
-function sendBrandKitError(
-  error: unknown,
-  reply: FastifyReply,
-  fallbackCode: BrandKitErrorFallbackCode,
-) {
-  throwLegacyServiceError(error);
 }

@@ -1,6 +1,13 @@
 import type { FastifyInstance } from "fastify";
 import { ProxyAgent, fetch as undiciFetch } from "undici";
+import { z } from "zod";
 import type { ServerEnv } from "../config/env.js";
+import { parseRequest } from "./route-errors.js";
+
+const fontListQuerySchema = z.object({
+  search: z.string().optional(),
+  category: z.string().optional(),
+});
 
 type GoogleFontItem = {
   family: string;
@@ -65,10 +72,10 @@ export function registerFontsRoutes(
   options: { env: ServerEnv },
 ) {
   app.get("/api/fonts", async (request, reply) => {
-    const { search, category } = request.query as {
-      search?: string;
-      category?: string;
-    };
+    const { search, category } = parseRequest(
+      fontListQuerySchema,
+      request.query,
+    );
 
     let fonts = await getCachedFonts(options.env.googleFontsApiKey ?? "");
 

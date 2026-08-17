@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { z } from "zod";
 
 import {
   applicationErrorResponseSchema,
@@ -8,7 +9,6 @@ import {
 } from "@loomic/shared";
 
 import {
-  MarketplaceError,
   getMarketplaceDetail,
   installFromMarketplace,
   searchMarketplace,
@@ -19,7 +19,14 @@ import type {
   RequestAuthenticator,
   UserSupabaseClient,
 } from "../supabase/user.js";
-import { raiseBoundaryError } from "./route-errors.js";
+import { parseRequest, raiseBoundaryError } from "./route-errors.js";
+
+const marketplaceSearchQuerySchema = z.object({
+  q: z.string().default(""),
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+});
+const marketplaceDetailQuerySchema = z.object({ name: z.string().min(1) });
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const untypedFrom = (client: UserSupabaseClient, table: string) =>
@@ -123,201 +130,135 @@ export async function registerMarketplaceRoutes(
 ) {
   // GET /api/skills/marketplace/search — search skills.sh via npm registry
   app.get("/api/skills/marketplace/search", async (request, reply) => {
-    try {
-      const user = await options.auth.authenticate(request);
-      if (!user) return sendUnauthenticated(reply);
+    const user = await options.auth.authenticate(request);
+    if (!user) return sendUnauthenticated(reply);
 
-      const {
-        q = "",
-        page = "1",
-        limit = "20",
-      } = request.query as Record<string, string>;
-      const result = await searchMarketplace(
-        q,
-        Number.parseInt(page, 10),
-        Number.parseInt(limit, 10),
-      );
-      return reply.code(200).send(result);
-    } catch (error) {
-      if (error instanceof MarketplaceError) {
-        return sendError(
-          reply,
-          "marketplace_search_failed",
-          error.message,
-          502,
-        );
-      }
-      request.log.error({ err: error }, "marketplace search error");
-      return sendError(
-        reply,
-        "marketplace_search_failed",
-        "Marketplace search failed.",
-      );
-    }
+    const { q, page, limit } = parseRequest(
+      marketplaceSearchQuerySchema,
+      request.query,
+    );
+    const result = await searchMarketplace(q, page, limit);
+    return reply.code(200).send(result);
   });
 
   // GET /api/skills/marketplace/detail — get package detail from npm registry
   app.get("/api/skills/marketplace/detail", async (request, reply) => {
-    try {
-      const user = await options.auth.authenticate(request);
-      if (!user) return sendUnauthenticated(reply);
+    const user = await options.auth.authenticate(request);
+    if (!user) return sendUnauthenticated(reply);
 
-      const { name } = request.query as { name?: string };
-      if (!name) {
-        return reply.code(400).send(
-          raiseBoundaryError({
-            error: {
-              code: "marketplace_detail_failed",
-              message: "Package name is required (use ?name=package-name)",
-            },
-          }),
-        );
-      }
-      const detail = await getMarketplaceDetail(name);
-      return reply.code(200).send(detail);
-    } catch (error) {
-      if (error instanceof MarketplaceError) {
-        const status = error.code === "package_not_found" ? 404 : 502;
-        return sendError(
-          reply,
-          "marketplace_detail_failed",
-          error.message,
-          status,
-        );
-      }
-      request.log.error({ err: error }, "marketplace detail error");
-      return sendError(
-        reply,
-        "marketplace_detail_failed",
-        "Failed to fetch package detail.",
-      );
-    }
+    const { name } = parseRequest(marketplaceDetailQuerySchema, request.query);
+    const detail = await getMarketplaceDetail(name);
+    return reply.code(200).send(detail);
   });
 
   // POST /api/skills/marketplace/install — install a skill from skills.sh
   app.post("/api/skills/marketplace/install", async (request, reply) => {
-    try {
-      const user = await options.auth.authenticate(request);
-      if (!user) return sendUnauthenticated(reply);
+    const user = await options.auth.authenticate(request);
+    if (!user) return sendUnauthenticated(reply);
 
-      const { packageName } = marketplaceInstallRequestSchema.parse(
-        request.body,
+    const { packageName } = parseRequest(
+      marketplaceInstallRequestSchema,
+      request.body,
+    );
+    const viewer = await options.viewerService.ensureViewer(user);
+    const workspaceId = viewer.workspace.id;
+    const client = options.createUserClient(user.accessToken);
+
+    // Download and parse from npm registry
+    const { imported, packageName: pkgName } =
+      await installFromMarketplace(packageName);
+    const slug = generateSlug(imported.manifest.name);
+
+    // Insert skill
+    const { data: skillData, error: skillError } = await untypedFrom(
+      client,
+      "skills",
+    )
+      .insert({
+        name: imported.manifest.name,
+        slug,
+        description: imported.manifest.description,
+        author: imported.manifest.author ?? "unknown",
+        version: imported.manifest.version ?? "1.0",
+        license: imported.manifest.license ?? null,
+        category: "custom",
+        source: "user",
+        skill_content: imported.skillContent,
+        metadata: {
+          ...(imported.manifest.metadata ?? {}),
+          source_url: `https://www.npmjs.com/package/${packageName}`,
+          package_name: pkgName,
+        },
+        created_by: user.id,
+      })
+      .select("*")
+      .single();
+
+    if (skillError) {
+      request.log.error(
+        { err: skillError },
+        "marketplace install DB insert failed",
       );
-      const viewer = await options.viewerService.ensureViewer(user);
-      const workspaceId = viewer.workspace.id;
-      const client = options.createUserClient(user.accessToken);
-
-      // Download and parse from npm registry
-      const { imported, packageName: pkgName } =
-        await installFromMarketplace(packageName);
-      const slug = generateSlug(imported.manifest.name);
-
-      // Insert skill
-      const { data: skillData, error: skillError } = await untypedFrom(
-        client,
-        "skills",
-      )
-        .insert({
-          name: imported.manifest.name,
-          slug,
-          description: imported.manifest.description,
-          author: imported.manifest.author ?? "unknown",
-          version: imported.manifest.version ?? "1.0",
-          license: imported.manifest.license ?? null,
-          category: "custom",
-          source: "user",
-          skill_content: imported.skillContent,
-          metadata: {
-            ...(imported.manifest.metadata ?? {}),
-            source_url: `https://www.npmjs.com/package/${packageName}`,
-            package_name: pkgName,
-          },
-          created_by: user.id,
-        })
-        .select("*")
-        .single();
-
-      if (skillError) {
-        request.log.error(
-          { err: skillError },
-          "marketplace install DB insert failed",
-        );
-        if (skillError.code === "23505") {
-          return sendError(
-            reply,
-            "marketplace_install_failed",
-            "This skill is already installed.",
-            409,
-          );
-        }
+      if (skillError.code === "23505") {
         return sendError(
           reply,
           "marketplace_install_failed",
-          "Failed to save marketplace skill.",
+          "This skill is already installed.",
+          409,
         );
       }
-
-      // Insert files
-      if (imported.files.length > 0 && skillData?.id) {
-        const fileRows = imported.files.map((f) => ({
-          skill_id: skillData.id,
-          file_path: f.filePath,
-          content: f.content,
-          mime_type: f.mimeType,
-        }));
-        const { error: fileError } = await untypedFrom(
-          client,
-          "skill_files",
-        ).insert(fileRows);
-        if (fileError) {
-          request.log.error(
-            { err: fileError },
-            "marketplace install file insert failed (non-fatal)",
-          );
-        }
-      }
-
-      // Auto-install to workspace
-      if (skillData?.id) {
-        await untypedFrom(client, "workspace_skills").upsert(
-          {
-            workspace_id: workspaceId,
-            skill_id: skillData.id,
-            enabled: true,
-            installed_by: user.id,
-          },
-          { onConflict: "workspace_id,skill_id" },
-        );
-      }
-
-      // Return full skill detail with files
-      const { data: fileData } = await untypedFrom(client, "skill_files")
-        .select("*")
-        .eq("skill_id", skillData.id)
-        .order("file_path", { ascending: true });
-
-      const skill = {
-        ...mapSkillDetailRow(skillData),
-        files: (fileData ?? []).map(mapSkillFileRow),
-      };
-
-      return reply.code(201).send(skillDetailResponseSchema.parse({ skill }));
-    } catch (error) {
-      if (error instanceof MarketplaceError) {
-        return sendError(
-          reply,
-          "marketplace_install_failed",
-          error.message,
-          502,
-        );
-      }
-      request.log.error({ err: error }, "marketplace install error");
       return sendError(
         reply,
         "marketplace_install_failed",
-        "Failed to install marketplace skill.",
+        "Failed to save marketplace skill.",
       );
     }
+
+    // Insert files
+    if (imported.files.length > 0 && skillData?.id) {
+      const fileRows = imported.files.map((f) => ({
+        skill_id: skillData.id,
+        file_path: f.filePath,
+        content: f.content,
+        mime_type: f.mimeType,
+      }));
+      const { error: fileError } = await untypedFrom(
+        client,
+        "skill_files",
+      ).insert(fileRows);
+      if (fileError) {
+        request.log.error(
+          { err: fileError },
+          "marketplace install file insert failed (non-fatal)",
+        );
+      }
+    }
+
+    // Auto-install to workspace
+    if (skillData?.id) {
+      await untypedFrom(client, "workspace_skills").upsert(
+        {
+          workspace_id: workspaceId,
+          skill_id: skillData.id,
+          enabled: true,
+          installed_by: user.id,
+        },
+        { onConflict: "workspace_id,skill_id" },
+      );
+    }
+
+    // Return full skill detail with files
+    const { data: fileData } = await untypedFrom(client, "skill_files")
+      .select("*")
+      .eq("skill_id", skillData.id)
+      .order("file_path", { ascending: true });
+
+    const skill = {
+      ...mapSkillDetailRow(skillData),
+      files: (fileData ?? []).map(mapSkillFileRow),
+    };
+
+    return reply.code(201).send(skillDetailResponseSchema.parse({ skill }));
   });
 }
 
@@ -326,13 +267,14 @@ export async function registerMarketplaceRoutes(
 // ---------------------------------------------------------------------------
 
 function sendUnauthenticated(reply: FastifyReply) {
-  return reply.code(401).send(
-    raiseBoundaryError({
+  return raiseBoundaryError(
+    {
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
       },
-    }),
+    },
+    401,
   );
 }
 
@@ -342,9 +284,10 @@ function sendError(
   message: string,
   statusCode = 500,
 ) {
-  return reply.code(statusCode).send(
-    raiseBoundaryError({
+  return raiseBoundaryError(
+    {
       error: { code, message },
-    }),
+    },
+    statusCode,
   );
 }

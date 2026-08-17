@@ -27,6 +27,8 @@ export async function registerVideoModelRoutes(
     // Try to authenticate — unauthenticated users still see models
     let userPlan: SubscriptionPlan | null = null;
     try {
+      // Public catalog access must survive optional authentication/plan
+      // enrichment failures; models are conservatively marked inaccessible.
       const user = await options.auth.authenticate(request);
       if (user) {
         const viewer = await options.viewerService.ensureViewer(user);

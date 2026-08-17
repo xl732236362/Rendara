@@ -28,60 +28,49 @@ export async function registerSettingsRoutes(
   },
 ) {
   app.get("/api/workspace/settings", async (request, reply) => {
-    try {
-      const user = await options.auth.authenticate(request);
-      if (!user) return sendUnauthorized(reply);
+    const user = await options.auth.authenticate(request);
+    if (!user) return sendUnauthorized(reply);
 
-      const viewer = await options.viewerService.ensureViewer(user);
-      const settings = await options.settingsService.getWorkspaceSettings(
-        user,
-        viewer.workspace.id,
-      );
+    const viewer = await options.viewerService.ensureViewer(user);
+    const settings = await options.settingsService.getWorkspaceSettings(
+      user,
+      viewer.workspace.id,
+    );
 
-      return reply
-        .code(200)
-        .send(workspaceSettingsResponseSchema.parse({ settings }));
-    } catch (error) {
-      return sendSettingsError(error, reply);
-    }
+    return reply
+      .code(200)
+      .send(workspaceSettingsResponseSchema.parse({ settings }));
   });
 
   app.put("/api/workspace/settings", async (request, reply) => {
-    try {
-      const user = await options.auth.authenticate(request);
-      if (!user) return sendUnauthorized(reply);
+    const user = await options.auth.authenticate(request);
+    if (!user) return sendUnauthorized(reply);
 
-      const payload = parseRequest(
-        workspaceSettingsUpdateRequestSchema,
-        request.body,
-      );
-      const viewer = await options.viewerService.ensureViewer(user);
-      const settings = await options.settingsService.updateWorkspaceSettings(
-        user,
-        viewer.workspace.id,
-        payload,
-      );
+    const payload = parseRequest(
+      workspaceSettingsUpdateRequestSchema,
+      request.body,
+    );
+    const viewer = await options.viewerService.ensureViewer(user);
+    const settings = await options.settingsService.updateWorkspaceSettings(
+      user,
+      viewer.workspace.id,
+      payload,
+    );
 
-      return reply
-        .code(200)
-        .send(workspaceSettingsResponseSchema.parse({ settings }));
-    } catch (error) {
-      return sendSettingsError(error, reply);
-    }
+    return reply
+      .code(200)
+      .send(workspaceSettingsResponseSchema.parse({ settings }));
   });
 }
 
 function sendUnauthorized(reply: FastifyReply) {
-  return reply.code(401).send(
-    raiseBoundaryError({
+  return raiseBoundaryError(
+    {
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
       },
-    }),
+    },
+    401,
   );
-}
-
-function sendSettingsError(error: unknown, reply: FastifyReply) {
-  throwLegacyServiceError(error);
 }

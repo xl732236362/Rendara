@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { z } from "zod";
 
 import {
   applicationErrorResponseSchema,
@@ -17,9 +18,14 @@ import {
 import type { RequestAuthenticator } from "../supabase/user.js";
 import {
   parseRequest,
+  parseStringParams,
   raiseBoundaryError,
   throwLegacyServiceError,
 } from "./route-errors.js";
+
+const sessionTitleRequestSchema = z.object({
+  title: z.string().trim().min(1).optional(),
+});
 
 export async function registerChatRoutes(
   app: FastifyInstance,
@@ -32,21 +38,15 @@ export async function registerChatRoutes(
   app.get<{ Params: { canvasId: string } }>(
     "/api/canvases/:canvasId/sessions",
     async (request, reply) => {
-      try {
-        const user = await options.auth.authenticate(request);
-        if (!user) return sendUnauthorized(reply);
+      const user = await options.auth.authenticate(request);
+      if (!user) return sendUnauthorized(reply);
 
-        const sessions = await options.chatService.listSessions(
-          user,
-          request.params.canvasId,
-        );
+      const { canvasId } = parseStringParams(request.params, ["canvasId"]);
+      const sessions = await options.chatService.listSessions(user, canvasId);
 
-        return reply
-          .code(200)
-          .send(sessionListResponseSchema.parse({ sessions }));
-      } catch (error) {
-        return sendChatError(error, reply);
-      }
+      return reply
+        .code(200)
+        .send(sessionListResponseSchema.parse({ sessions }));
     },
   );
 
@@ -54,23 +54,20 @@ export async function registerChatRoutes(
   app.post<{ Params: { canvasId: string } }>(
     "/api/canvases/:canvasId/sessions",
     async (request, reply) => {
-      try {
-        const user = await options.auth.authenticate(request);
-        if (!user) return sendUnauthorized(reply);
+      const user = await options.auth.authenticate(request);
+      if (!user) return sendUnauthorized(reply);
 
-        const body = request.body as { title?: string } | undefined;
-        const session = await options.chatService.createSession(
-          user,
-          request.params.canvasId,
-          body?.title,
-        );
+      const body = parseRequest(sessionTitleRequestSchema, request.body ?? {});
+      const { canvasId } = parseStringParams(request.params, ["canvasId"]);
+      const session = await options.chatService.createSession(
+        user,
+        canvasId,
+        body?.title,
+      );
 
-        return reply
-          .code(201)
-          .send(sessionCreateResponseSchema.parse({ session }));
-      } catch (error) {
-        return sendChatError(error, reply);
-      }
+      return reply
+        .code(201)
+        .send(sessionCreateResponseSchema.parse({ session }));
     },
   );
 
@@ -78,23 +75,20 @@ export async function registerChatRoutes(
   app.patch<{ Params: { sessionId: string } }>(
     "/api/sessions/:sessionId",
     async (request, reply) => {
-      try {
-        const user = await options.auth.authenticate(request);
-        if (!user) return sendUnauthorized(reply);
+      const user = await options.auth.authenticate(request);
+      if (!user) return sendUnauthorized(reply);
 
-        const body = request.body as { title?: string } | undefined;
-        if (body?.title) {
-          await options.chatService.updateSessionTitle(
-            user,
-            request.params.sessionId,
-            body.title,
-          );
-        }
-
-        return reply.code(200).send({ ok: true });
-      } catch (error) {
-        return sendChatError(error, reply);
+      const body = parseRequest(sessionTitleRequestSchema, request.body ?? {});
+      const { sessionId } = parseStringParams(request.params, ["sessionId"]);
+      if (body?.title) {
+        await options.chatService.updateSessionTitle(
+          user,
+          sessionId,
+          body.title,
+        );
       }
+
+      return reply.code(200).send({ ok: true });
     },
   );
 
@@ -102,16 +96,13 @@ export async function registerChatRoutes(
   app.delete<{ Params: { sessionId: string } }>(
     "/api/sessions/:sessionId",
     async (request, reply) => {
-      try {
-        const user = await options.auth.authenticate(request);
-        if (!user) return sendUnauthorized(reply);
+      const user = await options.auth.authenticate(request);
+      if (!user) return sendUnauthorized(reply);
 
-        await options.chatService.deleteSession(user, request.params.sessionId);
+      const { sessionId } = parseStringParams(request.params, ["sessionId"]);
+      await options.chatService.deleteSession(user, sessionId);
 
-        return reply.code(200).send({ ok: true });
-      } catch (error) {
-        return sendChatError(error, reply);
-      }
+      return reply.code(200).send({ ok: true });
     },
   );
 
@@ -119,29 +110,19 @@ export async function registerChatRoutes(
   app.get<{ Params: { sessionId: string } }>(
     "/api/sessions/:sessionId/messages",
     async (request, reply) => {
-      try {
-        const user = await options.auth.authenticate(request);
-        if (!user) return sendUnauthorized(reply);
+      const user = await options.auth.authenticate(request);
+      if (!user) return sendUnauthorized(reply);
 
-        const messages = await options.chatService.listMessages(
-          user,
-          request.params.sessionId,
-        );
+      const { sessionId } = parseStringParams(request.params, ["sessionId"]);
+      const messages = await options.chatService.listMessages(user, sessionId);
 
-        request.log.info(
-          { sessionId: request.params.sessionId, count: messages.length },
-          "chat.listMessages OK",
-        );
-        return reply
-          .code(200)
-          .send(messageListResponseSchema.parse({ messages }));
-      } catch (error) {
-        request.log.error(
-          { sessionId: request.params.sessionId, err: error },
-          "chat.listMessages FAILED",
-        );
-        return sendChatError(error, reply);
-      }
+      request.log.info(
+        { sessionId, count: messages.length },
+        "chat.listMessages OK",
+      );
+      return reply
+        .code(200)
+        .send(messageListResponseSchema.parse({ messages }));
     },
   );
 
@@ -150,53 +131,40 @@ export async function registerChatRoutes(
     "/api/sessions/:sessionId/messages",
     { bodyLimit: 10 * 1024 * 1024 }, // 10 MB — messages may include base64 image data from canvas selections
     async (request, reply) => {
-      try {
-        const user = await options.auth.authenticate(request);
-        if (!user) return sendUnauthorized(reply);
+      const user = await options.auth.authenticate(request);
+      if (!user) return sendUnauthorized(reply);
 
-        const input = parseRequest(
-          chatMessageCreateRequestSchema,
-          request.body,
-        );
-        const message = await options.chatService.createMessage(
-          user,
-          request.params.sessionId,
-          input,
-        );
+      const input = parseRequest(chatMessageCreateRequestSchema, request.body);
+      const { sessionId } = parseStringParams(request.params, ["sessionId"]);
+      const message = await options.chatService.createMessage(
+        user,
+        sessionId,
+        input,
+      );
 
-        request.log.info(
-          {
-            sessionId: request.params.sessionId,
-            role: input.role,
-            messageId: message.id,
-          },
-          "chat.createMessage OK",
-        );
-        return reply
-          .code(201)
-          .send(messageCreateResponseSchema.parse({ message }));
-      } catch (error) {
-        request.log.error(
-          { sessionId: request.params.sessionId, err: error },
-          "chat.createMessage FAILED",
-        );
-        return sendChatError(error, reply);
-      }
+      request.log.info(
+        {
+          sessionId,
+          role: input.role,
+          messageId: message.id,
+        },
+        "chat.createMessage OK",
+      );
+      return reply
+        .code(201)
+        .send(messageCreateResponseSchema.parse({ message }));
     },
   );
 }
 
 function sendUnauthorized(reply: FastifyReply) {
-  return reply.code(401).send(
-    raiseBoundaryError({
+  return raiseBoundaryError(
+    {
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
       },
-    }),
+    },
+    401,
   );
-}
-
-function sendChatError(error: unknown, reply: FastifyReply) {
-  throwLegacyServiceError(error);
 }

@@ -55,300 +55,203 @@ export async function registerGenerateRoutes(
   app.post("/api/agent/generate-image", async (request, reply) => {
     const user = await options.auth.authenticate(request);
     if (!user) {
-      return reply.code(401).send(
-        raiseBoundaryError({
+      return raiseBoundaryError(
+        {
           error: {
             code: "unauthorized",
             message: "Missing or invalid bearer token.",
           },
-        }),
+        },
+        401,
       );
     }
 
-    let payload: z.infer<typeof generateImageRequestSchema>;
-    try {
-      payload = parseRequest(generateImageRequestSchema, request.body);
-    } catch {
-      return reply.code(400).send(
-        raiseBoundaryError({
-          error: {
-            code: "invalid_request",
-            message: "Invalid request body.",
-          },
-        }),
-      );
-    }
+    const payload = parseRequest(generateImageRequestSchema, request.body);
 
     const model = payload.model ?? "black-forest-labs/flux-kontext-pro";
 
-    try {
-      // ── Tier guard + credit checks ──
-      const viewer = await options.viewerService.ensureViewer(user);
-      let creditsCost = 0;
+    // ── Tier guard + credit checks ──
+    const viewer = await options.viewerService.ensureViewer(user);
+    let creditsCost = 0;
 
-      if (options.creditService && options.tierGuard) {
-        const sub = await options.creditService.getSubscription(
-          viewer.workspace.id,
-        );
-        const quality: ImageQualityLevel = payload.quality ?? "hd";
-        options.tierGuard.checkModelAccess(sub.plan, model);
-        // Throws TierGuardError (resolution_not_allowed) if plan doesn't allow this quality
-        options.tierGuard.checkResolution(sub.plan, quality);
-        await options.tierGuard.checkConcurrency(viewer.workspace.id, sub.plan);
-        creditsCost = options.tierGuard.calculateCreditCost(
-          model,
-          "image_generation",
-          { quality },
-        );
-
-        // Deduct credits before generation
-        if (creditsCost > 0) {
-          await options.creditService.deductCredits(
-            viewer.workspace.id,
-            user.id,
-            creditsCost,
-            undefined,
-            `Direct image generation: ${model}`,
-          );
-        }
-      }
-
-      const providerName = resolveImageProviderName(model);
-      const result = await generateImage(providerName, {
-        prompt: payload.prompt,
+    if (options.creditService && options.tierGuard) {
+      const sub = await options.creditService.getSubscription(
+        viewer.workspace.id,
+      );
+      const quality: ImageQualityLevel = payload.quality ?? "hd";
+      options.tierGuard.checkModelAccess(sub.plan, model);
+      // Throws TierGuardError (resolution_not_allowed) if plan doesn't allow this quality
+      options.tierGuard.checkResolution(sub.plan, quality);
+      await options.tierGuard.checkConcurrency(viewer.workspace.id, sub.plan);
+      creditsCost = options.tierGuard.calculateCreditCost(
         model,
-        aspectRatio: payload.aspectRatio ?? "1:1",
-        ...(payload.quality ? { quality: payload.quality } : {}),
-      });
-
-      // Download and persist to Supabase Storage
-      const { signedUrl, assetId } = await downloadAndUpload(
-        result.url,
-        result.mimeType,
-        payload.prompt,
-        user,
-        options,
+        "image_generation",
+        { quality },
       );
 
-      return reply.code(200).send({
-        url: signedUrl,
-        assetId,
-        prompt: payload.prompt,
-        mimeType: result.mimeType,
-        width: result.width,
-        height: result.height,
-      });
-    } catch (error) {
-      // Handle tier/credit errors
-      if (error instanceof TierGuardError) {
-        return reply.code(error.statusCode).send(
-          raiseBoundaryError({
-            error: { code: error.code, message: error.message },
-          }),
+      // Deduct credits before generation
+      if (creditsCost > 0) {
+        await options.creditService.deductCredits(
+          viewer.workspace.id,
+          user.id,
+          creditsCost,
+          undefined,
+          `Direct image generation: ${model}`,
         );
       }
-      if (error instanceof CreditServiceError) {
-        return reply.code(error.statusCode).send(
-          raiseBoundaryError({
-            error: { code: error.code, message: error.message },
-          }),
-        );
-      }
-
-      const message =
-        error instanceof Error ? error.message : "Image generation failed.";
-
-      if (message.includes("No provider registered")) {
-        return reply.code(400).send(
-          raiseBoundaryError({
-            error: {
-              code: "provider_not_configured",
-              message: "Image generation is not available.",
-            },
-          }),
-        );
-      }
-
-      return reply.code(502).send(
-        raiseBoundaryError({
-          error: {
-            code: "generation_failed",
-            message,
-          },
-        }),
-      );
     }
+
+    const providerName = resolveImageProviderName(model);
+    const result = await generateImage(providerName, {
+      prompt: payload.prompt,
+      model,
+      aspectRatio: payload.aspectRatio ?? "1:1",
+      ...(payload.quality ? { quality: payload.quality } : {}),
+    });
+
+    // Download and persist to Supabase Storage
+    const { signedUrl, assetId } = await downloadAndUpload(
+      result.url,
+      result.mimeType,
+      payload.prompt,
+      user,
+      options,
+    );
+
+    return reply.code(200).send({
+      url: signedUrl,
+      assetId,
+      prompt: payload.prompt,
+      mimeType: result.mimeType,
+      width: result.width,
+      height: result.height,
+    });
   });
 
   // ── POST /api/agent/generate-video ──────────────────────────
   app.post("/api/agent/generate-video", async (request, reply) => {
     const user = await options.auth.authenticate(request);
     if (!user) {
-      return reply.code(401).send(
-        raiseBoundaryError({
+      return raiseBoundaryError(
+        {
           error: {
             code: "unauthorized",
             message: "Missing or invalid bearer token.",
           },
-        }),
+        },
+        401,
       );
     }
 
-    let payload: z.infer<typeof generateVideoRequestSchema>;
-    try {
-      payload = parseRequest(generateVideoRequestSchema, request.body);
-    } catch {
-      return reply.code(400).send(
-        raiseBoundaryError({
-          error: {
-            code: "invalid_request",
-            message: "Invalid request body.",
-          },
-        }),
-      );
-    }
+    const payload = parseRequest(generateVideoRequestSchema, request.body);
 
     if (!options.jobService) {
-      return reply.code(503).send(
-        raiseBoundaryError({
+      return raiseBoundaryError(
+        {
           error: {
             code: "service_unavailable",
             message:
               "Video generation is not available (job service not configured).",
           },
-        }),
+        },
+        503,
       );
     }
 
     const model = payload.model ?? "google-official/veo-3.1-generate-preview";
 
-    try {
-      // ── Tier guard + credit checks ──
-      const viewer = await options.viewerService.ensureViewer(user);
-      const workspaceId = viewer.workspace.id;
-      let creditsCost = 0;
+    // ── Tier guard + credit checks ──
+    const viewer = await options.viewerService.ensureViewer(user);
+    const workspaceId = viewer.workspace.id;
+    let creditsCost = 0;
 
-      if (options.creditService && options.tierGuard) {
-        const sub = await options.creditService.getSubscription(workspaceId);
-        options.tierGuard.checkModelAccess(sub.plan, model);
-        if (payload.resolution) {
-          options.tierGuard.checkVideoResolution(
-            sub.plan,
-            payload.resolution as VideoResolution,
-          );
-        }
-        await options.tierGuard.checkConcurrency(workspaceId, sub.plan);
-        creditsCost = options.tierGuard.calculateCreditCost(
-          model,
-          "video_generation",
-          {
-            ...(payload.duration != null ? { duration: payload.duration } : {}),
-            ...(payload.resolution
-              ? { resolution: payload.resolution as VideoResolution }
-              : {}),
-          },
+    if (options.creditService && options.tierGuard) {
+      const sub = await options.creditService.getSubscription(workspaceId);
+      options.tierGuard.checkModelAccess(sub.plan, model);
+      if (payload.resolution) {
+        options.tierGuard.checkVideoResolution(
+          sub.plan,
+          payload.resolution as VideoResolution,
         );
       }
-
-      // ── Create job ──
-      const job = await options.jobService.createJob(user, {
-        workspaceId,
-        jobType: "video_generation",
-        payload: {
-          prompt: payload.prompt,
-          model,
+      await options.tierGuard.checkConcurrency(workspaceId, sub.plan);
+      creditsCost = options.tierGuard.calculateCreditCost(
+        model,
+        "video_generation",
+        {
           ...(payload.duration != null ? { duration: payload.duration } : {}),
-          ...(payload.resolution ? { resolution: payload.resolution } : {}),
-          ...(payload.aspectRatio ? { aspect_ratio: payload.aspectRatio } : {}),
-          ...(payload.inputImages?.length
-            ? { input_images: payload.inputImages }
+          ...(payload.resolution
+            ? { resolution: payload.resolution as VideoResolution }
             : {}),
         },
-      });
-
-      // ── Deduct credits BEFORE generation ──
-      if (options.creditService && creditsCost > 0) {
-        try {
-          const txId = await options.creditService.deductCredits(
-            workspaceId,
-            user.id,
-            creditsCost,
-            job.id,
-            `Direct video generation: ${model}`,
-          );
-          await options.jobService.setCreditsInfo(job.id, creditsCost, txId);
-        } catch (deductError) {
-          await options.jobService.cancelJob(user, job.id).catch(() => {});
-          throw deductError;
-        }
-      }
-
-      // ── Poll until terminal state ──
-      const POLL_INTERVAL = 3_000;
-      const MAX_WAIT = 300_000; // 5 minutes
-
-      const result = await pollJobUntilDone(
-        options.jobService,
-        job.id,
-        POLL_INTERVAL,
-        MAX_WAIT,
-      );
-
-      if ("error" in result) {
-        return reply.code(502).send(
-          raiseBoundaryError({
-            error: {
-              code: "generation_failed",
-              message: result.error,
-            },
-          }),
-        );
-      }
-
-      return reply.code(200).send({
-        url: result.signed_url,
-        assetId: result.asset_id,
-        prompt: payload.prompt,
-        mimeType: result.mime_type,
-        width: result.width,
-        height: result.height,
-        durationSeconds: result.duration_seconds,
-      });
-    } catch (error) {
-      if (error instanceof TierGuardError) {
-        return reply.code(error.statusCode).send(
-          raiseBoundaryError({
-            error: { code: error.code, message: error.message },
-          }),
-        );
-      }
-      if (error instanceof CreditServiceError) {
-        return reply.code(error.statusCode).send(
-          raiseBoundaryError({
-            error: { code: error.code, message: error.message },
-          }),
-        );
-      }
-      if (error instanceof JobServiceError) {
-        return reply.code(error.statusCode).send(
-          raiseBoundaryError({
-            error: { code: error.code, message: error.message },
-          }),
-        );
-      }
-
-      const message =
-        error instanceof Error ? error.message : "Video generation failed.";
-
-      return reply.code(502).send(
-        raiseBoundaryError({
-          error: {
-            code: "generation_failed",
-            message,
-          },
-        }),
       );
     }
+
+    // ── Create job ──
+    const job = await options.jobService.createJob(user, {
+      workspaceId,
+      jobType: "video_generation",
+      payload: {
+        prompt: payload.prompt,
+        model,
+        ...(payload.duration != null ? { duration: payload.duration } : {}),
+        ...(payload.resolution ? { resolution: payload.resolution } : {}),
+        ...(payload.aspectRatio ? { aspect_ratio: payload.aspectRatio } : {}),
+        ...(payload.inputImages?.length
+          ? { input_images: payload.inputImages }
+          : {}),
+      },
+    });
+
+    // ── Deduct credits BEFORE generation ──
+    if (options.creditService && creditsCost > 0) {
+      try {
+        const txId = await options.creditService.deductCredits(
+          workspaceId,
+          user.id,
+          creditsCost,
+          job.id,
+          `Direct video generation: ${model}`,
+        );
+        await options.jobService.setCreditsInfo(job.id, creditsCost, txId);
+      } catch (deductError) {
+        await options.jobService.cancelJob(user, job.id).catch(() => {});
+        throw deductError;
+      }
+    }
+
+    // ── Poll until terminal state ──
+    const POLL_INTERVAL = 3_000;
+    const MAX_WAIT = 300_000; // 5 minutes
+
+    const result = await pollJobUntilDone(
+      options.jobService,
+      job.id,
+      POLL_INTERVAL,
+      MAX_WAIT,
+    );
+
+    if ("error" in result) {
+      return raiseBoundaryError(
+        {
+          error: {
+            code: "generation_failed",
+            message: result.error,
+          },
+        },
+        502,
+      );
+    }
+
+    return reply.code(200).send({
+      url: result.signed_url,
+      assetId: result.asset_id,
+      prompt: payload.prompt,
+      mimeType: result.mime_type,
+      width: result.width,
+      height: result.height,
+      durationSeconds: result.duration_seconds,
+    });
   });
 }
 

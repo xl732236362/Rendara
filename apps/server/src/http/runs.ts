@@ -27,6 +27,7 @@ import {
 import type { RequestAuthenticator } from "../supabase/user.js";
 import {
   parseRequest,
+  parseStringParams,
   raiseBoundaryError,
   throwLegacyServiceError,
   throwRouteError,
@@ -45,121 +46,112 @@ export async function registerRunRoutes(
   } = {},
 ) {
   app.post("/api/agent/runs", async (request, reply) => {
-    try {
-      const payload = parseRequest(runCreateRequestSchema, request.body);
-      const authenticatedUser = options.auth
-        ? await options.auth.authenticate(request)
+    const payload = parseRequest(runCreateRequestSchema, request.body);
+    const authenticatedUser = options.auth
+      ? await options.auth.authenticate(request)
+      : null;
+
+    if (!authenticatedUser) {
+      return sendUnauthorized(reply);
+    }
+
+    if (!options.authorization) {
+      throw new Error("Resource authorization is not configured.");
+    }
+
+    await requireRunResourceAccess(
+      options.authorization,
+      authenticatedUser,
+      payload,
+    );
+
+    const sessionThread =
+      authenticatedUser && options?.threadService
+        ? await options.threadService.resolveOwnedSessionThread(
+            authenticatedUser,
+            payload.sessionId,
+          )
         : null;
 
-      if (!authenticatedUser) {
-        return sendUnauthorized(reply);
+    // Resolve per-workspace model if auth context is available
+    let model: string | undefined;
+    if (authenticatedUser && options.settingsService && options.viewerService) {
+      try {
+        // Workspace model lookup is optional enrichment; run submission falls
+        // back to the server model when settings are temporarily unavailable.
+        const viewer =
+          await options.viewerService.ensureViewer(authenticatedUser);
+        const settings = await options.settingsService.getWorkspaceSettings(
+          authenticatedUser,
+          viewer.workspace.id,
+        );
+        model = settings.defaultModel;
+      } catch {
+        // Fall through to server default model if settings lookup fails
       }
-
-      if (!options.authorization) {
-        throw new Error("Resource authorization is not configured.");
-      }
-
-      await requireRunResourceAccess(
-        options.authorization,
-        authenticatedUser,
-        payload,
-      );
-
-      const sessionThread =
-        authenticatedUser && options?.threadService
-          ? await options.threadService.resolveOwnedSessionThread(
-              authenticatedUser,
-              payload.sessionId,
-            )
-          : null;
-
-      // Resolve per-workspace model if auth context is available
-      let model: string | undefined;
-      if (
-        authenticatedUser &&
-        options.settingsService &&
-        options.viewerService
-      ) {
-        try {
-          const viewer =
-            await options.viewerService.ensureViewer(authenticatedUser);
-          const settings = await options.settingsService.getWorkspaceSettings(
-            authenticatedUser,
-            viewer.workspace.id,
-          );
-          model = settings.defaultModel;
-        } catch {
-          // Fall through to server default model if settings lookup fails
-        }
-      }
-
-      const response = runCreateResponseSchema.parse(
-        agentRuns.createRun(payload, {
-          ...(authenticatedUser
-            ? {
-                accessToken: authenticatedUser.accessToken,
-                userId: authenticatedUser.id,
-              }
-            : {}),
-          ...(model ? { model } : {}),
-          ...(sessionThread ? { threadId: sessionThread.threadId } : {}),
-        }),
-      );
-
-      if (sessionThread && options.agentRunMetadataService) {
-        await options.agentRunMetadataService.createAcceptedRun({
-          ...(model ? { model } : {}),
-          runId: response.runId,
-          sessionId: payload.sessionId,
-          threadId: sessionThread.threadId,
-        });
-      }
-
-      return reply.code(202).send(response);
-    } catch (error) {
-      throwLegacyServiceError(error);
     }
+
+    const response = runCreateResponseSchema.parse(
+      agentRuns.createRun(payload, {
+        ...(authenticatedUser
+          ? {
+              accessToken: authenticatedUser.accessToken,
+              userId: authenticatedUser.id,
+            }
+          : {}),
+        ...(model ? { model } : {}),
+        ...(sessionThread ? { threadId: sessionThread.threadId } : {}),
+      }),
+    );
+
+    if (sessionThread && options.agentRunMetadataService) {
+      await options.agentRunMetadataService.createAcceptedRun({
+        ...(model ? { model } : {}),
+        runId: response.runId,
+        sessionId: payload.sessionId,
+        threadId: sessionThread.threadId,
+      });
+    }
+
+    return reply.code(202).send(response);
   });
 
   app.post("/api/agent/runs/:runId/cancel", async (request, reply) => {
-    try {
-      const authenticatedUser = options.auth
-        ? await options.auth.authenticate(request)
-        : null;
-      if (!authenticatedUser) {
-        return sendUnauthorized(reply);
-      }
-      if (!options.authorization) {
-        throw new Error("Resource authorization is not configured.");
-      }
-
-      const { runId } = request.params as { runId: string };
-      await options.authorization.requireRunAccess(authenticatedUser, runId);
-      const canceledRun = agentRuns.cancelRun(runId);
-
-      if (!canceledRun) {
-        throwRouteError({
-          code: "application_error",
-          statusCode: 404,
-          message: "Run not found",
-        });
-      }
-
-      const response = runCancelResponseSchema.parse(canceledRun);
-      return reply.code(202).send(response);
-    } catch (error) {
-      throwLegacyServiceError(error);
+    const authenticatedUser = options.auth
+      ? await options.auth.authenticate(request)
+      : null;
+    if (!authenticatedUser) {
+      return sendUnauthorized(reply);
     }
+    if (!options.authorization) {
+      throw new Error("Resource authorization is not configured.");
+    }
+
+    const { runId } = parseStringParams(request.params, ["runId"]);
+    await options.authorization.requireRunAccess(authenticatedUser, runId);
+    const canceledRun = agentRuns.cancelRun(runId);
+
+    if (!canceledRun) {
+      throwRouteError({
+        code: "application_error",
+        statusCode: 404,
+        message: "Run not found",
+      });
+    }
+
+    const response = runCancelResponseSchema.parse(canceledRun);
+    return reply.code(202).send(response);
   });
 }
 
 function sendUnauthorized(reply: FastifyReply) {
-  return reply.code(401).send(
-    raiseBoundaryError({
+  return raiseBoundaryError(
+    {
       error: {
         code: "unauthorized",
         message: "Missing or invalid bearer token.",
       },
-    }),
+    },
+    401,
   );
 }

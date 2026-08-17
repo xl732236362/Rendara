@@ -36,130 +36,108 @@ export async function registerViewerRoutes(
   },
 ) {
   app.get("/api/viewer", async (request, reply) => {
-    try {
-      const user = await options.auth.authenticate(request);
+    const user = await options.auth.authenticate(request);
 
-      if (!user) {
-        return reply.code(401).send(
-          raiseBoundaryError({
-            error: {
-              code: "unauthorized",
-              message: "Missing or invalid bearer token.",
-            },
-          }),
-        );
-      }
-
-      const viewer = await options.viewerService.ensureViewer(user);
-
-      // @credits-system: Auto-claim daily credits on login + attach credits info
-      let credits: Record<string, unknown> | undefined;
-      if (options.creditService) {
-        try {
-          // Auto-claim daily credits for free users on each viewer request
-          // (idempotent — claim_daily_credits is a no-op if already claimed today)
-          const balance = await options.creditService.getBalance(
-            viewer.workspace.id,
-          );
-          if (balance.plan === "free" && !balance.dailyClaimed) {
-            await options.creditService.claimDailyCredits(viewer.workspace.id);
-          }
-
-          // Re-fetch balance after potential claim
-          const updatedBalance = await options.creditService.getBalance(
-            viewer.workspace.id,
-          );
-          const config = PLAN_CONFIGS[updatedBalance.plan as SubscriptionPlan];
-          credits = {
-            balance: updatedBalance.balance,
-            plan: updatedBalance.plan,
-            dailyClaimed: updatedBalance.dailyClaimed,
-            limits: {
-              maxConcurrentJobs: config.maxConcurrentJobs,
-              maxResolution: config.maxResolution,
-              monthlyCredits: config.monthlyCredits,
-              dailyCredits: config.dailyCredits,
-            },
-          };
-        } catch {
-          // Credits fetch failure is non-fatal — viewer still works
-        }
-      }
-
-      return reply
-        .code(200)
-        .send(viewerResponseSchema.parse({ ...viewer, credits }));
-    } catch (error) {
-      return sendApplicationError(
-        error,
-        reply,
-        "bootstrap_failed",
-        "Unable to prepare viewer workspace.",
+    if (!user) {
+      return raiseBoundaryError(
+        {
+          error: {
+            code: "unauthorized",
+            message: "Missing or invalid bearer token.",
+          },
+        },
+        401,
       );
     }
+
+    const viewer = await options.viewerService.ensureViewer(user);
+
+    // @credits-system: Auto-claim daily credits on login + attach credits info
+    let credits: Record<string, unknown> | undefined;
+    if (options.creditService) {
+      try {
+        // Credits are optional response enrichment; viewer bootstrap remains
+        // usable when the separately configured credit subsystem is offline.
+        // Auto-claim daily credits for free users on each viewer request
+        // (idempotent — claim_daily_credits is a no-op if already claimed today)
+        const balance = await options.creditService.getBalance(
+          viewer.workspace.id,
+        );
+        if (balance.plan === "free" && !balance.dailyClaimed) {
+          await options.creditService.claimDailyCredits(viewer.workspace.id);
+        }
+
+        // Re-fetch balance after potential claim
+        const updatedBalance = await options.creditService.getBalance(
+          viewer.workspace.id,
+        );
+        const config = PLAN_CONFIGS[updatedBalance.plan as SubscriptionPlan];
+        credits = {
+          balance: updatedBalance.balance,
+          plan: updatedBalance.plan,
+          dailyClaimed: updatedBalance.dailyClaimed,
+          limits: {
+            maxConcurrentJobs: config.maxConcurrentJobs,
+            maxResolution: config.maxResolution,
+            monthlyCredits: config.monthlyCredits,
+            dailyCredits: config.dailyCredits,
+          },
+        };
+      } catch {
+        // Credits fetch failure is non-fatal — viewer still works
+      }
+    }
+
+    return reply
+      .code(200)
+      .send(viewerResponseSchema.parse({ ...viewer, credits }));
   });
 
   app.patch("/api/viewer/profile", async (request, reply) => {
-    try {
-      const user = await options.auth.authenticate(request);
+    const user = await options.auth.authenticate(request);
 
-      if (!user) {
-        return reply.code(401).send(
-          raiseBoundaryError({
-            error: {
-              code: "unauthorized",
-              message: "Missing or invalid bearer token.",
-            },
-          }),
-        );
-      }
-
-      const payload = parseRequest(profileUpdateRequestSchema, request.body);
-      const client = options.createUserClient(user.accessToken);
-      const { data, error } = await client
-        .from("profiles")
-        .update({ display_name: payload.displayName })
-        .eq("id", user.id)
-        .select("id, email, display_name, avatar_url")
-        .single();
-
-      if (error || !data) {
-        return reply.code(500).send(
-          raiseBoundaryError({
-            error: {
-              code: "profile_update_failed",
-              message: "Unable to update profile.",
-            },
-          }),
-        );
-      }
-
-      return reply.code(200).send(
-        profileUpdateResponseSchema.parse({
-          profile: {
-            id: data.id,
-            email: data.email ?? "",
-            displayName: data.display_name ?? "",
-            avatarUrl: data.avatar_url ?? null,
+    if (!user) {
+      return raiseBoundaryError(
+        {
+          error: {
+            code: "unauthorized",
+            message: "Missing or invalid bearer token.",
           },
-        }),
-      );
-    } catch (error) {
-      return sendApplicationError(
-        error,
-        reply,
-        "application_error",
-        "Internal server error.",
+        },
+        401,
       );
     }
-  });
-}
 
-function sendApplicationError(
-  error: unknown,
-  reply: FastifyReply,
-  fallbackCode: "application_error" | "bootstrap_failed",
-  fallbackMessage: string,
-) {
-  throwLegacyServiceError(error);
+    const payload = parseRequest(profileUpdateRequestSchema, request.body);
+    const client = options.createUserClient(user.accessToken);
+    const { data, error } = await client
+      .from("profiles")
+      .update({ display_name: payload.displayName })
+      .eq("id", user.id)
+      .select("id, email, display_name, avatar_url")
+      .single();
+
+    if (error || !data) {
+      return raiseBoundaryError(
+        {
+          error: {
+            code: "profile_update_failed",
+            message: "Unable to update profile.",
+          },
+        },
+        500,
+      );
+    }
+
+    return reply.code(200).send(
+      profileUpdateResponseSchema.parse({
+        profile: {
+          id: data.id,
+          email: data.email ?? "",
+          displayName: data.display_name ?? "",
+          avatarUrl: data.avatar_url ?? null,
+        },
+      }),
+    );
+  });
 }
