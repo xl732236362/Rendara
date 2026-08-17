@@ -5,6 +5,14 @@ import ts from "typescript";
 const serverSource = "apps/server/src";
 const canvasWriteMethods = new Set(["delete", "insert", "update", "upsert"]);
 const generatedMediaTables = new Set(["assets", "project_assets"]);
+const registryValueShapeWrappers = new Set([
+  "Array",
+  "NonNullable",
+  "Partial",
+  "Readonly",
+  "ReadonlyArray",
+  "Required",
+]);
 
 const rules = [
   {
@@ -210,12 +218,16 @@ function resolveRegistryFactory(expression, imports) {
 function isRegistryTypeNode(typeNode, imports) {
   if (!typeNode) return false;
   if (ts.isTypeReferenceNode(typeNode)) {
+    const isValueShapeWrapper =
+      ts.isIdentifier(typeNode.typeName) &&
+      registryValueShapeWrappers.has(typeNode.typeName.text);
     return (
       isRegistryTypeName(typeNode.typeName, imports) ||
-      (typeNode.typeArguments?.some((typeArgument) =>
-        isRegistryTypeNode(typeArgument, imports),
-      ) ??
-        false)
+      (isValueShapeWrapper &&
+        (typeNode.typeArguments?.some((typeArgument) =>
+          isRegistryTypeNode(typeArgument, imports),
+        ) ??
+          false))
     );
   }
   if (ts.isUnionTypeNode(typeNode) || ts.isIntersectionTypeNode(typeNode)) {

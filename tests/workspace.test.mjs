@@ -830,6 +830,19 @@ for (const fixture of [
     name: "unrelated generic wrapper types",
     source: "const active: Readonly<Unrelated> = buildUnrelated();",
   },
+  {
+    name: "registry factory capability types",
+    source: "const createRegistry: Factory<ProviderRegistry> = buildRegistry;",
+  },
+  {
+    name: "registry constructor capability types",
+    source:
+      "const RegistryClass: Constructor<ProviderRegistry> = ProviderRegistry;",
+  },
+  {
+    name: "registry function capability types",
+    source: "const createRegistry: () => ProviderRegistry = buildRegistry;",
+  },
 ]) {
   test(`registry boundary allows ${fixture.name}`, () => {
     const findings = scanArchitectureSources([
