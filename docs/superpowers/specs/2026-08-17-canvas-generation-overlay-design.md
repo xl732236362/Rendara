@@ -7,7 +7,8 @@ placeholder during node movement, node resize, node rotation, canvas pan,
 canvas zoom, and editor viewport offset changes.
 
 The completed image remains a native Excalidraw image element. This change does
-not alter generation APIs, canvas persistence, or image replacement behavior.
+not alter generation APIs or canvas persistence. Image replacement is updated
+to use the placeholder's live geometry at completion time.
 
 ## Ownership Boundary
 
@@ -36,11 +37,20 @@ to either scene geometry or canvas transform therefore produces a new visual
 position without requiring both values to change in the same callback.
 
 The overlay uses the converted node center as its transform origin and applies
-the Excalidraw element angle. Rotation must not change its unrotated scene
-bounds, because Excalidraw also rotates elements around their center.
+the Excalidraw element angle in radians through CSS `rotate(<angle>rad)`.
+Rotation must not change its unrotated scene bounds, because Excalidraw also
+rotates elements around their center.
 
-The selected generator panel and generating overlay use the same conversion
-function so their coordinate behavior cannot drift apart.
+The overlay and selected generator panel share pure scene-to-screen geometry
+primitives, but consume different outputs:
+
+- The overlay uses the unrotated screen rectangle, center transform origin, and
+  angle.
+- The panel remains unrotated and anchors below the rotated node's axis-aligned
+  screen bounding box.
+
+This keeps their coordinate math consistent without rotating the interactive
+panel itself.
 
 ## Rendering And Performance
 
@@ -59,9 +69,14 @@ problem.
   `generating`.
 - Moving, resizing, rotating, panning, or zooming cannot create or destroy task
   state.
-- Completion replaces the placeholder with a native Excalidraw image at the
-  same bounds and angle, then removes the overlay naturally when the
-  placeholder disappears.
+- Completion looks up the placeholder by ID from
+  `excalidrawApi.getSceneElements()` and replaces it with a native Excalidraw
+  image using its live bounds and angle. It must not use geometry captured when
+  generation started.
+- If the placeholder was deleted while generation was running, the generated
+  asset remains available in storage but is not inserted back onto the canvas.
+- Replacing or deleting the placeholder removes the overlay naturally when the
+  live generating element disappears.
 - Failure changes the placeholder to a retryable error state and removes the
   overlay.
 - Unmounting the editor removes all transient DOM overlays without changing the
@@ -76,13 +91,21 @@ and verify that the same overlay follows:
 - node resizing;
 - node rotation;
 - combined rotation and resizing;
+- panel anchoring below the rotated node's axis-aligned bounding box;
 - canvas panning;
 - canvas zooming;
 - viewport offset changes.
 
+A completion-sequence test starts generation, moves, resizes, and rotates the
+placeholder while the request is pending, then verifies that the completed
+image inherits the latest geometry. A deletion-sequence test verifies that a
+deleted placeholder is not recreated when its request completes.
+
 Existing tests for panel unmount survival, orphan recovery, and final image
-replacement remain required. Type checking, the full web test suite, and a
-production build complete the verification.
+replacement remain required. Type checking and the full web test suite complete
+the behavioral verification. Production builds run with an isolated
+`NEXT_DIST_DIR` so they cannot replace the active development server's `.next`
+cache.
 
 ## Non-Goals
 
