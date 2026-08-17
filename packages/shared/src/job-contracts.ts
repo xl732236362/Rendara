@@ -95,6 +95,10 @@ export type GenerationCancellationResponse = z.infer<
 
 export const generationQueueEnvelopeSchema = z.discriminatedUnion("type", [
   z.object({
+    job_id: z.string().uuid().optional(),
+    job_type: z.literal("image_generation").optional(),
+    workspace_id: z.string().uuid().optional(),
+    ...generationRequestContextShape,
     schemaVersion: z.literal(1),
     type: z.literal("image_generation"),
     payload: imageGenerationPayloadSchema
@@ -106,6 +110,10 @@ export const generationQueueEnvelopeSchema = z.discriminatedUnion("type", [
       .strict(),
   }),
   z.object({
+    job_id: z.string().uuid().optional(),
+    job_type: z.literal("video_generation").optional(),
+    workspace_id: z.string().uuid().optional(),
+    ...generationRequestContextShape,
     schemaVersion: z.literal(1),
     type: z.literal("video_generation"),
     payload: videoGenerationPayloadSchema

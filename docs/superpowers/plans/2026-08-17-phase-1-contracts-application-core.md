@@ -24,7 +24,7 @@
 - [x] Add failing workspace tests proving every workspace consumer resolves Zod major 4 and no package declares Zod 3.
 - [x] Add failing contract tests for a single error envelope, context-preserving generation submission/cancellation requests and responses, WS error messages, and parsed queue envelopes with schema version/type/strict payload.
 - [x] Run `pnpm test:workspace` and `pnpm --filter @loomic/shared test`; confirm failures identify missing contracts/version alignment.
-- [x] Pin Zod 4 in the workspace catalog, explicitly reference it from every source-importing package, implement the schemas/types, and atomically migrate the queue producer and worker parser.
+- [x] Pin Zod 4 in the workspace catalog, explicitly reference it from every source-importing package, implement the schemas/types, and atomically migrate the queue producer/worker with hybrid rolling compatibility, legacy normalization, and authoritative job integrity checks.
 - [x] Rebuild shared and run workspace/shared tests, typecheck, and `pnpm dedupe --check`.
 
 ## Task 2: Establish AppError And Fastify Error Boundary

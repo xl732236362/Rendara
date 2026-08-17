@@ -21,7 +21,10 @@ import {
   getExecutor,
 } from "./features/jobs/job-executor.js";
 import { createJobService } from "./features/jobs/job-service.js";
-import { parseGenerationQueueMessage } from "./features/jobs/queue-message.js";
+import {
+  resolveGenerationQueueMessage,
+  settleRejectedGenerationQueueMessage,
+} from "./features/jobs/queue-message.js";
 import { type PgmqMessage, createPgmqClient } from "./queue/pgmq-client.js";
 import { createAdminSupabaseClient } from "./supabase/admin.js";
 import { createUserSupabaseClientFactory } from "./supabase/user.js";
@@ -178,16 +181,36 @@ async function processMessage(
   creditService: CreditService,
   tag: string,
 ) {
-  const parsedMessage = parseGenerationQueueMessage(msg.message);
-  if (!parsedMessage.success) {
-    console.error(
-      `${tag} ${parsedMessage.code} in ${queue}:`,
-      parsedMessage.issues,
-    );
+  const resolution = await resolveGenerationQueueMessage({
+    queue,
+    message: msg.message,
+    lookupJob: (jobId) => ctx.jobService.getJobAdmin(jobId),
+  });
+  if (resolution.status === "poison") {
+    console.error(`${tag} Queue message rejected`, {
+      code: resolution.code,
+      queue,
+      msgId: msg.msg_id,
+    });
     await ctx.pgmq.archive(queue, msg.msg_id);
     return;
   }
-  const { jobId, jobType, payload } = parsedMessage.data;
+  if (resolution.status === "rejected") {
+    console.error(`${tag} Recoverable queue message rejected`, {
+      code: resolution.code,
+      jobId: resolution.jobId,
+      queue,
+      msgId: msg.msg_id,
+    });
+    await settleRejectedGenerationQueueMessage(resolution, {
+      markDeadLetter: (jobId, code, message) =>
+        ctx.jobService.markDeadLetter(jobId, code, message),
+      archive: () => ctx.pgmq.archive(queue, msg.msg_id),
+      refund: (jobId) => refundDeadLetteredJob(jobId, ctx, creditService, tag),
+    });
+    return;
+  }
+  const { jobId, jobType, payload } = resolution.dispatch;
 
   // Extract traceability context from PGMQ message (if present)
   const sessionShort =

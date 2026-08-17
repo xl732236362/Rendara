@@ -125,6 +125,9 @@ describe("@loomic/shared contracts", () => {
     const schema = getExportedSchema("generationQueueEnvelopeSchema");
 
     const imageEnvelope = schema.parse({
+      job_id: "550e8400-e29b-41d4-a716-446655440000",
+      job_type: "image_generation",
+      workspace_id: "550e8400-e29b-41d4-a716-446655440001",
       schemaVersion: 1,
       type: "image_generation",
       payload: {
@@ -138,6 +141,9 @@ describe("@loomic/shared contracts", () => {
       },
     });
     const videoEnvelope = schema.parse({
+      job_id: "550e8400-e29b-41d4-a716-446655440000",
+      job_type: "video_generation",
+      workspace_id: "550e8400-e29b-41d4-a716-446655440001",
       schemaVersion: 1,
       type: "video_generation",
       payload: {
@@ -150,6 +156,8 @@ describe("@loomic/shared contracts", () => {
     });
 
     expect(imageEnvelope.type).toBe("image_generation");
+    expect(imageEnvelope.job_id).toBe("550e8400-e29b-41d4-a716-446655440000");
+    expect(imageEnvelope.job_type).toBe("image_generation");
     expect(videoEnvelope.type).toBe("video_generation");
     expect(() =>
       schema.parse({
