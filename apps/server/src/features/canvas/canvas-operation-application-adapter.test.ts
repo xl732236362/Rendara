@@ -22,10 +22,30 @@ describe("canvas operation application adapter", () => {
     expect(requireCanvasAccess).toHaveBeenCalledWith(user, "canvas-1");
   });
 
-  it("delegates loading and saving to CanvasService", async () => {
-    const content = { elements: [], appState: {}, files: {} };
-    const updated = {
-      elements: [{ id: "element-1" }],
+  it("loads, applies current move/add/delete operations, and saves through CanvasService", async () => {
+    const content = {
+      elements: [
+        {
+          id: "move-me",
+          type: "rectangle",
+          x: 0,
+          y: 0,
+          width: 100,
+          height: 100,
+          version: 1,
+          versionNonce: 1,
+        },
+        {
+          id: "delete-me",
+          type: "rectangle",
+          x: 200,
+          y: 0,
+          width: 100,
+          height: 100,
+          version: 1,
+          versionNonce: 1,
+        },
+      ],
       appState: {},
       files: {},
     };
@@ -36,13 +56,14 @@ describe("canvas operation application adapter", () => {
         projectId: "project-1",
         content,
       })),
-      saveCanvasContent: vi.fn(async () => undefined),
+      saveCanvasContent: vi.fn(
+        async (_user: unknown, _canvasId: string, _content: typeof content) =>
+          undefined,
+      ),
     };
-    const applyOperations = vi.fn(() => ({ content: updated, applied: 1 }));
     const user = { id: "user-1", accessToken: "token", userMetadata: {} };
     const adapter = createCanvasServiceOperationPort({
       canvasService,
-      applyOperations,
       toAuthenticatedUser: () => user as never,
     });
 
@@ -50,17 +71,21 @@ describe("canvas operation application adapter", () => {
       adapter.apply({
         principal: { userId: "user-1", workspaceId: "workspace-1" },
         canvasId: "canvas-1",
-        operations: [{ action: "delete", element_id: "element-1" }],
+        operations: [
+          { action: "move", element_id: "move-me", x: 40, y: 60 },
+          { action: "add_text", text: "New note", x: 10, y: 20 },
+          { action: "delete", element_id: "delete-me" },
+        ],
       }),
-    ).resolves.toEqual({ canvasId: "canvas-1", applied: 1 });
+    ).resolves.toEqual({ canvasId: "canvas-1", applied: 3 });
 
-    expect(applyOperations).toHaveBeenCalledWith(content, [
-      { action: "delete", element_id: "element-1" },
-    ]);
-    expect(canvasService.saveCanvasContent).toHaveBeenCalledWith(
-      user,
-      "canvas-1",
-      updated,
+    const saved = vi.mocked(canvasService.saveCanvasContent).mock.calls[0]?.[2];
+    expect(saved?.elements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "move-me", x: 40, y: 60 }),
+        expect.objectContaining({ id: "delete-me", isDeleted: true }),
+        expect.objectContaining({ type: "text", text: "New note" }),
+      ]),
     );
   });
 });

@@ -1,25 +1,11 @@
 import { z } from "zod";
 
 import { AppError } from "../../errors/app-error.js";
+import {
+  type CanvasOperation,
+  canvasOperationSchema,
+} from "../../features/canvas/canvas-operation-engine.js";
 import type { StructuredLogger } from "../generation/ports.js";
-
-const currentCanvasActionSchema = z.enum([
-  "move",
-  "resize",
-  "delete",
-  "update_style",
-  "add_text",
-  "add_shape",
-  "add_line",
-  "reorder",
-  "align",
-  "distribute",
-  "update_text",
-]);
-
-const canvasOperationSchema = z
-  .object({ action: currentCanvasActionSchema })
-  .passthrough();
 
 const applyCanvasOperationsRequestSchema = z.object({
   canvasId: z.string().trim().min(1),
@@ -37,7 +23,7 @@ export type CanvasOperationPrincipal = {
   accessToken?: string;
 };
 
-export type CurrentCanvasOperation = z.infer<typeof canvasOperationSchema>;
+export type CurrentCanvasOperation = CanvasOperation;
 
 export type CanvasOperationPorts = {
   authorization: {

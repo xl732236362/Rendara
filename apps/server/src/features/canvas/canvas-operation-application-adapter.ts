@@ -1,12 +1,10 @@
-import type { CanvasContent } from "@loomic/shared";
-
 import type {
   CanvasOperationPorts,
   CanvasOperationPrincipal,
-  CurrentCanvasOperation,
 } from "../../application/canvas/apply-canvas-operations.js";
 import type { ResourceAuthorization } from "../../security/resource-authorization.js";
 import type { AuthenticatedUser } from "../../supabase/user.js";
+import { applyCanvasOperations } from "./canvas-operation-engine.js";
 import type { CanvasService } from "./canvas-service.js";
 
 export function createCanvasAuthorizationPort(options: {
@@ -25,12 +23,6 @@ export function createCanvasAuthorizationPort(options: {
 export function createCanvasServiceOperationPort(options: {
   canvasService: CanvasService;
   toAuthenticatedUser(principal: CanvasOperationPrincipal): AuthenticatedUser;
-  applyOperations(
-    content: CanvasContent,
-    operations: CurrentCanvasOperation[],
-  ):
-    | { content: CanvasContent; applied: number }
-    | Promise<{ content: CanvasContent; applied: number }>;
 }): CanvasOperationPorts["operations"] {
   return {
     async apply(command) {
@@ -39,10 +31,7 @@ export function createCanvasServiceOperationPort(options: {
         user,
         command.canvasId,
       );
-      const outcome = await options.applyOperations(
-        canvas.content,
-        command.operations,
-      );
+      const outcome = applyCanvasOperations(canvas.content, command.operations);
       await options.canvasService.saveCanvasContent(
         user,
         command.canvasId,

@@ -459,7 +459,9 @@ async function githubApiFetch(
   url: string,
   fetcher: SkillSafeFetcher,
 ): Promise<SafeFetchResult> {
-  console.log(`[skill-import] GitHub API request: ${url}`);
+  console.log(
+    `[skill-import] GitHub API request: source=${safeUrlOrigin(url)}`,
+  );
   try {
     return await fetcher(url, GITHUB_API_POLICY);
   } catch {
@@ -776,7 +778,8 @@ export async function importFromTarballUrl(
   url: string,
   dependencies: SkillImportDependencies = {},
 ): Promise<ImportedSkill> {
-  console.log(`[skill-import] Downloading tarball: ${url}`);
+  const sourceOrigin = safeUrlOrigin(url);
+  console.log(`[skill-import] Downloading tarball: source=${sourceOrigin}`);
   const fetcher = dependencies.safeFetch ?? safeFetch;
   let response: SafeFetchResult;
   try {
@@ -823,7 +826,7 @@ export async function importFromTarballUrl(
     } catch {
       throw new SkillImportError(
         "manifest_parse_error",
-        `Failed to parse package.json in tarball: ${url}`,
+        "Failed to parse package.json in tarball.",
       );
     }
     const pkgName = (pkgJson.name as string) ?? "unknown-skill";
@@ -852,7 +855,7 @@ export async function importFromTarballUrl(
   } else {
     throw new SkillImportError(
       "manifest_not_found",
-      `Neither SKILL.md nor package.json found in tarball: ${url}`,
+      "Neither SKILL.md nor package.json found in tarball.",
     );
   }
 
@@ -878,7 +881,7 @@ export async function importFromTarballUrl(
     }));
 
   console.log(
-    `[skill-import] Tarball import complete: ${files.length} files collected from ${url}`,
+    `[skill-import] Tarball import complete: ${files.length} files collected from ${sourceOrigin}`,
   );
 
   return {
@@ -912,7 +915,7 @@ export async function importSkillFromUrl(
   const source = detectImportSource(url);
 
   console.log(
-    `[skill-import] Import requested: url="${url}" detected="${source}"`,
+    `[skill-import] Import requested: source=${safeUrlOrigin(url)} type=${source}`,
   );
 
   switch (source) {
@@ -934,6 +937,15 @@ export async function importSkillFromUrl(
         "unsupported_source",
         `Unsupported import URL format: ${url}. Supported: GitHub repos, npm tarballs (.tgz/.tar.gz)`,
       );
+  }
+}
+
+function safeUrlOrigin(value: string): string {
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return "invalid-url";
   }
 }
 

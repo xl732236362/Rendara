@@ -1,7 +1,7 @@
 /**
  * canvas-element-helpers.ts
  *
- * Shared helper functions and types extracted from manipulate-canvas.ts.
+ * Transport-neutral canvas operation helpers shared by application adapters and Agent tools.
  * Covers:
  *   - Core type aliases (CanvasElement, HandlerResult)
  *   - ID / version utilities (generateId, bumpVersion)
