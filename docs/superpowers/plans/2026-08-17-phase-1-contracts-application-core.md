@@ -71,10 +71,10 @@ Verification evidence: registered-route regression tests cover projects, canvase
 
 **Files:** `apps/server/src/application/generation/ports.ts`, `submit-generation.ts`, `cancel-generation.ts`, corresponding tests, `apps/server/src/features/jobs/job-service.ts`, `apps/server/src/features/credits/tier-guard.ts`
 
-- [ ] Write failing tests for media-specific schema parsing, tier/model validation, job submission, cleanup on pre-queue failure, cancellation ownership, and stable application errors.
-- [ ] Define ports for job creation/cancel, tier authorization, model resolution, and optional synchronous generation; use cases must not import Fastify, WebSocket, Supabase, or global registries.
-- [ ] Implement submission/cancellation by composing existing services without changing phase 2 transaction semantics; log operation identifiers and failure stage without prompts/tokens.
-- [ ] Run focused tests and confirm HTTP/Agent adapters can receive the same use-case interface.
+- [x] Write failing tests for media-specific schema parsing, tier/model validation, job submission, cleanup on pre-queue failure, cancellation ownership, and stable application errors.
+- [x] Define ports for job creation/cancel, tier authorization, model resolution, and optional synchronous generation; use cases must not import Fastify, WebSocket, Supabase, or global registries.
+- [x] Implement submission/cancellation by composing existing services without changing phase 2 transaction semantics; log operation identifiers and failure stage without prompts/tokens.
+- [x] Run focused tests and confirm HTTP/Agent adapters can receive the same use-case interface.
 
 ## Task 7: Add ApplyCanvasOperations And ImportSkill Use Cases
 
