@@ -4,7 +4,7 @@
 
 阶段 1“契约与应用核心”已达到验收条件：Loomic 跨包/跨进程契约统一在 Zod 4，HTTP 错误和环境配置具有单一可验证边界，Provider/Executor 注册表不再依赖全局可变状态，队列生成、画布操作和 Skill 导入已经由应用用例统一编排，Web 数据边界会校验运行时响应。这些边界由语法感知的工作区架构测试持续约束。
 
-无缓存测试、类型检查、生产构建、数据库从零重建与权限测试、正式 Docker 镜像与 API/Worker 入口探针全部通过。阶段 2 的事务一致性/状态机/revision 工作未被提前并入本阶段。
+无缓存测试、类型检查、生产构建、数据库从零重建与权限测试、正式 Docker 镜像构建与入口目标/镜像布局/语法一致性检查全部通过。阶段 2 的事务一致性/状态机/revision 工作未被提前并入本阶段。
 
 ## 基本信息
 
@@ -29,8 +29,8 @@
 | 数据库重建 | 通过 | Supabase CLI 2.114.0，全部 31 个 migration 从空库应用，`db reset --yes` 返回 0 |
 | 数据库权限测试 | 通过 | 1 个 SQL 文件，14/14 tests，`Result: PASS` |
 | Docker 正式镜像 | 通过 | `loomic-server:phase1`，image ID `sha256:ee4957fd9116be7ff9a7ccbe06766241b60ad5963c58a30e87a3dd9bf00c065d` |
-| 容器应用加载 | 通过 | 容器内 import `dist/app.js` 输出 `app-load-ok` |
-| Railway API/Worker 探针 | 通过 | override 精确指向 `dist/server.js`/`dist/worker.js`；镜像内文件可读且 `node --check` 通过 |
+| 容器应用模块加载 | 通过 | 容器内 import `dist/app.js` 输出 `app-load-ok`；仅证明 app 模块可导入，不证明 API/Worker 进程可成功启动 |
+| Railway 入口目标/镜像布局与语法一致性 | 通过 | override 精确指向 `dist/server.js`/`dist/worker.js`；镜像内文件可读且 `node --check` 通过，但未解析运行时依赖/配置或启动进程 |
 | diff 完整性 | 通过 | 验收前 `git diff --check` 返回 0，工作树干净 |
 
 ## 测试计数
@@ -57,11 +57,18 @@ pnpm ci:check
 pnpm exec turbo run typecheck --force
 pnpm exec turbo run build --force
 
-supabase --version
-supabase start
-supabase db reset --yes
-supabase test db
-supabase stop --no-backup
+$phase1CliDir = Join-Path ([System.IO.Path]::GetTempPath()) ('loomic-supabase-2.114.0-' + [guid]::NewGuid().ToString('N'))
+$supabaseArchive = Join-Path $phase1CliDir 'supabase.zip'
+$supabaseExe = Join-Path $phase1CliDir 'supabase.exe'
+New-Item -ItemType Directory -Path $phase1CliDir | Out-Null
+Invoke-WebRequest -Uri 'https://github.com/supabase/cli/releases/download/v2.114.0/supabase_2.114.0_windows_amd64.zip' -OutFile $supabaseArchive
+Get-FileHash -Algorithm SHA256 -LiteralPath $supabaseArchive
+Expand-Archive -LiteralPath $supabaseArchive -DestinationPath $phase1CliDir
+& $supabaseExe --version
+& $supabaseExe start
+& $supabaseExe db reset --yes
+& $supabaseExe test db
+& $supabaseExe stop --no-backup
 
 docker build -f apps/server/Dockerfile -t loomic-server:phase1 .
 docker run --rm --entrypoint node loomic-server:phase1 -e "import('./dist/app.js').then(() => console.log('app-load-ok'))"
@@ -72,7 +79,7 @@ pnpm why zod -r
 git diff --check
 ```
 
-Windows 上 npm 安装的 Supabase wrapper 没有可用 binary，验收使用官方 GitHub release 的 Windows amd64 zip 在临时目录解压，并先确认版本为 `2.114.0`；临时产物未进入仓库。首次 `start` 因主工作区遗留的同项目 Supabase 容器占用 `54322` 而返回 1；核对 Docker label/workdir 后用同版本 CLI 执行 `stop --no-backup`，再次 `start` 及后续全部数据库验收均通过。本地密钥、URL 和 token 未写入本文档。
+Windows 上 npm 安装的 Supabase wrapper 没有可用 binary，验收使用官方 GitHub release asset `supabase_2.114.0_windows_amd64.zip`（下载 URL 见上方命令），在 PowerShell 生成的唯一临时目录解压，并始终通过 `$supabaseExe` 显式调用。本次实际下载 zip 的 SHA-256 为 `848D0EACC6F4F7722F9874EAA0498E0AC674236907E5F70B44F1DAC059B27B68`；这是本次下载的实测摘要，不冒充官方签名或独立信任根。版本输出为 `2.114.0`，临时产物未进入仓库。首次 `start` 因主工作区遗留的同项目 Supabase 容器占用 `54322` 而返回 1；核对 Docker label/workdir 后用同版本 CLI 执行 `stop --no-backup`，再次 `start` 及后续全部数据库验收均通过。本地密钥、服务 URL 和 token 未写入本文档。
 
 ## Zod 依赖审计
 
@@ -112,4 +119,4 @@ Windows 上 npm 安装的 Supabase wrapper 没有可用 binary，验收使用官
 | 显式 registry | 重复/隔离/seal/不可变测试，组合根注入与 AST 门禁 |
 | 共享应用用例 | HTTP/Agent/Worker spy 测试及 adapter bypass 架构规则 |
 | Web 响应校验 | malformed/schema/timeout/abort/empty 测试，`server-api.ts` 无未校验 response cast |
-| 生产可用性保持 | 无缓存质量门禁、DB reset/RLS、Docker/app-load/API/Worker 探针、diff 检查 |
+| 生产交付门禁保持 | 无缓存质量门禁、DB reset/RLS、Docker 构建、app 模块导入、Railway 入口目标/镜像布局/语法一致性与 diff 检查；未宣称 API/Worker 进程启动已被证明 |

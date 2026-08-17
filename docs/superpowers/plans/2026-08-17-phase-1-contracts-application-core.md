@@ -132,7 +132,7 @@ Verification evidence: TypeScript-AST rules cover alias/namespace and namespaced
 - [x] Update each covered ENG item conservatively as solved/partially solved with commit and test evidence; do not close items whose target architecture belongs to later phases.
 - [x] Record exact commands, test counts, environment-independent results, known deferred items, commit SHA, and acceptance conclusion in `phase-1-verification.md`.
 
-Acceptance evidence: `docs/tech/phase-1-verification.md` records the uncached 458-test evidence, exact warning baseline, Supabase CLI 2.114.0 reset and 14 database tests, `loomic-server:phase1` build/app/API/Worker probes, dependency audit (including the isolated `shadcn` build-tool Zod 3 graph), architecture scope, implementation SHA, and deferred Phase 2/3/4 work.
+Acceptance evidence: `docs/tech/phase-1-verification.md` records the uncached 458-test evidence, exact warning baseline, Supabase CLI 2.114.0 reset and 14 database tests, the `loomic-server:phase1` build, app-module import, and Railway entrypoint target/image-layout/syntax consistency checks, dependency audit (including the isolated `shadcn` build-tool Zod 3 graph), architecture scope, implementation SHA, and deferred Phase 2/3/4 work. These container checks do not claim that API/Worker process startup was exercised.
 
 ## Acceptance Matrix
 
