@@ -8,6 +8,7 @@ describe("application environment composition", () => {
     const app = buildAppFromEnv(env);
 
     expect(env.version).toBe("parse-once-test");
+    expect((await app.inject({ url: "/api/health" })).statusCode).toBe(200);
     await app.close();
   });
 

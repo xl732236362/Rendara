@@ -17,6 +17,7 @@ export function validateEnvironmentContracts({
   envTemplate,
   deployments,
   requireCompleteTemplate = true,
+  serverHealthSource,
 }) {
   const issues = [];
   const entries = templateEntries(envTemplate);
@@ -57,10 +58,21 @@ export function validateEnvironmentContracts({
       }
       if (
         deployment.metadata.process === "api" &&
-        !config?.deploy?.healthcheckPath
+        config?.deploy?.healthcheckPath !== deployment.metadata.healthPath
       ) {
         issues.push(
-          `${deployment.name}: API service requires a healthcheckPath`,
+          `${deployment.name}: API healthcheckPath must match ${deployment.metadata.healthPath}`,
+        );
+      }
+      if (
+        deployment.metadata.process === "api" &&
+        serverHealthSource &&
+        !serverHealthSource.includes(
+          `app.get("${deployment.metadata.healthPath}"`,
+        )
+      ) {
+        issues.push(
+          `${deployment.name}: API health path is not registered by the server`,
         );
       }
     }
@@ -115,13 +127,15 @@ export function validateEnvironmentContracts({
 
 async function main() {
   const root = new URL("../", import.meta.url);
-  const [envTemplate, contract, rootRailway] = await Promise.all([
-    readFile(new URL(".env.example", root), "utf8"),
-    readFile(new URL("deploy/environment-contract.json", root), "utf8").then(
-      JSON.parse,
-    ),
-    readFile(new URL("railway.json", root), "utf8").then(JSON.parse),
-  ]);
+  const [envTemplate, contract, rootRailway, serverHealthSource] =
+    await Promise.all([
+      readFile(new URL(".env.example", root), "utf8"),
+      readFile(new URL("deploy/environment-contract.json", root), "utf8").then(
+        JSON.parse,
+      ),
+      readFile(new URL("railway.json", root), "utf8").then(JSON.parse),
+      readFile(new URL("apps/server/src/http/health.ts", root), "utf8"),
+    ]);
   const deployments = await Promise.all(
     Object.entries(contract.services).map(async ([process, metadata]) => ({
       name: metadata.configPath,
@@ -139,7 +153,11 @@ async function main() {
     },
     config: rootRailway,
   });
-  const issues = validateEnvironmentContracts({ envTemplate, deployments });
+  const issues = validateEnvironmentContracts({
+    envTemplate,
+    deployments,
+    serverHealthSource,
+  });
   if (issues.length > 0) {
     console.error(
       `Environment contract validation failed:\n${issues.map((issue) => `- ${issue}`).join("\n")}`,

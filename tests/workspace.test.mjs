@@ -150,11 +150,21 @@ test("workspace tests run the checked-in environment contract validator", async 
 test("deployment contract binds real API and worker Railway configs", async () => {
   const contract = await readJson("deploy/environment-contract.json");
   const api = await readJson(contract.services.api.configPath);
+  const rootRailway = await readJson("railway.json");
   const worker = await readJson(contract.services.worker.configPath);
   const vercel = await readJson(contract.services.web.configPath);
+  const serverHealth = await readText("apps/server/src/http/health.ts");
 
   assert.match(api.deploy.startCommand, /server\.js/);
-  assert.match(api.deploy.healthcheckPath, /health/);
+  assert.equal(contract.services.api.healthPath, "/api/health");
+  assert.equal(api.deploy.healthcheckPath, contract.services.api.healthPath);
+  assert.equal(
+    rootRailway.deploy.healthcheckPath,
+    contract.services.api.healthPath,
+  );
+  assert.ok(
+    serverHealth.includes(`app.get("${contract.services.api.healthPath}"`),
+  );
   assert.match(worker.deploy.startCommand, /worker\.js/);
   assert.ok(contract.services.worker.variables.includes("SUPABASE_DB_URL"));
   assert.equal(vercel.env, undefined);
