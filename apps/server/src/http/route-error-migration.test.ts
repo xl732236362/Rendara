@@ -138,7 +138,7 @@ describe("route error migration", () => {
         getCanvas: async () => {
           throw new Error("unused");
         },
-        saveCanvasContent: async () => undefined,
+        saveCanvasContent: async () => ({ revision: 1 }),
       },
     });
 
@@ -169,7 +169,7 @@ describe("route error migration", () => {
             404,
           );
         },
-        saveCanvasContent: async () => undefined,
+        saveCanvasContent: async () => ({ revision: 1 }),
       },
     });
 
@@ -223,7 +223,7 @@ describe("route error migration", () => {
         getCanvas: async () => {
           throw new Error("database-secret");
         },
-        saveCanvasContent: async () => undefined,
+        saveCanvasContent: async () => ({ revision: 1 }),
       },
     });
     const response = await app.inject({
@@ -259,7 +259,7 @@ async function registerCanvasFailure(app: ReturnType<typeof Fastify>) {
       getCanvas: async () => {
         throw new CanvasServiceError("canvas_not_found", "missing", 404);
       },
-      saveCanvasContent: async () => undefined,
+      saveCanvasContent: async () => ({ revision: 1 }),
     },
   });
 }

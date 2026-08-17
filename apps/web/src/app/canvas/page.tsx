@@ -42,6 +42,7 @@ function CanvasPageContent() {
     id: string;
     name: string;
     projectId: string;
+    revision: number;
     content: {
       elements: Record<string, unknown>[];
       appState: Record<string, unknown>;
@@ -135,6 +136,9 @@ function CanvasPageContent() {
       }
 
       api.updateScene({ elements, captureUpdate: "IMMEDIATELY" });
+      setCanvasData((current) =>
+        current ? { ...current, revision: canvas.revision } : current,
+      );
     } catch (err) {
       console.warn("Failed to sync canvas:", err);
     }
@@ -212,6 +216,7 @@ function CanvasPageContent() {
           id: c.id,
           name: c.name,
           projectId: c.projectId,
+          revision: c.revision,
           content: {
             elements: c.content.elements ?? [],
             appState: c.content.appState ?? {},
@@ -297,6 +302,7 @@ function CanvasPageContent() {
           canvasId={canvasData.id}
           projectId={canvasData.projectId}
           accessToken={accessToken}
+          initialRevision={canvasData.revision}
           initialContent={canvasData.content}
           onApiReady={handleApiReady}
           ws={ws}

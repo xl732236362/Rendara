@@ -467,17 +467,17 @@ git commit -m "feat(canvas): enforce revision checked server writes"
 - Modify: `apps/web/src/components/canvas-editor.tsx`
 - Create: `apps/web/src/components/canvas-editor.revision.test.tsx`
 
-- [ ] **Step 1: Write failing HTTP/client tests**
+- [x] **Step 1: Write failing HTTP/client tests**
 
 Assert PUT requires `expectedRevision`, returns `{ ok: true, revision }`, maps repository conflicts to 409 with safe revision details, and `saveCanvas` parses the response rather than using empty mode.
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run: `pnpm --filter @loomic/server test -- src/http/route-error-migration.test.ts && pnpm --filter @loomic/web test -- src/lib/server-api.test.ts src/components/canvas-editor.revision.test.tsx`
 
 Expected: FAIL because the current endpoint has no revision protocol.
 
-- [ ] **Step 3: Implement the HTTP and API client contract**
+- [x] **Step 3: Implement the HTTP and API client contract**
 
 Pass `payload.expectedRevision` to `CanvasService.saveCanvasContent` and return the committed revision. Change the web API to:
 
@@ -495,19 +495,19 @@ export function saveCanvas(token: string, canvasId: string,
 }
 ```
 
-- [ ] **Step 4: Implement browser revision tracking**
+- [x] **Step 4: Implement browser revision tracking**
 
 Initialize a `revisionRef` from `CanvasDetail.revision`. Capture the expected revision with each debounced payload, serialize saves, and advance only from a parsed successful response. On `canvas_revision_conflict`, pause autosave, retain the unsaved payload, show an accessible non-overlapping conflict banner with Reload and Dismiss actions, and never retry stale whole content.
 
 The unload request includes the last known expected revision. It remains best effort and never advances local revision without a response.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
 Run: `pnpm --filter @loomic/server test -- src/http/route-error-migration.test.ts && pnpm --filter @loomic/web test -- src/lib/server-api.test.ts src/components/canvas-editor.revision.test.tsx`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```text
 git add apps/server/src/http apps/web/src/lib/server-api.ts apps/web/src/lib/server-api.test.ts apps/web/src/components/canvas-editor.tsx apps/web/src/components/canvas-editor.revision.test.tsx

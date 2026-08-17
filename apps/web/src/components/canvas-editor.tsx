@@ -4,12 +4,14 @@ import "@excalidraw/excalidraw/index.css";
 
 import { useTheme } from "next-themes";
 import dynamic from "next/dynamic";
+import { AlertTriangle, RefreshCw, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { WebSocketHandle } from "../hooks/use-websocket";
 import { blobToDataURL, isVideoUrl } from "../lib/canvas-elements";
 import { normalizeCanvasElements } from "../lib/canvas-normalize";
 import { getServerBaseUrl } from "../lib/env";
+import { ApiApplicationError } from "../lib/api-client";
 import { saveCanvas, uploadThumbnail } from "../lib/server-api";
 import { CanvasToolMenu } from "./canvas-tool-menu";
 import { VideoCanvasElement } from "./canvas/video-canvas-element";
@@ -53,6 +55,7 @@ type CanvasEditorProps = {
   canvasId: string;
   projectId: string;
   accessToken: string;
+  initialRevision: number;
   initialContent: {
     elements: Record<string, unknown>[];
     appState: Record<string, unknown>;
@@ -72,6 +75,7 @@ export function CanvasEditor({
   canvasId,
   projectId,
   accessToken,
+  initialRevision,
   initialContent,
   onApiReady,
   ws,
@@ -85,6 +89,15 @@ export function CanvasEditor({
   accessTokenRef.current = accessToken;
   const canvasIdRef = useRef(canvasId);
   canvasIdRef.current = canvasId;
+  const revisionRef = useRef(initialRevision);
+  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const conflictPausedRef = useRef(false);
+  const [revisionConflict, setRevisionConflict] = useState(false);
+  useEffect(() => {
+    revisionRef.current = initialRevision;
+    conflictPausedRef.current = false;
+    setRevisionConflict(false);
+  }, [canvasId, initialRevision]);
   const [excalidrawApi, setExcalidrawApi] = useState<any>(null);
   const prevSelectedIdsRef = useRef<string>("");
   const onSelectionChangeRef = useRef(onSelectionChange);
@@ -111,6 +124,40 @@ export function CanvasEditor({
   // without adding the full initialContent to the dependency array.
   const initialFilesRef = useRef(initialContent.files);
   initialFilesRef.current = initialContent.files;
+
+  const enqueueSave = useCallback(
+    (content: {
+      elements: Record<string, unknown>[];
+      appState: Record<string, unknown>;
+      files: Record<string, Record<string, unknown>>;
+    }) => {
+      if (conflictPausedRef.current) return Promise.resolve();
+      const operation = saveChainRef.current.then(async () => {
+        if (conflictPausedRef.current) return;
+        try {
+          const saved = await saveCanvas(
+            accessTokenRef.current,
+            canvasIdRef.current,
+            revisionRef.current,
+            content,
+          );
+          revisionRef.current = saved.revision;
+        } catch (error) {
+          if (
+            error instanceof ApiApplicationError &&
+            error.code === "canvas_revision_conflict"
+          ) {
+            conflictPausedRef.current = true;
+            setRevisionConflict(true);
+          }
+          throw error;
+        }
+      });
+      saveChainRef.current = operation.catch(() => undefined);
+      return operation;
+    },
+    [],
+  );
 
   // Separate inline files (ready) from storage URLs (need async fetch)
   const { inlineFiles, pendingUrls } = useMemo(() => {
@@ -218,7 +265,7 @@ export function CanvasEditor({
             };
           }
           const appState = excalidrawApi.getAppState();
-          saveCanvas(accessTokenRef.current, canvasIdRef.current, {
+          enqueueSave({
             elements: mutableElements.filter((el: any) => !el.isDeleted),
             appState: {
               viewBackgroundColor: appState.viewBackgroundColor,
@@ -240,7 +287,7 @@ export function CanvasEditor({
       hydratedRef.current = true;
     });
     return () => cic(idleHandle);
-  }, [excalidrawApi]);
+  }, [excalidrawApi, enqueueSave]);
 
   const handleChange = useCallback(
     (elements: readonly any[], appState: any) => {
@@ -283,7 +330,7 @@ export function CanvasEditor({
         };
         pendingSaveRef.current = content;
 
-        saveCanvas(accessTokenRef.current, canvasId, content)
+        enqueueSave(content)
           .then(() => {
             if (pendingSaveRef.current === content) {
               pendingSaveRef.current = null;
@@ -383,7 +430,7 @@ export function CanvasEditor({
         }
       }
     },
-    [canvasId, projectId, excalidrawApi],
+    [canvasId, projectId, excalidrawApi, enqueueSave],
   );
 
   // Register screenshot RPC handler so the server can request canvas captures
@@ -544,7 +591,10 @@ export function CanvasEditor({
             Authorization: `Bearer ${accessTokenRef.current}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({ content: payload }),
+          body: JSON.stringify({
+            expectedRevision: revisionRef.current,
+            content: payload,
+          }),
           keepalive: true,
         });
       } catch {
@@ -566,16 +616,12 @@ export function CanvasEditor({
       if (pendingSaveRef.current) {
         const payload = buildSavePayloadRef.current();
         if (payload) {
-          saveCanvas(
-            accessTokenRef.current,
-            canvasIdRef.current,
-            payload,
-          ).catch(console.error);
+          enqueueSave(payload).catch(console.error);
         }
         pendingSaveRef.current = null;
       }
     };
-  }, []);
+  }, [enqueueSave]);
 
   // Render custom embeddable content for video elements on canvas.
   // Excalidraw calls this for every embeddable element; we intercept video URLs
@@ -603,6 +649,36 @@ export function CanvasEditor({
       onError={(err) => console.error("[canvas-editor] render crashed:", err)}
     >
       <div className="h-full w-full relative">
+        {revisionConflict && (
+          <div
+            role="alert"
+            className="absolute top-3 left-1/2 z-30 flex max-w-[calc(100%-2rem)] -translate-x-1/2 items-center gap-3 rounded-md border border-amber-400 bg-background px-3 py-2 text-sm shadow-md"
+          >
+            <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
+            <span>
+              This Canvas changed elsewhere. Reload before saving again.
+            </span>
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 font-medium"
+              onClick={() => window.location.reload()}
+            >
+              <RefreshCw className="h-4 w-4" />
+              Reload
+            </button>
+            <button
+              type="button"
+              aria-label="Dismiss conflict warning"
+              className="inline-flex h-7 w-7 items-center justify-center"
+              onClick={() => {
+                conflictPausedRef.current = false;
+                setRevisionConflict(false);
+              }}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
         <Excalidraw
           theme={resolvedTheme === "dark" ? "dark" : "light"}
           initialData={{

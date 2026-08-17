@@ -46,14 +46,20 @@ export async function registerCanvasRoutes(
       if (!user) return sendUnauthorized(reply);
       const payload = parseRequest(canvasSaveRequestSchema, request.body);
       const { canvasId } = parseStringParams(request.params, ["canvasId"]);
-      await options.canvasService.saveCanvasContent(
+      const committed = await options.canvasService.saveCanvasContent(
         user,
         canvasId,
+        payload.expectedRevision,
         payload.content,
       );
       const bodySize = JSON.stringify(request.body).length;
       request.log.info({ canvasId, bodyBytes: bodySize }, "canvas.save OK");
-      return reply.code(200).send(canvasSaveResponseSchema.parse({ ok: true }));
+      return reply.code(200).send(
+        canvasSaveResponseSchema.parse({
+          ok: true,
+          revision: committed.revision,
+        }),
+      );
     },
   );
 }

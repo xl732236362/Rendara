@@ -7,6 +7,7 @@ import {
   createRun,
   fetchProjects,
   fetchViewer,
+  saveCanvas,
 } from "../src/lib/server-api";
 
 const mockFetch = vi.fn();
@@ -166,6 +167,26 @@ describe("authenticated server API", () => {
     );
     expect(requestHeaders().get("authorization")).toBe("Bearer token_abc");
     expect(result.projects).toHaveLength(1);
+  });
+
+  it("saveCanvas sends the expected revision and parses the committed revision", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, revision: 4 }),
+    });
+    const content = { elements: [], appState: {}, files: {} };
+
+    await expect(
+      saveCanvas("token_abc", "canvas-1", 3, content),
+    ).resolves.toEqual({
+      ok: true,
+      revision: 4,
+    });
+    expect(JSON.parse(mockFetch.mock.calls[0]?.[1]?.body as string)).toEqual({
+      expectedRevision: 3,
+      content,
+    });
   });
 
   it("createProject throws ApiApplicationError with code on 409", async () => {

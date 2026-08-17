@@ -32,6 +32,7 @@ import {
   assetSignedUrlResponseSchema,
   canvasGetResponseSchema,
   canvasSaveRequestSchema,
+  canvasSaveResponseSchema,
   chatMessageCreateRequestSchema,
   generateImageRequestSchema,
   generateImageResponseSchema,
@@ -187,19 +188,20 @@ export function fetchCanvas(
 export function saveCanvas(
   accessToken: string,
   canvasId: string,
+  expectedRevision: number,
   content: {
     elements: Record<string, unknown>[];
     appState: Record<string, unknown>;
     files: Record<string, Record<string, unknown>>;
   },
-): Promise<void> {
+): Promise<{ ok: true; revision: number }> {
   return apiFetch({
     method: "PUT",
     path: `/api/canvases/${canvasId}`,
     accessToken,
     requestSchema: canvasSaveRequestSchema,
-    body: { content },
-    responseMode: "empty",
+    body: { expectedRevision, content },
+    responseSchema: canvasSaveResponseSchema,
   });
 }
 
