@@ -416,6 +416,8 @@ export function buildAppFromEnv(
                     },
                   },
                   credits: {
+                    getBalance: (workspaceId) =>
+                      creditService.getBalance(workspaceId),
                     deduct: ({
                       workspaceId,
                       userId,

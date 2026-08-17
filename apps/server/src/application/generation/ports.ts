@@ -71,6 +71,11 @@ export type TierAuthorizationPort = {
 };
 
 export type CreditDeductionPort = {
+  getBalance(workspaceId: string): Promise<{
+    balance: number;
+    plan: SubscriptionPlan;
+    dailyClaimed: boolean;
+  }>;
   deduct(command: {
     workspaceId: string;
     userId: string;

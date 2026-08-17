@@ -28,7 +28,11 @@ describe("Agent runtime application wiring", () => {
         };
       }) as never,
       connectionManager: { pushToCanvas } as never,
-      createUserClient: (() => workspaceClient()) as never,
+      createUserClient: (() =>
+        canvasWorkspaceClient({
+          canvasId: "canvas-1",
+          workspaceId: "workspace-1",
+        })) as never,
       env: loadServerEnv(
         { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
         {},
@@ -42,7 +46,7 @@ describe("Agent runtime application wiring", () => {
           message: "Not enough credits",
           expose: true,
           details: {
-            currentBalance: 2,
+            balance: 2,
             requiredAmount: 7,
             plan: "free",
             dailyClaimed: true,
@@ -108,7 +112,11 @@ describe("Agent runtime application wiring", () => {
         };
       }) as never,
       connectionManager: { pushToCanvas } as never,
-      createUserClient: (() => workspaceClient()) as never,
+      createUserClient: (() =>
+        canvasWorkspaceClient({
+          canvasId: "canvas-1",
+          workspaceId: "workspace-1",
+        })) as never,
       env: loadServerEnv(
         { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
         {},
@@ -227,6 +235,135 @@ describe("Agent runtime application wiring", () => {
         canvasId: "canvas-other",
       }),
     ).rejects.toThrow("Canvas not found or access denied");
+  });
+
+  it("uses one team-canvas workspace resolution for image and video submissions", async () => {
+    let submitImageJob: SubmitImageJobFn | undefined;
+    let submitVideoJob: SubmitVideoJobFn | undefined;
+    const canvasWorkspaceLookups: string[] = [];
+    const createUserClient = vi.fn(() =>
+      canvasWorkspaceClient({
+        canvasId: "canvas-team",
+        workspaceId: "workspace-team",
+        onSelect: (columns) => canvasWorkspaceLookups.push(columns),
+      }),
+    );
+    const submitGeneration = vi.fn(
+      async (_principal: unknown, _request: unknown) => {
+        throw new Error("stop before polling");
+      },
+    );
+    const service = createAgentRunService({
+      agentFactory: ((options: {
+        submitImageJob?: SubmitImageJobFn;
+        submitVideoJob?: SubmitVideoJobFn;
+      }) => {
+        submitImageJob = options.submitImageJob;
+        submitVideoJob = options.submitVideoJob;
+        return { async *streamEvents() {}, async *stream() {} };
+      }) as never,
+      createUserClient: createUserClient as never,
+      env: loadServerEnv(
+        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
+        {},
+      ),
+      jobService: {} as never,
+      providerRegistry: new ProviderRegistry().seal(),
+      submitGeneration,
+    });
+    const run = service.createRun(
+      {
+        canvasId: "canvas-team",
+        conversationId: "conversation-1",
+        prompt: "hello",
+        sessionId: "session-1",
+      },
+      { accessToken: "token", userId: "user-team" },
+    );
+    for await (const _event of service.streamRun(run.runId)) {
+    }
+    if (!submitImageJob || !submitVideoJob) throw new Error("Tools not wired");
+
+    await expect(
+      submitImageJob({
+        prompt: "image",
+        title: "Image",
+        model: "image/model",
+        aspectRatio: "1:1",
+      }),
+    ).rejects.toThrow("stop before polling");
+    await expect(
+      submitVideoJob({ prompt: "video", model: "video/model" }),
+    ).rejects.toThrow("stop before polling");
+
+    expect(submitGeneration).toHaveBeenCalledTimes(2);
+    expect(submitGeneration.mock.calls.map((call) => call[0])).toEqual([
+      {
+        userId: "user-team",
+        workspaceId: "workspace-team",
+        accessToken: "token",
+      },
+      {
+        userId: "user-team",
+        workspaceId: "workspace-team",
+        accessToken: "token",
+      },
+    ]);
+    expect(
+      canvasWorkspaceLookups.filter((columns) =>
+        columns.includes("projects!inner(workspace_id)"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("rejects a missing or foreign canvas before either generation submission", async () => {
+    let submitImageJob: SubmitImageJobFn | undefined;
+    let submitVideoJob: SubmitVideoJobFn | undefined;
+    const submitGeneration = vi.fn();
+    const service = createAgentRunService({
+      agentFactory: ((options: {
+        submitImageJob?: SubmitImageJobFn;
+        submitVideoJob?: SubmitVideoJobFn;
+      }) => {
+        submitImageJob = options.submitImageJob;
+        submitVideoJob = options.submitVideoJob;
+        return { async *streamEvents() {}, async *stream() {} };
+      }) as never,
+      createUserClient: (() =>
+        canvasWorkspaceClient({ canvasId: null, workspaceId: null })) as never,
+      env: loadServerEnv(
+        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
+        {},
+      ),
+      jobService: {} as never,
+      providerRegistry: new ProviderRegistry().seal(),
+      submitGeneration,
+    });
+    const run = service.createRun(
+      {
+        canvasId: "canvas-foreign",
+        conversationId: "conversation-1",
+        prompt: "hello",
+        sessionId: "session-1",
+      },
+      { accessToken: "token", userId: "user-1" },
+    );
+    for await (const _event of service.streamRun(run.runId)) {
+    }
+    if (!submitImageJob || !submitVideoJob) throw new Error("Tools not wired");
+
+    await expect(
+      submitImageJob({
+        prompt: "image",
+        title: "Image",
+        model: "image/model",
+        aspectRatio: "1:1",
+      }),
+    ).rejects.toThrow("Canvas not found or access denied");
+    await expect(
+      submitVideoJob({ prompt: "video", model: "video/model" }),
+    ).rejects.toThrow("Canvas not found or access denied");
+    expect(submitGeneration).not.toHaveBeenCalled();
   });
 
   it("normalizes image and video tool submissions through the injected use case", async () => {
@@ -354,6 +491,35 @@ function workspaceClient() {
           }),
         }),
       }),
+    }),
+  };
+}
+
+function canvasWorkspaceClient(options: {
+  canvasId: string | null;
+  workspaceId: string | null;
+  onSelect?: (columns: string) => void;
+}) {
+  return {
+    from: () => ({
+      select: (columns: string) => {
+        options.onSelect?.(columns);
+        return {
+          eq: () => ({
+            maybeSingle: async () => ({
+              data:
+                options.canvasId && options.workspaceId
+                  ? {
+                      id: options.canvasId,
+                      project_id: "project-team",
+                      projects: { workspace_id: options.workspaceId },
+                    }
+                  : null,
+              error: null,
+            }),
+          }),
+        };
+      },
     }),
   };
 }

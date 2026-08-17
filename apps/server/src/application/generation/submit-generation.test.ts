@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { AppError } from "../../errors/app-error.js";
+import { CreditServiceError } from "../../features/credits/credit-service.js";
 import type {
   GenerationApplicationPorts,
   GenerationPrincipal,
@@ -50,6 +51,11 @@ function setup() {
       }),
     },
     credits: {
+      getBalance: vi.fn(async () => ({
+        balance: 100,
+        plan: "pro" as const,
+        dailyClaimed: false,
+      })),
       deduct: vi.fn(async () => {
         calls.push("deduct");
         return "tx-1";
@@ -255,6 +261,80 @@ describe("SubmitGeneration", () => {
       submit(principal, { type: "image_generation", prompt: "draw" }),
     ).rejects.toMatchObject({ code: "insufficient_credits", statusCode: 402 });
     expect(ports.cancellation.cancel).toHaveBeenCalledWith(principal, ids.job);
+  });
+
+  it("enriches a real insufficient-credit failure with safe current balance details", async () => {
+    const { ports, submit } = setup();
+    const credits = ports.credits;
+    if (!credits) throw new Error("test setup requires credits");
+    vi.mocked(credits.deduct).mockRejectedValue(
+      new CreditServiceError(
+        "insufficient_credits",
+        "raw database message must not cross",
+        402,
+      ),
+    );
+    vi.mocked(credits.getBalance).mockResolvedValue({
+      balance: 2,
+      plan: "pro",
+      dailyClaimed: true,
+    });
+
+    await expect(
+      submit(principal, { type: "image_generation", prompt: "draw" }),
+    ).rejects.toMatchObject({
+      code: "insufficient_credits",
+      message: "Insufficient credits.",
+      details: {
+        balance: 2,
+        requiredAmount: 7,
+        plan: "pro",
+        dailyClaimed: true,
+      },
+    });
+  });
+
+  it("preserves insufficient credits with required cost and plan when balance lookup fails", async () => {
+    const { ports, submit } = setup();
+    const credits = ports.credits;
+    if (!credits) throw new Error("test setup requires credits");
+    vi.mocked(credits.deduct).mockRejectedValue(
+      new CreditServiceError("insufficient_credits", "raw failure", 402),
+    );
+    vi.mocked(credits.getBalance).mockRejectedValue(
+      new Error("balance database unavailable"),
+    );
+
+    await expect(
+      submit(principal, { type: "image_generation", prompt: "draw" }),
+    ).rejects.toMatchObject({
+      code: "insufficient_credits",
+      message: "Insufficient credits.",
+      details: { requiredAmount: 7, plan: "pro" },
+    });
+  });
+
+  it("drops non-finite balance metadata from an insufficient-credit error", async () => {
+    const { ports, submit } = setup();
+    const credits = ports.credits;
+    if (!credits) throw new Error("test setup requires credits");
+    vi.mocked(credits.deduct).mockRejectedValue(
+      new CreditServiceError("insufficient_credits", "raw failure", 402),
+    );
+    vi.mocked(credits.getBalance).mockResolvedValue({
+      balance: Number.POSITIVE_INFINITY,
+      plan: "pro",
+      dailyClaimed: false,
+    });
+
+    const error = await submit(principal, {
+      type: "image_generation",
+      prompt: "draw",
+    }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      details: { requiredAmount: 7, plan: "pro", dailyClaimed: false },
+    });
+    expect(error).not.toHaveProperty("details.balance");
   });
 
   it("preserves the submission error and logs cleanup_failed when cancellation returns another job", async () => {

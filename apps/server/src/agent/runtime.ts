@@ -35,10 +35,7 @@ import {
 } from "../features/credits/tier-guard.js";
 import type { JobService } from "../features/jobs/job-service.js";
 import type { ProviderCatalog } from "../generation/providers/registry.js";
-import type {
-  AuthenticatedUser,
-  UserSupabaseClient,
-} from "../supabase/user.js";
+import type { UserSupabaseClient } from "../supabase/user.js";
 import { sanitizeErrorForClient } from "../utils/error-sanitizer.js";
 import type { ConnectionManager } from "../ws/connection-manager.js";
 import { createPipelineLogger } from "../ws/logger.js";
@@ -384,8 +381,8 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
       error.code,
       error.expose ? error.message : "Generation request was rejected.",
       {
-        ...(typeof details?.currentBalance === "number"
-          ? { currentBalance: details.currentBalance }
+        ...(typeof details?.balance === "number"
+          ? { currentBalance: details.balance }
           : {}),
         ...(typeof details?.requiredAmount === "number"
           ? { requiredAmount: details.requiredAmount }
@@ -539,6 +536,11 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         const canvasId = run.canvasId;
         const sessionId = run.sessionId;
         const runId = run.runId;
+        const resolveGenerationWorkspaceId = createGenerationWorkspaceResolver({
+          accessToken,
+          ...(canvasId ? { canvasId } : {}),
+          createUserClient: createClient,
+        });
 
         submitImageJob = async (input) => {
           const jobT0 = Date.now();
@@ -549,26 +551,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
             );
           };
 
-          // Look up personal workspace directly — the viewer is already
-          // bootstrapped from the normal auth flow, so we skip ensureViewer
-          // to avoid its strict email validation on the profile schema.
-          const client = createClient(accessToken) as UserSupabaseClient;
-          const { data: ws } = await client
-            .from("workspaces")
-            .select("id")
-            .eq("type", "personal")
-            .limit(1)
-            .single();
-          if (!ws?.id) throw new Error("No personal workspace found");
-
-          const user: AuthenticatedUser = {
-            id: userId,
-            accessToken,
-            email: "",
-            userMetadata: {},
-          };
-
-          const workspaceId = ws.id;
+          const workspaceId = await resolveGenerationWorkspaceId();
           let submitted: Awaited<ReturnType<SubmitGeneration>>;
           try {
             submitted = await submitGeneration(
@@ -737,23 +720,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
             );
           };
 
-          const client = createClient(accessToken) as UserSupabaseClient;
-          const { data: ws } = await client
-            .from("workspaces")
-            .select("id")
-            .eq("type", "personal")
-            .limit(1)
-            .single();
-          if (!ws?.id) throw new Error("No personal workspace found");
-
-          const user: AuthenticatedUser = {
-            id: userId,
-            accessToken,
-            email: "",
-            userMetadata: {},
-          };
-
-          const workspaceId = ws.id;
+          const workspaceId = await resolveGenerationWorkspaceId();
           let submitted: Awaited<ReturnType<SubmitGeneration>>;
           try {
             submitted = await submitGeneration(
@@ -1376,6 +1343,49 @@ function isBillingErrorCode(code: string): code is BillingErrorCode {
     code === "resolution_not_allowed" ||
     code === "concurrency_limit"
   );
+}
+
+function createGenerationWorkspaceResolver(options: {
+  accessToken: string;
+  canvasId?: string;
+  createUserClient: (accessToken: string) => unknown;
+}): () => Promise<string> {
+  let resolution: Promise<string> | undefined;
+  return () => {
+    resolution ??= resolve();
+    return resolution;
+  };
+
+  async function resolve(): Promise<string> {
+    const client = options.createUserClient(
+      options.accessToken,
+    ) as UserSupabaseClient;
+    if (options.canvasId) {
+      const { data, error } = await client
+        .from("canvases")
+        .select("id, project_id, projects!inner(workspace_id)")
+        .eq("id", options.canvasId)
+        .maybeSingle();
+      const canvas = data as unknown as {
+        id?: string;
+        projects?: { workspace_id?: string };
+      } | null;
+      const workspaceId = canvas?.projects?.workspace_id;
+      if (error || canvas?.id !== options.canvasId || !workspaceId) {
+        throw new Error("Canvas not found or access denied");
+      }
+      return workspaceId;
+    }
+
+    const { data, error } = await client
+      .from("workspaces")
+      .select("id")
+      .eq("type", "personal")
+      .limit(1)
+      .single();
+    if (error || !data?.id) throw new Error("No personal workspace found");
+    return data.id;
+  }
 }
 
 function mapEventToStatus(event: StreamEvent): RuntimeRunStatus {

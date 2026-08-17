@@ -1,6 +1,7 @@
 import {
   type GenerationSubmissionRequest,
   type GenerationSubmissionResponse,
+  type SubscriptionPlan,
   generationSubmissionRequestSchema,
 } from "@loomic/shared";
 
@@ -90,6 +91,17 @@ export function createSubmitGeneration(options: {
             request.type,
             stage,
           );
+          const normalized = normalizeGenerationError(error);
+          if (normalized.code === "insufficient_credits") {
+            throw await enrichInsufficientCredits({
+              error: normalized,
+              credits: options.ports.credits,
+              creditsCost,
+              plan,
+              workspaceId: principal.workspaceId,
+              logger: options.logger,
+            });
+          }
           throw error;
         }
       }
@@ -115,6 +127,52 @@ export function createSubmitGeneration(options: {
       throw normalized;
     }
   };
+}
+
+async function enrichInsufficientCredits(options: {
+  error: AppError;
+  credits: NonNullable<GenerationApplicationPorts["credits"]>;
+  creditsCost: number;
+  plan: SubscriptionPlan;
+  workspaceId: string;
+  logger: StructuredLogger;
+}): Promise<AppError> {
+  const requiredAmount = boundedAmount(options.creditsCost);
+  const details: Record<string, unknown> = {
+    ...(requiredAmount !== undefined ? { requiredAmount } : {}),
+    plan: options.plan,
+  };
+  try {
+    const balance = await options.credits.getBalance(options.workspaceId);
+    const safeBalance = boundedAmount(balance.balance);
+    if (safeBalance !== undefined) details.balance = safeBalance;
+    if (typeof balance.dailyClaimed === "boolean") {
+      details.dailyClaimed = balance.dailyClaimed;
+    }
+  } catch (balanceError) {
+    options.logger.warn("Credit balance enrichment failed", {
+      stage: "balance_enrichment",
+      workspaceId: options.workspaceId,
+      errorName:
+        balanceError instanceof Error ? balanceError.name : "UnknownError",
+    });
+  }
+  return new AppError({
+    code: "insufficient_credits",
+    statusCode: 402,
+    message: "Insufficient credits.",
+    expose: true,
+    details,
+    cause: options.error,
+  });
+}
+
+function boundedAmount(value: number): number | undefined {
+  return Number.isFinite(value) &&
+    value >= 0 &&
+    value <= Number.MAX_SAFE_INTEGER
+    ? value
+    : undefined;
 }
 
 function toCreateCommand(

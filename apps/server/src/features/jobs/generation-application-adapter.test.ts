@@ -96,7 +96,14 @@ describe("createJobServiceGenerationPorts", () => {
           authorizeConcurrency: vi.fn(async () => undefined),
           calculateCreditCost: vi.fn(() => 7),
         },
-        credits: { deduct: vi.fn(async () => "tx-1") },
+        credits: {
+          getBalance: vi.fn(async () => ({
+            balance: 100,
+            plan: "pro" as const,
+            dailyClaimed: false,
+          })),
+          deduct: vi.fn(async () => "tx-1"),
+        },
       },
     });
 
