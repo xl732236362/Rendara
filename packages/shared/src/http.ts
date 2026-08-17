@@ -58,13 +58,6 @@ export const projectCreateResponseSchema = z.object({
   project: projectSummarySchema,
 });
 
-export const unauthenticatedErrorResponseSchema = z.object({
-  error: z.object({
-    code: z.literal("unauthorized"),
-    message: z.string().min(1),
-  }),
-});
-
 export const applicationErrorCodeSchema = z.enum([
   "capability_disabled",
   "application_error",
@@ -122,10 +115,28 @@ export const applicationErrorCodeSchema = z.enum([
   "generation_failed",
 ]);
 
-export const applicationErrorResponseSchema = z.object({
+export const boundaryErrorCodeSchema = z.union([
+  z.enum(["unauthorized", "invalid_request"]),
+  applicationErrorCodeSchema,
+]);
+
+export const errorEnvelopeSchema = z.object({
   error: z.object({
-    code: applicationErrorCodeSchema,
+    code: boundaryErrorCodeSchema,
     message: z.string().min(1),
+    details: z.record(z.string(), z.unknown()).optional(),
+  }),
+});
+
+export const unauthenticatedErrorResponseSchema = errorEnvelopeSchema.extend({
+  error: errorEnvelopeSchema.shape.error.extend({
+    code: z.literal("unauthorized"),
+  }),
+});
+
+export const applicationErrorResponseSchema = errorEnvelopeSchema.extend({
+  error: errorEnvelopeSchema.shape.error.extend({
+    code: applicationErrorCodeSchema,
   }),
 });
 
@@ -152,6 +163,8 @@ export type UnauthenticatedErrorResponse = z.infer<
   typeof unauthenticatedErrorResponseSchema
 >;
 export type ApplicationErrorCode = z.infer<typeof applicationErrorCodeSchema>;
+export type BoundaryErrorCode = z.infer<typeof boundaryErrorCodeSchema>;
+export type ErrorEnvelope = z.infer<typeof errorEnvelopeSchema>;
 export type ApplicationErrorResponse = z.infer<
   typeof applicationErrorResponseSchema
 >;

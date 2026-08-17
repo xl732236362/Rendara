@@ -21,11 +21,11 @@
 
 **Files:** `package.json`, `packages/shared/package.json`, `apps/server/package.json`, `pnpm-lock.yaml`, `packages/shared/src/http.ts`, `packages/shared/src/ws-protocol.ts`, `packages/shared/src/job-contracts.ts`, `packages/shared/src/contracts.test.ts`, `tests/workspace.test.mjs`
 
-- [ ] Add failing workspace tests proving every workspace consumer resolves Zod major 4 and no package declares Zod 3.
-- [ ] Add failing contract tests for a single error envelope, generation submission/cancellation requests and responses, WS error messages, and parsed queue envelopes with schema version/type/payload.
-- [ ] Run `pnpm test:workspace` and `pnpm --filter @loomic/shared test`; confirm failures identify missing contracts/version alignment.
-- [ ] Upgrade shared to Zod 4, remove the server's redundant direct version declaration where workspace resolution is sufficient, and implement the schemas/types.
-- [ ] Rebuild shared and run workspace/shared tests, typecheck, and `pnpm dedupe --check`.
+- [x] Add failing workspace tests proving every workspace consumer resolves Zod major 4 and no package declares Zod 3.
+- [x] Add failing contract tests for a single error envelope, generation submission/cancellation requests and responses, WS error messages, and parsed queue envelopes with schema version/type/payload.
+- [x] Run `pnpm test:workspace` and `pnpm --filter @loomic/shared test`; confirm failures identify missing contracts/version alignment.
+- [x] Pin Zod 4 in the workspace catalog, explicitly reference it from importing packages, and implement the schemas/types.
+- [x] Rebuild shared and run workspace/shared tests, typecheck, and `pnpm dedupe --check`.
 
 ## Task 2: Establish AppError And Fastify Error Boundary
 
@@ -132,4 +132,3 @@
 | Shared use cases | adapter spy tests plus architecture searches |
 | Web response validation | malformed-payload/abort/timeout tests and no unchecked casts |
 | Production readiness retained | uncached quality, DB, Docker, container, and diff gates |
-

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,28 @@ async function readJson(relativePath) {
 async function readText(relativePath) {
   const filePath = path.join(rootDir, relativePath);
   return readFile(filePath, "utf8");
+}
+
+async function workspacePackageManifests() {
+  const packageDirectories = (
+    await Promise.all(
+      ["apps", "packages"].map(async (workspaceDirectory) =>
+        (
+          await readdir(path.join(rootDir, workspaceDirectory), {
+            withFileTypes: true,
+          })
+        )
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => `${workspaceDirectory}/${entry.name}`),
+      ),
+    )
+  ).flat();
+  return Promise.all(
+    packageDirectories.map(async (directory) => ({
+      directory,
+      manifest: await readJson(`${directory}/package.json`),
+    })),
+  );
 }
 
 test("root manifest exposes dev, build, test, and lint scripts", async () => {
@@ -78,6 +101,53 @@ test("shared package placeholder exists for the upcoming contract task", async (
 
   assert.equal(manifest.name, "@loomic/shared");
   assert.equal(manifest.type, "module");
+});
+
+test("workspace packages do not declare Zod 3", async () => {
+  const manifests = await workspacePackageManifests();
+
+  for (const { directory, manifest } of manifests) {
+    for (const dependencyGroup of [
+      "dependencies",
+      "devDependencies",
+      "peerDependencies",
+    ]) {
+      const declaredVersion = manifest[dependencyGroup]?.zod;
+      if (declaredVersion) {
+        assert.doesNotMatch(
+          declaredVersion,
+          /(?:^|[~^<>=\s])3(?:\.|$)/,
+          `${directory} declares Zod 3 in ${dependencyGroup}`,
+        );
+      }
+    }
+  }
+});
+
+test("every workspace Zod consumer resolves major 4", async () => {
+  const manifests = await workspacePackageManifests();
+  const consumers = manifests.filter(({ manifest }) =>
+    ["dependencies", "devDependencies", "peerDependencies"].some(
+      (dependencyGroup) => manifest[dependencyGroup]?.zod,
+    ),
+  );
+
+  assert.ok(
+    consumers.length > 0,
+    "expected at least one workspace Zod consumer",
+  );
+
+  for (const { directory } of consumers) {
+    const packageRequire = createRequire(
+      path.join(rootDir, directory, "package.json"),
+    );
+    const resolvedManifest = packageRequire("zod/package.json");
+    assert.equal(
+      Number.parseInt(resolvedManifest.version, 10),
+      4,
+      `${directory} resolves Zod ${resolvedManifest.version}`,
+    );
+  }
 });
 
 test("root lint baseline is wired through Biome", async () => {

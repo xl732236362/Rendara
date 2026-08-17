@@ -45,7 +45,7 @@ export const toolStartedEventSchema = z.object({
   runId: runIdSchema,
   toolCallId: toolCallIdSchema,
   toolName: z.string().min(1),
-  input: z.record(z.unknown()).optional(),
+  input: z.record(z.string(), z.unknown()).optional(),
   timestamp: timestampSchema,
 });
 
@@ -54,7 +54,7 @@ export const toolCompletedEventSchema = z.object({
   runId: runIdSchema,
   toolCallId: toolCallIdSchema,
   toolName: z.string().min(1),
-  output: z.record(z.unknown()).optional(),
+  output: z.record(z.string(), z.unknown()).optional(),
   outputSummary: z.string().optional(),
   artifacts: z.array(toolArtifactSchema).optional(),
   timestamp: timestampSchema,

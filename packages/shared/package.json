@@ -12,7 +12,7 @@
   },
   "files": ["dist"],
   "dependencies": {
-    "zod": "^3.24.2"
+    "zod": "catalog:"
   },
   "scripts": {
     "build": "tsc --build tsconfig.json --force",

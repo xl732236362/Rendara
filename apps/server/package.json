@@ -28,7 +28,7 @@
     "sharp": "^0.34.5",
     "tar": "^7.5.13",
     "undici": "^7.24.5",
-    "zod": "^4.3.6"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@loomic/config": "workspace:*",

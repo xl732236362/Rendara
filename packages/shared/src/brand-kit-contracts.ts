@@ -18,7 +18,7 @@ export const brandKitAssetSchema = z.object({
   sort_order: z.number().int(),
   text_content: z.string().nullable(),
   file_url: z.string().nullable(),
-  metadata: z.record(z.unknown()).default({}),
+  metadata: z.record(z.string(), z.unknown()).default({}),
   created_at: z.string().datetime({ offset: true }),
   updated_at: z.string().datetime({ offset: true }),
 });
@@ -71,7 +71,7 @@ export const brandKitAssetCreateRequestSchema = z.object({
   display_name: z.string().min(1).max(100),
   text_content: z.string().nullable().optional(),
   role: z.string().nullable().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 export type BrandKitAssetCreateRequest = z.infer<
   typeof brandKitAssetCreateRequestSchema
@@ -82,7 +82,7 @@ export const brandKitAssetUpdateRequestSchema = z.object({
   text_content: z.string().nullable().optional(),
   role: z.string().nullable().optional(),
   sort_order: z.number().int().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 export type BrandKitAssetUpdateRequest = z.infer<
   typeof brandKitAssetUpdateRequestSchema

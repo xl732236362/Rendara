@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { runCreateRequestSchema } from "./contracts.js";
 import { streamEventSchema } from "./events.js";
+import { errorEnvelopeSchema } from "./http.js";
 
 // --- Server → Client: Push Event (replaces SSE) ---
 
@@ -15,7 +16,7 @@ export const wsRpcRequestSchema = z.object({
   type: z.literal("rpc.request"),
   id: z.string().min(1),
   method: z.string().min(1),
-  params: z.record(z.unknown()).default({}),
+  params: z.record(z.string(), z.unknown()).default({}),
 });
 
 // --- Server → Client: Command Ack ---
@@ -23,7 +24,11 @@ export const wsRpcRequestSchema = z.object({
 export const wsCommandAckSchema = z.object({
   type: z.literal("command.ack"),
   action: z.string().min(1),
-  payload: z.record(z.unknown()),
+  payload: z.record(z.string(), z.unknown()),
+});
+
+export const wsErrorMessageSchema = errorEnvelopeSchema.extend({
+  type: z.literal("error"),
 });
 
 // --- Client → Server: Command ---
@@ -60,7 +65,7 @@ export const wsCommandSchema = z.discriminatedUnion("action", [
 export const wsRpcResponseSchema = z.object({
   type: z.literal("rpc.response"),
   id: z.string().min(1),
-  result: z.record(z.unknown()).optional(),
+  result: z.record(z.string(), z.unknown()).optional(),
   error: z.string().optional(),
 });
 
@@ -82,6 +87,7 @@ export const wsServerMessageSchema = z.discriminatedUnion("type", [
   wsServerEventSchema,
   wsRpcRequestSchema,
   wsCommandAckSchema,
+  wsErrorMessageSchema,
 ]);
 
 // --- Type exports ---
@@ -89,6 +95,7 @@ export const wsServerMessageSchema = z.discriminatedUnion("type", [
 export type WsServerEvent = z.infer<typeof wsServerEventSchema>;
 export type WsRpcRequest = z.infer<typeof wsRpcRequestSchema>;
 export type WsCommandAck = z.infer<typeof wsCommandAckSchema>;
+export type WsErrorMessage = z.infer<typeof wsErrorMessageSchema>;
 export type WsRunCommand = z.infer<typeof wsRunCommandSchema>;
 export type WsCancelCommand = z.infer<typeof wsCancelCommandSchema>;
 export type WsResumeCommand = z.infer<typeof wsResumeCommandSchema>;

@@ -130,9 +130,9 @@ export const projectSummarySchema = z.object({
 });
 
 export const canvasContentSchema = z.object({
-  elements: z.array(z.record(z.unknown())).default([]),
-  appState: z.record(z.unknown()).default({}),
-  files: z.record(z.record(z.unknown())).default({}),
+  elements: z.array(z.record(z.string(), z.unknown())).default([]),
+  appState: z.record(z.string(), z.unknown()).default({}),
+  files: z.record(z.string(), z.record(z.string(), z.unknown())).default({}),
 });
 
 export const canvasDetailSchema = z.object({
@@ -162,8 +162,8 @@ export const chatToolActivitySchema = z.object({
   toolCallId: z.string().min(1),
   toolName: z.string().min(1),
   status: z.enum(["running", "completed"]),
-  input: z.record(z.unknown()).optional(),
-  output: z.record(z.unknown()).optional(),
+  input: z.record(z.string(), z.unknown()).optional(),
+  output: z.record(z.string(), z.unknown()).optional(),
   outputSummary: z.string().optional(),
   artifacts: z.array(toolArtifactSchema).optional(),
 });
@@ -189,8 +189,8 @@ export const toolBlockSchema = z.object({
   toolCallId: z.string().min(1),
   toolName: z.string().min(1),
   status: z.enum(["running", "completed"]),
-  input: z.record(z.unknown()).optional(),
-  output: z.record(z.unknown()).optional(),
+  input: z.record(z.string(), z.unknown()).optional(),
+  output: z.record(z.string(), z.unknown()).optional(),
   outputSummary: z.string().optional(),
   artifacts: z.array(toolArtifactSchema).optional(),
 });

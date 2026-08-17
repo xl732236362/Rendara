@@ -21,6 +21,118 @@ const databaseTypeSource = readFileSync(
 );
 
 describe("@loomic/shared contracts", () => {
+  it("uses one canonical envelope for unauthorized, application, and validation errors", () => {
+    const schema = getExportedSchema("errorEnvelopeSchema");
+
+    for (const error of [
+      { code: "unauthorized", message: "Authentication is required." },
+      { code: "project_create_failed", message: "Unable to create project." },
+      {
+        code: "invalid_request",
+        message: "Request validation failed.",
+        details: { fieldErrors: { prompt: ["Required"] } },
+      },
+    ]) {
+      expect(schema.parse({ error })).toEqual({ error });
+    }
+  });
+
+  it("shares generation submission request and response contracts", () => {
+    const requestSchema = getExportedSchema(
+      "generationSubmissionRequestSchema",
+    );
+    const responseSchema = getExportedSchema(
+      "generationSubmissionResponseSchema",
+    );
+
+    expect(
+      requestSchema.parse({
+        type: "image_generation",
+        prompt: "A product photograph",
+        model: "image-model",
+        aspect_ratio: "16:9",
+      }),
+    ).toMatchObject({
+      type: "image_generation",
+      prompt: "A product photograph",
+    });
+    expect(
+      requestSchema.parse({
+        type: "video_generation",
+        prompt: "A slow camera orbit",
+        duration: 5,
+        resolution: "1080p",
+      }),
+    ).toMatchObject({ type: "video_generation", duration: 5 });
+    expect(
+      responseSchema.parse({
+        jobId: "550e8400-e29b-41d4-a716-446655440000",
+        status: "queued",
+      }),
+    ).toEqual({
+      jobId: "550e8400-e29b-41d4-a716-446655440000",
+      status: "queued",
+    });
+    expect(() =>
+      requestSchema.parse({
+        type: "image_generation",
+        prompt: "Wrong media fields",
+        duration: 5,
+      }),
+    ).toThrow();
+  });
+
+  it("shares generation cancellation request and response contracts", () => {
+    const requestSchema = getExportedSchema(
+      "generationCancellationRequestSchema",
+    );
+    const responseSchema = getExportedSchema(
+      "generationCancellationResponseSchema",
+    );
+    const jobId = "550e8400-e29b-41d4-a716-446655440000";
+
+    expect(requestSchema.parse({ jobId })).toEqual({ jobId });
+    expect(responseSchema.parse({ jobId, status: "canceled" })).toEqual({
+      jobId,
+      status: "canceled",
+    });
+  });
+
+  it("parses WebSocket errors through the canonical error envelope", () => {
+    const schema = getExportedSchema("wsServerMessageSchema");
+    const message = {
+      type: "error",
+      error: { code: "invalid_request", message: "Malformed command." },
+    };
+
+    expect(schema.parse(message)).toEqual(message);
+  });
+
+  it("parses versioned queue envelopes discriminated by generation type", () => {
+    const schema = getExportedSchema("generationQueueEnvelopeSchema");
+
+    const imageEnvelope = schema.parse({
+      schemaVersion: 1,
+      type: "image_generation",
+      payload: { prompt: "A product photograph", aspect_ratio: "1:1" },
+    });
+    const videoEnvelope = schema.parse({
+      schemaVersion: 1,
+      type: "video_generation",
+      payload: { prompt: "A camera orbit", duration: 5 },
+    });
+
+    expect(imageEnvelope.type).toBe("image_generation");
+    expect(videoEnvelope.type).toBe("video_generation");
+    expect(() =>
+      schema.parse({
+        schemaVersion: 1,
+        type: "image_generation",
+        payload: { prompt: "Wrong payload", duration: 5 },
+      }),
+    ).toThrow();
+  });
+
   it("exposes the imported skill review requirement", () => {
     expect(skillDetailResponseSchema.shape.requiresReview).toBeDefined();
   });

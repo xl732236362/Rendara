@@ -43,6 +43,57 @@ export type VideoGenerationPayload = z.infer<
   typeof videoGenerationPayloadSchema
 >;
 
+export const generationSubmissionRequestSchema = z.discriminatedUnion("type", [
+  imageGenerationPayloadSchema
+    .extend({ type: z.literal("image_generation") })
+    .strict(),
+  videoGenerationPayloadSchema
+    .extend({ type: z.literal("video_generation") })
+    .strict(),
+]);
+export type GenerationSubmissionRequest = z.infer<
+  typeof generationSubmissionRequestSchema
+>;
+
+export const generationSubmissionResponseSchema = z.object({
+  jobId: z.string().uuid(),
+  status: z.literal("queued"),
+});
+export type GenerationSubmissionResponse = z.infer<
+  typeof generationSubmissionResponseSchema
+>;
+
+export const generationCancellationRequestSchema = z.object({
+  jobId: z.string().uuid(),
+});
+export type GenerationCancellationRequest = z.infer<
+  typeof generationCancellationRequestSchema
+>;
+
+export const generationCancellationResponseSchema = z.object({
+  jobId: z.string().uuid(),
+  status: z.enum(["canceling", "canceled"]),
+});
+export type GenerationCancellationResponse = z.infer<
+  typeof generationCancellationResponseSchema
+>;
+
+export const generationQueueEnvelopeSchema = z.discriminatedUnion("type", [
+  z.object({
+    schemaVersion: z.literal(1),
+    type: z.literal("image_generation"),
+    payload: imageGenerationPayloadSchema.strict(),
+  }),
+  z.object({
+    schemaVersion: z.literal(1),
+    type: z.literal("video_generation"),
+    payload: videoGenerationPayloadSchema.strict(),
+  }),
+]);
+export type GenerationQueueEnvelope = z.infer<
+  typeof generationQueueEnvelopeSchema
+>;
+
 export const createVideoJobRequestSchema = z.object({
   project_id: z.string().uuid().optional(),
   canvas_id: z.string().uuid().optional(),

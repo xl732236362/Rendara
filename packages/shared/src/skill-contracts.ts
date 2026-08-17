@@ -28,7 +28,7 @@ export const skillListItemSchema = z.object({
   iconName: z.string().nullable(),
   source: skillSourceSchema,
   isFeatured: z.boolean(),
-  metadata: z.record(z.unknown()).default({}),
+  metadata: z.record(z.string(), z.unknown()).default({}),
   createdAt: z.string().datetime({ offset: true }),
   updatedAt: z.string().datetime({ offset: true }),
   // Populated when listing for a workspace:
