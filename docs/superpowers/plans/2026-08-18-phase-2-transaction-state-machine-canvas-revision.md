@@ -131,13 +131,16 @@ git commit -m "feat(shared): define phase two consistency contracts"
 
 - [ ] **Step 1: Write failing pgTAP schema and permission tests**
 
-Plan assertions for the new columns/tables, service-role-only worker functions, authenticated submission/cancel/Canvas functions, and revoked public execution. Include exact checks such as:
+Plan assertions for the new columns/tables, service-role-only submission/worker functions, authenticated cancel/Canvas functions, and revoked public execution. Submission stays server-only because model pricing is application-owned and must not be caller-supplied by a directly authenticated client. Include exact checks such as:
 
 ```sql
 select has_column('public', 'canvases', 'revision', 'canvas revision exists');
 select has_table('public', 'generation_submission_keys', 'submission keys exist');
 select has_table('public', 'job_effect_receipts', 'effect receipts exist');
 select has_table('public', 'domain_outbox', 'outbox exists');
+select ok(not has_function_privilege('authenticated',
+  'public.submit_generation_job(uuid,uuid,text,text,jsonb,integer,text)', 'execute'),
+  'clients cannot bypass application-owned generation pricing');
 select ok(not has_function_privilege('authenticated',
   'public.claim_generation_job(uuid,text,integer)', 'execute'),
   'clients cannot claim worker leases');
@@ -170,7 +173,7 @@ Create `generation_submission_keys`, `job_effect_receipts`, `credit_compensation
 
 - [ ] **Step 4: Implement hardened transactional functions**
 
-Implement and comment these RPCs with fully qualified names, fixed `search_path`, explicit grants, stable SQLSTATE/detail codes, and consistent lock order:
+Implement and comment these RPCs with fully qualified names, fixed `search_path`, explicit grants, stable SQLSTATE/detail codes, and consistent lock order. Grant `submit_generation_job` only to `service_role`; it accepts explicit user/workspace identities from the trusted server and revalidates membership plus referenced resource ownership in the database:
 
 ```text
 public.submit_generation_job(...)
@@ -711,4 +714,3 @@ Re-run quality, forced test/typecheck/build, zero database rebuild, pgTAP, real 
 - [ ] **Step 5: Update verification evidence and stop before merge/push**
 
 Record final commit and rerun evidence in `phase-2-verification.md`. Confirm the worktree is clean. Do not merge or push `main` unless the user separately requests it.
-
