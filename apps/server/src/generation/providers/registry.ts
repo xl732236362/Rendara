@@ -1,4 +1,9 @@
-import type { ImageProvider, ModelInfo, VideoProvider } from "../types.js";
+import type {
+  ImageProvider,
+  ModelInfo,
+  VideoModelInfo,
+  VideoProvider,
+} from "../types.js";
 import { GenerationError } from "../utils.js";
 
 /** Model info enriched with its owning provider name. */
@@ -20,30 +25,52 @@ export interface ProviderCatalog {
 export class ProviderRegistry implements ProviderCatalog {
   readonly #imageProviders = new Map<string, ImageProvider>();
   readonly #videoProviders = new Map<string, VideoProvider>();
+  readonly #imageModels = new Map<string, readonly AvailableModel[]>();
+  readonly #videoModels = new Map<string, readonly AvailableModel[]>();
+  #imageModelOwners = new Map<string, string>();
+  #videoModelOwners = new Map<string, string>();
   #sealed = false;
 
   registerImageProvider(provider: ImageProvider): this {
     this.#assertMutable();
-    if (this.#imageProviders.has(provider.name)) {
-      throw new Error(`Duplicate image provider name: "${provider.name}"`);
+    const providerName = this.#validateIdentifier(
+      "image provider name",
+      provider.name,
+    );
+    if (this.#imageProviders.has(providerName)) {
+      throw new Error(`Duplicate image provider name: "${providerName}"`);
     }
-    this.#imageProviders.set(provider.name, provider);
+    const models = this.#snapshotModels("image", providerName, provider.models);
+    this.#imageProviders.set(providerName, provider);
+    this.#imageModels.set(providerName, models);
     return this;
   }
 
   registerVideoProvider(provider: VideoProvider): this {
     this.#assertMutable();
-    if (this.#videoProviders.has(provider.name)) {
-      throw new Error(`Duplicate video provider name: "${provider.name}"`);
+    const providerName = this.#validateIdentifier(
+      "video provider name",
+      provider.name,
+    );
+    if (this.#videoProviders.has(providerName)) {
+      throw new Error(`Duplicate video provider name: "${providerName}"`);
     }
-    this.#videoProviders.set(provider.name, provider);
+    const models = this.#snapshotModels("video", providerName, provider.models);
+    this.#videoProviders.set(providerName, provider);
+    this.#videoModels.set(providerName, models);
     return this;
   }
 
   seal(): this {
     if (!this.#sealed) {
-      this.#assertUniqueModels("image", this.#imageProviders.values());
-      this.#assertUniqueModels("video", this.#videoProviders.values());
+      this.#imageModelOwners = this.#buildModelOwnerIndex(
+        "image",
+        this.#imageModels,
+      );
+      this.#videoModelOwners = this.#buildModelOwnerIndex(
+        "video",
+        this.#videoModels,
+      );
       this.#sealed = true;
     }
     return this;
@@ -74,50 +101,59 @@ export class ProviderRegistry implements ProviderCatalog {
   }
 
   getAvailableImageModels(): AvailableModel[] {
-    return this.#availableModels(this.#imageProviders.values());
+    return this.#availableModels(this.#imageModels);
   }
 
   getAvailableVideoModels(): AvailableModel[] {
-    return this.#availableModels(this.#videoProviders.values());
+    return this.#availableModels(this.#videoModels);
   }
 
   resolveImageProviderName(modelId: string): string {
-    return this.#resolveProviderName("image", modelId, this.#imageProviders);
+    return this.#resolveProviderName(
+      "image",
+      modelId,
+      this.#imageModelOwners,
+      this.#imageModels,
+    );
   }
 
   resolveVideoProviderName(modelId: string): string {
-    return this.#resolveProviderName("video", modelId, this.#videoProviders);
+    return this.#resolveProviderName(
+      "video",
+      modelId,
+      this.#videoModelOwners,
+      this.#videoModels,
+    );
   }
 
   #assertMutable(): void {
     if (this.#sealed) throw new Error("Provider registry is sealed");
   }
 
-  #assertUniqueModels(
+  #buildModelOwnerIndex(
     mediaType: "image" | "video",
-    providers: Iterable<ImageProvider | VideoProvider>,
-  ): void {
+    modelsByProvider: ReadonlyMap<string, readonly AvailableModel[]>,
+  ): Map<string, string> {
     const owners = new Map<string, string>();
-    for (const provider of providers) {
-      for (const model of provider.models) {
-        const owner = owners.get(model.id);
-        if (owner) {
+    for (const [providerName, models] of modelsByProvider) {
+      for (const model of models) {
+        if (owners.has(model.id)) {
+          const owner = owners.get(model.id) as string;
           throw new Error(
-            `Duplicate ${mediaType} model ID: "${model.id}" (providers: "${owner}", "${provider.name}")`,
+            `Duplicate ${mediaType} model ID: "${model.id}" (providers: "${owner}", "${providerName}")`,
           );
         }
-        owners.set(model.id, provider.name);
+        owners.set(model.id, providerName);
       }
     }
+    return owners;
   }
 
   #availableModels(
-    providers: Iterable<ImageProvider | VideoProvider>,
+    modelsByProvider: ReadonlyMap<string, readonly AvailableModel[]>,
   ): AvailableModel[] {
-    return [...providers]
-      .flatMap((provider) =>
-        provider.models.map((model) => ({ ...model, provider: provider.name })),
-      )
+    return [...modelsByProvider.values()]
+      .flat()
       .sort(
         (left, right) =>
           left.id.localeCompare(right.id) ||
@@ -128,11 +164,17 @@ export class ProviderRegistry implements ProviderCatalog {
   #resolveProviderName(
     mediaType: "image" | "video",
     modelId: string,
-    providers: ReadonlyMap<string, ImageProvider | VideoProvider>,
+    owners: ReadonlyMap<string, string>,
+    modelsByProvider: ReadonlyMap<string, readonly AvailableModel[]>,
   ): string {
-    for (const provider of providers.values()) {
-      if (provider.models.some((model) => model.id === modelId)) {
-        return provider.name;
+    const indexedOwner = owners.get(modelId);
+    if (indexedOwner !== undefined) return indexedOwner;
+
+    if (!this.#sealed) {
+      for (const [providerName, models] of modelsByProvider) {
+        if (models.some((model) => model.id === modelId)) {
+          return providerName;
+        }
       }
     }
     throw new GenerationError(
@@ -141,4 +183,33 @@ export class ProviderRegistry implements ProviderCatalog {
       `No provider registered for ${mediaType} model: ${modelId}`,
     );
   }
+
+  #snapshotModels(
+    mediaType: "image" | "video",
+    providerName: string,
+    models: readonly (ModelInfo | VideoModelInfo)[],
+  ): readonly AvailableModel[] {
+    return Object.freeze(
+      models.map((model) => {
+        this.#validateIdentifier(`${mediaType} model ID`, model.id);
+        const clone = JSON.parse(JSON.stringify(model)) as ModelInfo;
+        return deepFreeze({ ...clone, provider: providerName });
+      }),
+    );
+  }
+
+  #validateIdentifier(label: string, value: string): string {
+    if (value.length === 0 || value !== value.trim()) {
+      throw new Error(`Invalid ${label}: "${value}"`);
+    }
+    return value;
+  }
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
+  return value;
 }

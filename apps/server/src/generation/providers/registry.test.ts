@@ -121,4 +121,112 @@ describe("ProviderRegistry", () => {
       registry.registerImageProvider(imageProvider("late", "late-model")),
     ).toThrow("Provider registry is sealed");
   });
+
+  it("snapshots and deeply freezes image model metadata", () => {
+    const sourceModels = [
+      {
+        id: "stable/model",
+        displayName: "Stable",
+        description: "Original",
+      },
+    ];
+    const registry = new ProviderRegistry();
+    registry.registerImageProvider({
+      name: "mutable-source",
+      models: sourceModels,
+      generate: vi.fn(),
+    });
+    registry.seal();
+
+    const sourceModel = sourceModels[0];
+    if (!sourceModel) throw new Error("Expected source model fixture");
+    sourceModel.id = "mutated/model";
+    sourceModel.description = "Mutated";
+    sourceModels.push({
+      id: "late/model",
+      displayName: "Late",
+      description: "Late",
+    });
+    const listed = registry.getAvailableImageModels();
+
+    expect(listed).toEqual([
+      {
+        id: "stable/model",
+        displayName: "Stable",
+        description: "Original",
+        provider: "mutable-source",
+      },
+    ]);
+    expect(registry.resolveImageProviderName("stable/model")).toBe(
+      "mutable-source",
+    );
+    expect(() => registry.resolveImageProviderName("mutated/model")).toThrow(
+      "No provider registered for image model: mutated/model",
+    );
+    const listedModel = listed[0];
+    if (!listedModel) throw new Error("Expected listed model");
+    expect(Object.isFrozen(listedModel)).toBe(true);
+    expect(() => {
+      listedModel.description = "returned-list mutation";
+    }).toThrow();
+    listed.push({
+      id: "caller-only",
+      displayName: "Caller",
+      description: "Caller",
+      provider: "caller",
+    });
+    expect(registry.getAvailableImageModels()).toHaveLength(1);
+  });
+
+  it("snapshots and deeply freezes nested video model metadata", () => {
+    const provider = videoProvider("video", "video/model");
+    const sourceModel = provider.models[0];
+    if (!sourceModel) throw new Error("Expected video model fixture");
+    const registry = new ProviderRegistry()
+      .registerVideoProvider(provider)
+      .seal();
+
+    (sourceModel.capabilities as { audio: boolean }).audio = true;
+    (sourceModel.limits as { maxDuration: number }).maxDuration = 99;
+    const listed = registry.getAvailableVideoModels();
+    const snapshot = listed[0] as unknown as typeof sourceModel;
+
+    expect(snapshot.capabilities.audio).toBe(false);
+    expect(snapshot.limits.maxDuration).toBe(5);
+    expect(Object.isFrozen(snapshot.capabilities)).toBe(true);
+    expect(Object.isFrozen(snapshot.limits)).toBe(true);
+    expect(() => {
+      (snapshot.capabilities as { audio: boolean }).audio = true;
+    }).toThrow();
+  });
+
+  it.each([
+    ["image", "", "model", 'Invalid image provider name: ""'],
+    ["image", " padded ", "model", 'Invalid image provider name: " padded "'],
+    ["image", "provider", "", 'Invalid image model ID: ""'],
+    ["video", "provider", " padded ", 'Invalid video model ID: " padded "'],
+  ] as const)(
+    "rejects invalid %s provider/model identifiers",
+    (mediaType, providerName, modelId, expected) => {
+      const registry = new ProviderRegistry();
+      const register = () =>
+        mediaType === "image"
+          ? registry.registerImageProvider(imageProvider(providerName, modelId))
+          : registry.registerVideoProvider(
+              videoProvider(providerName, modelId),
+            );
+
+      expect(register).toThrow(expected);
+    },
+  );
+
+  it("detects duplicate ownership using key presence", () => {
+    const registry = new ProviderRegistry();
+    registry.registerImageProvider(imageProvider("0", "__proto__"));
+    registry.registerImageProvider(imageProvider("second", "__proto__"));
+
+    expect(() => registry.seal()).toThrow(
+      'Duplicate image model ID: "__proto__" (providers: "0", "second")',
+    );
+  });
 });
