@@ -82,10 +82,12 @@ Verification evidence: generation application tests cover shared media schema pa
 
 **Files:** `apps/server/src/application/canvas/apply-canvas-operations.ts`, test, `apps/server/src/application/skills/import-skill.ts`, test, existing canvas and skill services
 
-- [ ] Write failing tests for authorization-before-mutation, operation validation, external-import capability gating, review-required result, and error normalization.
-- [ ] Implement thin application use cases around existing services; do not introduce phase 2 revision semantics or phase 4 node protocols early.
-- [ ] Ensure Agent tools and HTTP adapters depend on the use-case interfaces rather than direct Supabase writes for paths migrated in this phase.
-- [ ] Run focused application tests and existing Skill security tests.
+- [x] Write failing tests for authorization-before-mutation, operation validation, external-import capability gating, review-required result, and error normalization.
+- [x] Implement thin application use cases around existing services; do not introduce phase 2 revision semantics or phase 4 node protocols early.
+- [x] Provide explicit CanvasService/skill-import adapters for later entry-point migration; no Agent or HTTP path is claimed migrated by this task, and Task 8 retains ownership of replacing their direct writes.
+- [x] Run focused application tests and existing Skill security tests.
+
+Verification evidence: application and adapter tests cover ordered canvas authorization, invalid-operation no-op behavior, outcome identity/shape validation, capability-first Skill gating, supported-source validation, review-required/disabled results, safe structured logs, and stable private error normalization. The adapters reuse `CanvasService` and `importSkillFromUrl`; this task introduces neither canvas revision/node protocols nor a second archive/network importer. Existing Agent canvas JSON writes and HTTP Skill persistence remain explicitly assigned to Task 8.
 
 ## Task 8: Migrate HTTP, WebSocket, Agent, And Worker Entry Points
 

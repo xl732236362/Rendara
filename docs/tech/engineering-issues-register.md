@@ -207,6 +207,7 @@
 - 证据：`CanvasService` 只提供整份读取和保存；Worker 的 `canvas-element-writer.ts` 与 Agent 的 `manipulate-canvas.ts` 均直接访问 `canvases.content`，各自实现读改写、错误处理和文件策略。
 - 影响：权限、revision、校验、迁移、日志和冲突处理无法在一个边界统一实施；未来修改存储模型需要同时改动多个调用方。
 - 建议方向：建立 canvas repository/application service，暴露 `applyOperations`、`insertArtifact` 等用例；所有写入统一经过校验、并发控制、审计日志和事件发布。
+- 阶段 1 进展：已建立 transport-neutral `ApplyCanvasOperations`、显式授权/操作端口与复用 `CanvasService` 的适配器，并覆盖授权顺序、输入/输出运行时校验和脱敏日志。Agent/Worker 现有整份 JSON 直写尚未迁移，并发控制、revision 与事件发布仍属于后续阶段，因此本项仅为部分解决。
 
 ### ENG-018：画布领域缺少针对性测试
 
@@ -316,6 +317,7 @@
 - 影响：仓库所有者更新、依赖劫持、恶意 README/SKILL 指令或 prompt injection 都可能转化为服务端命令执行和数据外传。
 - 建议方向：将 skill 视为可执行供应链制品：记录不可变来源 hash/commit、签名和发布者信任等级；导入后默认禁用，展示权限清单和 diff；脚本执行需要 capability policy/HITL，社区 skill 只运行在真正隔离的 sandbox 中。
 - 阶段 0 结果：外部导入能力已默认关闭；显式开启后导入的 Skill 也默认禁用并要求人工审阅，来源与下载范围受到约束。签名、不可变来源、权限清单和隔离执行仍列入阶段 3，因此本项保持“部分解决”。
+- 阶段 1 进展：新增 transport-neutral `ImportSkill`，固定“能力闸门优先、来源校验后再调用既有安全 importer”的顺序，并在运行时强制 `requiresReview: true`、`enabled: false` 及来源身份一致。HTTP 持久化迁移和阶段 3 的签名/权限/隔离仍未完成，本项继续保持“部分解决”。
 
 ### ENG-031：高成本入口缺少统一限流和配额入口
 
