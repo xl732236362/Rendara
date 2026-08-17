@@ -623,15 +623,15 @@ git commit -m "test: prove phase two concurrency invariants"
 - Create: `docs/tech/phase-2-verification.md`
 - Modify: `docs/tech/engineering-issues-register.md`
 
-- [ ] **Step 1: Write the operations runbook**
+- [x] **Step 1: Write the operations runbook**
 
 Document expand/backfill/switch/enforce deployment order, schema-compatible application rollback, forward-fix rules, metrics/alerts, and exact diagnostic queries for stuck queued jobs, expired leases, repeated reads, unpublished outbox age, Canvas conflicts, orphan Storage candidates, and compensation audit. Include safe event replay and human compensation commands with pre/post verification.
 
-- [ ] **Step 2: Update the issue register**
+- [x] **Step 2: Update the issue register**
 
 Mark ENG-001/002/011 resolved only with exact implementation commits and test evidence. Mark ENG-017 resolved if the architecture scanner proves no direct Canvas write bypass remains; otherwise record the exact remaining bounded path and keep it partially solved.
 
-- [ ] **Step 3: Run the complete quality gate**
+- [x] **Step 3: Run the complete quality gate**
 
 Run:
 
@@ -645,7 +645,7 @@ pnpm exec turbo run build --force
 
 Expected: all commands return 0 with no cached package test/typecheck/build claims where `--force` is used.
 
-- [ ] **Step 4: Run database zero rebuild, permissions, concurrency, and fault tests**
+- [x] **Step 4: Run database zero rebuild, permissions, concurrency, and fault tests**
 
 Run:
 
@@ -658,7 +658,7 @@ pnpm --filter @loomic/server test:integration
 
 Expected: fresh migration application and every permission/concurrency/failpoint assertion PASS.
 
-- [ ] **Step 5: Validate production Docker entrypoints**
+- [x] **Step 5: Validate production Docker entrypoints**
 
 Run:
 
@@ -671,7 +671,7 @@ docker run --rm --entrypoint sh loomic-server:phase2 -c "test -r dist/worker.js 
 
 Expected: image builds, application module prints `app-load-ok`, and both production entrypoints pass syntax/load checks. Where configuration permits safe startup, start API and Worker containers and record readiness/process evidence without claiming external-provider success.
 
-- [ ] **Step 6: Perform diff and scope audit**
+- [x] **Step 6: Perform diff and scope audit**
 
 Run:
 
@@ -684,11 +684,11 @@ rg -n "refundDeadLetteredJob|Auto-refund|\.update\(\{ content" apps/server/src
 
 Expected: no whitespace errors, only intended Phase 2 files, no automatic refunds, and no direct Canvas persistence bypass.
 
-- [ ] **Step 7: Write exact verification evidence**
+- [x] **Step 7: Write exact verification evidence**
 
 Record commit ids, host/tool versions, exact commands, test counts, database reset/pgTAP/integration results, Docker image id, known limits, and any forward-fix note in `phase-2-verification.md`. Do not generalize a narrow check into a broader production claim.
 
-- [ ] **Step 8: Commit governance evidence**
+- [x] **Step 8: Commit governance evidence**
 
 ```text
 git add docs/tech/phase-2-operations-runbook.md docs/tech/phase-2-verification.md docs/tech/engineering-issues-register.md
@@ -700,22 +700,22 @@ git commit -m "docs(governance): record phase two acceptance"
 **Files:**
 - Modify only files required by confirmed review findings.
 
-- [ ] **Step 1: Review against the design and issue register**
+- [x] **Step 1: Review against the design and issue register**
 
 Inspect every legal/illegal transition, debit/compensation unique key, lease predicate, result/effect receipt, Canvas writer, outbox publish boundary, RPC privilege, RLS policy, failpoint guard, and Phase 3-5 non-goal. Findings must include exact file/line evidence and severity.
 
-- [ ] **Step 2: Write a failing regression test for each confirmed defect**
+- [x] **Step 2: Write a failing regression test for each confirmed defect**
 
 For every correctness finding, add the narrowest unit, pgTAP, or real-concurrency test that reproduces it and run that test to prove RED before changing implementation.
 
-- [ ] **Step 3: Fix confirmed defects and rerun focused tests**
+- [x] **Step 3: Fix confirmed defects and rerun focused tests**
 
 Implement only evidence-backed corrections, run each new regression test to GREEN, and commit coherent fixes with messages naming the invariant restored.
 
-- [ ] **Step 4: Repeat all final gates from Task 10**
+- [x] **Step 4: Repeat all final gates from Task 10**
 
 Re-run quality, forced test/typecheck/build, zero database rebuild, pgTAP, real concurrency/fault injection, Docker entrypoints, `git diff --check`, and scope searches on the final reviewed commit.
 
-- [ ] **Step 5: Update verification evidence and stop before merge/push**
+- [x] **Step 5: Update verification evidence and stop before merge/push**
 
 Record final commit and rerun evidence in `phase-2-verification.md`. Confirm the worktree is clean. Do not merge or push `main` unless the user separately requests it.

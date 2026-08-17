@@ -26,8 +26,8 @@
 
 | 编号 | 严重度 | 状态 | 领域 | 摘要 |
 | --- | --- | --- | --- | --- |
-| ENG-001 | P0 | 已确认 | 队列与数据一致性 | 创建任务与发送 PGMQ 消息缺少原子一致性边界 |
-| ENG-002 | P0 | 已确认 | 任务状态机 | 取消任务可能被 Worker 后续覆盖为成功或失败 |
+| ENG-001 | P0 | 已解决（阶段 2） | 队列与数据一致性 | 原子 submission RPC 同事务完成幂等、扣款、job 与 PGMQ send |
+| ENG-002 | P0 | 已解决（阶段 2） | 任务状态机 | 租约令牌、合法转换与条件结算消除取消/完成覆盖 |
 | ENG-003 | P1 | 已解决 | 构建与部署 | 后端构建只生成标记文件，生产环境直接运行 TypeScript 源码 |
 | ENG-004 | P1 | 已解决 | 构建与部署 | 前端生产构建忽略 TypeScript 错误 |
 | ENG-005 | P1 | 已确认 | 测试 | 后端关键业务链路缺少自动化测试 |
@@ -36,13 +36,13 @@
 | ENG-008 | P2 | 已确认 | 可观测性 | 业务日志未统一接入结构化日志和链路上下文 |
 | ENG-009 | P2 | 已确认 | Monorepo 边界 | `config` 与 `ui` 共享包尚未承担真实共享职责 |
 | ENG-010 | P1 | 已解决 | 持续集成 | 仓库缺少 CI 工作流，质量检查未形成合并门禁 |
-| ENG-011 | P0 | 已确认 | 画布一致性 | 浏览器、Worker 与 Agent 以整份 JSON 覆盖保存，存在静默丢失更新 |
+| ENG-011 | P0 | 已解决（阶段 2） | 画布一致性 | revision CAS、409 与可重放操作重试阻止静默覆盖 |
 | ENG-012 | P1 | 已确认 | 节点协议 | 业务节点依赖未版本化、弱类型的 `customData` 约定 |
 | ENG-013 | P1 | 已确认 | 画布模型 | 前后端分别手工构造 Excalidraw 元素，规则已出现重复与漂移 |
 | ENG-014 | P1 | 已确认 | 节点扩展性 | 节点识别、渲染和交互分散在多个组件，缺少统一注册机制 |
 | ENG-015 | P2 | 已确认 | 演进能力 | 持久化时移除删除标记，不利于撤销、合并和实时协作扩展 |
 | ENG-016 | P1 | 已确认 | 媒体持久化 | 已存储媒体在加载后回灌为 data URL，后续保存会重复上传 |
-| ENG-017 | P1 | 部分解决 | 模块边界 | Agent 和 Worker 绕过 CanvasService 直接读写画布 JSON |
+| ENG-017 | P1 | 已解决（阶段 2） | 模块边界 | 所有 Canvas 写入统一经 repository CAS，AST 门禁禁止旁路 |
 | ENG-018 | P2 | 已确认 | 画布测试 | 画布服务、节点协议和并发保存缺少针对性测试 |
 | ENG-019 | P1 | 部分解决 | 应用层 | 同一生成与扣费流程在 HTTP、Agent 等入口重复编排 |
 | ENG-020 | P1 | 部分解决 | API 契约 | 请求和响应的运行时校验策略不一致 |
@@ -64,6 +64,8 @@
 | ENG-036 | P1 | 已确认 | 可运维性 | 健康检查只返回常量，缺少 readiness 与关键依赖诊断 |
 | ENG-037 | P2 | 已确认 | 数据库交付 | Migration 缺少自动化重建、静态安全检查和升级验证流程 |
 | ENG-038 | P2 | 已确认 | 前端数据层 | 服务端状态主要由组件 useEffect 手工管理，缓存与失效规则分散 |
+
+阶段 2 关闭证据：ENG-001/002 由 `196aad6`、`54965ba`、`e16e817`、`63fbcce`、`b204607` 与审查修复 `4df284d`、`bc40b7f` 落地；提交事务内只扣款一次且不自动退款，外部效果先记意图、歧义不重放，租约过期不可结算，补偿累计不超过原 debit。ENG-011/017 由 `f876e43`、`86771a3`、`55fe338`、`cba1e83` 与 `4df284d` 落地；浏览器使用窄权限 CAS RPC，Job effect 仅 service role 且校验 Job/Canvas/Workspace/actor 关系。最终证据见 `docs/tech/phase-2-verification.md`，关闭日期 2026-08-18。
 
 ## 已确认问题
 
@@ -208,6 +210,7 @@
 - 影响：权限、revision、校验、迁移、日志和冲突处理无法在一个边界统一实施；未来修改存储模型需要同时改动多个调用方。
 - 建议方向：建立 canvas repository/application service，暴露 `applyOperations`、`insertArtifact` 等用例；所有写入统一经过校验、并发控制、审计日志和事件发布。
 - 阶段 1 进展：已建立 transport-neutral `ApplyCanvasOperations`、显式授权/操作端口与复用 `CanvasService` 的适配器；Agent manipulate 工具通过该用例完成授权、读取、应用和保存。生成结果插入因现有 operation schema 无法表达 storage object path/签名视频 URL，改由窄口径应用用例 `AttachGeneratedAsset` 授权后委托既有 writer。并发控制、revision 与事件发布仍属于后续阶段，因此 ENG-017 仍仅为部分解决。
+- 阶段 2 结论：`f876e43` 将浏览器、Agent 操作和生成资产统一到 revision CAS repository；生成资产以 job/effect receipt 去重，`55fe338` 仅在成功提交后的 outbox 发布事件。`cba1e83` 的 TypeScript AST 门禁拒绝直接 `canvases.content` 更新，ENG-017 关闭。
 
 ### ENG-018：画布领域缺少针对性测试
 
