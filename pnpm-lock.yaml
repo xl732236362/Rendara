@@ -72,6 +72,9 @@ importers:
       '@langchain/openai':
         specifier: ^1.3.0
         version: 1.3.0(@langchain/core@1.1.35(openai@6.32.0(ws@8.20.0)(zod@4.3.6))(ws@8.20.0))(ws@8.20.0)
+      '@loomic/config':
+        specifier: workspace:*
+        version: link:../../packages/config
       '@loomic/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -115,9 +118,6 @@ importers:
         specifier: 'catalog:'
         version: 4.3.6
     devDependencies:
-      '@loomic/config':
-        specifier: workspace:*
-        version: link:../../packages/config
       '@types/js-yaml':
         specifier: ^4.0.9
         version: 4.0.9
@@ -237,7 +237,11 @@ importers:
         specifier: ^4.2.2
         version: 4.2.2
 
-  packages/config: {}
+  packages/config:
+    dependencies:
+      zod:
+        specifier: 'catalog:'
+        version: 4.3.6
 
   packages/shared:
     dependencies:

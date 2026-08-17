@@ -3,6 +3,11 @@
   "buildCommand": "pnpm --filter @loomic/shared build && pnpm --filter @loomic/web build",
   "outputDirectory": "apps/web/out",
   "cleanUrls": true,
+  "env": {
+    "NEXT_PUBLIC_SERVER_BASE_URL": "@next-public-server-base-url",
+    "NEXT_PUBLIC_SUPABASE_URL": "@next-public-supabase-url",
+    "NEXT_PUBLIC_SUPABASE_ANON_KEY": "@next-public-supabase-anon-key"
+  },
   "rewrites": [
     {
       "source": "/((?!_next|favicon|logo|og-image|apple-touch-icon).*)",

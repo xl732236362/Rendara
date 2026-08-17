@@ -45,17 +45,19 @@ const VT_BY_QUEUE: Record<string, number> = {
 };
 
 async function main() {
-  const env = loadServerEnv();
-
-  if (!env.supabaseDbUrl) {
-    console.error("SUPABASE_DB_URL is required for worker process.");
-    process.exit(1);
-  }
+  const env = loadServerEnv({}, process.env, { process: "worker" });
 
   // Register all generation providers (shared with app.ts)
   registerAllProviders(env);
 
-  const pgmq = createPgmqClient(env.supabaseDbUrl);
+  const { supabaseDbUrl } = env;
+  if (!supabaseDbUrl) {
+    // Defensive invariant: worker-mode schema validation above requires this.
+    throw new Error(
+      "Validated worker configuration is missing SUPABASE_DB_URL",
+    );
+  }
+  const pgmq = createPgmqClient(supabaseDbUrl);
   const createUserClient = createUserSupabaseClientFactory(env);
 
   let adminClient: ReturnType<typeof createAdminSupabaseClient> | undefined;

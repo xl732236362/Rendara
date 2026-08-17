@@ -1,4 +1,10 @@
 import { readFileSync } from "node:fs";
+import {
+  type AgentBackendMode,
+  type ServerEnvironment,
+  envDescriptors,
+  parseServerEnvironment,
+} from "@loomic/config";
 
 export const DEFAULT_AGENT_BACKEND_MODE = "state";
 export const DEFAULT_AGENT_MODEL = "gpt-4.1";
@@ -6,360 +12,50 @@ export const DEFAULT_GOOGLE_AGENT_MODEL = "gemini-2.5-flash";
 export const DEFAULT_SERVER_PORT = 3001;
 export const DEFAULT_WEB_ORIGIN = "http://localhost:3000";
 
-/**
- * Resolve the default agent model based on available provider configuration.
- * When Google/Vertex is configured but OpenAI is not, defaults to Gemini 2.5 Flash.
- */
+export type { AgentBackendMode };
+export type ServerEnv = ServerEnvironment & { version: string };
+
 export function resolveDefaultAgentModel(env: {
   googleApiKey?: string | undefined;
   googleVertexProject?: string | undefined;
   openAIApiKey?: string | undefined;
 }): string {
-  const hasOpenAI = !!env.openAIApiKey;
-  const hasGoogle = !!(env.googleApiKey || env.googleVertexProject);
-
-  if (!hasOpenAI && hasGoogle) return DEFAULT_GOOGLE_AGENT_MODEL;
-  return DEFAULT_AGENT_MODEL;
+  return !env.openAIApiKey && (env.googleApiKey || env.googleVertexProject)
+    ? DEFAULT_GOOGLE_AGENT_MODEL
+    : DEFAULT_AGENT_MODEL;
 }
 
-export type AgentBackendMode = "filesystem" | "state";
-
-export type ServerEnv = {
-  agentBackendMode: AgentBackendMode;
-  agentFilesRoot?: string;
-  agentModel: string;
-  allowExternalSkillImport: boolean;
-  allowLocalAgentExecute: boolean;
-  googleApiKey?: string;
-  googleApplicationCredentials?: string;
-  googleFontsApiKey?: string;
-  googleVertexLocation?: string;
-  googleVertexProject?: string;
-  googleVertexVideoLocation?: string;
-  openAIApiBase?: string;
-  openAIApiKey?: string;
-  port: number;
-  rateLimitDefaultPerMinute: number;
-  rateLimitGenerationPerMinute: number;
-  rateLimitImageProxyPerMinute: number;
-  rateLimitSkillImportPerHour: number;
-  rateLimitUploadsPerMinute: number;
-  replicateApiToken?: string;
-  supabaseAnonKey?: string;
-  supabaseDbUrl?: string;
-  supabaseJwtSecret?: string;
-  supabaseProjectId?: string;
-  supabaseServiceRoleKey?: string;
-  supabaseUrl?: string;
-  version: string;
-  volcesApiKey?: string;
-  volcesBaseUrl?: string;
-  lemonSqueezyApiKey?: string;
-  lemonSqueezyStoreId?: string;
-  lemonSqueezyWebhookSecret?: string;
-  lemonSqueezyVariantStarterMonthly?: string;
-  lemonSqueezyVariantStarterYearly?: string;
-  lemonSqueezyVariantProMonthly?: string;
-  lemonSqueezyVariantProYearly?: string;
-  lemonSqueezyVariantUltraMonthly?: string;
-  lemonSqueezyVariantUltraYearly?: string;
-  lemonSqueezyVariantBusinessMonthly?: string;
-  lemonSqueezyVariantBusinessYearly?: string;
-  skillsRoot?: string;
-  webOrigin: string;
-  workerConcurrency?: number;
-  workerImageConcurrency?: number;
-  workerVideoConcurrency?: number;
-  workerId?: string;
-  workerPollIntervalMs?: number;
-  workerMaxBatchSize?: number;
-};
+const propertyToKey = new Map(
+  envDescriptors
+    .filter((item) => item.property && item.key !== "PORT")
+    .map((item) => [item.property, item.key]),
+);
 
 export function loadServerEnv(
   overrides: Partial<ServerEnv> = {},
   source: NodeJS.ProcessEnv = process.env,
+  options: { process?: "api" | "worker" } = {},
 ): ServerEnv {
-  const agentFilesRoot =
-    overrides.agentFilesRoot ??
-    parseAgentFilesRoot(source.LOOMIC_AGENT_FILES_ROOT);
-  const openAIApiBase =
-    overrides.openAIApiBase ?? normalizeOptionalString(source.OPENAI_API_BASE);
-  const openAIApiKey =
-    overrides.openAIApiKey ?? normalizeOptionalString(source.OPENAI_API_KEY);
-  const supabaseUrl =
-    overrides.supabaseUrl ?? normalizeOptionalString(source.SUPABASE_URL);
-  const supabaseAnonKey =
-    overrides.supabaseAnonKey ??
-    normalizeOptionalString(source.SUPABASE_ANON_KEY);
-  const supabaseDbUrl =
-    overrides.supabaseDbUrl ?? normalizeOptionalString(source.SUPABASE_DB_URL);
-  const supabaseJwtSecret =
-    overrides.supabaseJwtSecret ??
-    normalizeOptionalString(source.SUPABASE_JWT_SECRET);
-  const supabaseServiceRoleKey =
-    overrides.supabaseServiceRoleKey ??
-    normalizeOptionalString(source.SUPABASE_SERVICE_ROLE_KEY);
-  const supabaseProjectId =
-    overrides.supabaseProjectId ??
-    normalizeOptionalString(source.SUPABASE_PROJECT_ID);
-  const googleApiKey =
-    overrides.googleApiKey ?? normalizeOptionalString(source.GOOGLE_API_KEY);
-  const googleApplicationCredentials =
-    overrides.googleApplicationCredentials ??
-    normalizeOptionalString(source.GOOGLE_APPLICATION_CREDENTIALS);
-  const googleFontsApiKey =
-    overrides.googleFontsApiKey ??
-    normalizeOptionalString(source.GOOGLE_FONTS_API_KEY);
-  const googleVertexProject =
-    overrides.googleVertexProject ??
-    normalizeOptionalString(source.GOOGLE_VERTEX_PROJECT);
-  const googleVertexLocation =
-    overrides.googleVertexLocation ??
-    normalizeOptionalString(source.GOOGLE_VERTEX_LOCATION);
-  const googleVertexVideoLocation =
-    overrides.googleVertexVideoLocation ??
-    normalizeOptionalString(source.GOOGLE_VERTEX_VIDEO_LOCATION);
-  const replicateApiToken =
-    overrides.replicateApiToken ??
-    normalizeOptionalString(source.REPLICATE_API_TOKEN);
-  const volcesApiKey =
-    overrides.volcesApiKey ?? normalizeOptionalString(source.VOLCES_API_KEY);
-  const volcesBaseUrl =
-    overrides.volcesBaseUrl ?? normalizeOptionalString(source.VOLCES_BASE_URL);
-  const lemonSqueezyApiKey =
-    overrides.lemonSqueezyApiKey ??
-    normalizeOptionalString(source.LEMONSQUEEZY_API_KEY);
-  const lemonSqueezyStoreId =
-    overrides.lemonSqueezyStoreId ??
-    normalizeOptionalString(source.LEMONSQUEEZY_STORE_ID);
-  const lemonSqueezyWebhookSecret =
-    overrides.lemonSqueezyWebhookSecret ??
-    normalizeOptionalString(source.LEMONSQUEEZY_WEBHOOK_SECRET);
-  const lemonSqueezyVariantStarterMonthly =
-    overrides.lemonSqueezyVariantStarterMonthly ??
-    normalizeOptionalString(source.LEMONSQUEEZY_VARIANT_STARTER_MONTHLY);
-  const lemonSqueezyVariantStarterYearly =
-    overrides.lemonSqueezyVariantStarterYearly ??
-    normalizeOptionalString(source.LEMONSQUEEZY_VARIANT_STARTER_YEARLY);
-  const lemonSqueezyVariantProMonthly =
-    overrides.lemonSqueezyVariantProMonthly ??
-    normalizeOptionalString(source.LEMONSQUEEZY_VARIANT_PRO_MONTHLY);
-  const lemonSqueezyVariantProYearly =
-    overrides.lemonSqueezyVariantProYearly ??
-    normalizeOptionalString(source.LEMONSQUEEZY_VARIANT_PRO_YEARLY);
-  const lemonSqueezyVariantUltraMonthly =
-    overrides.lemonSqueezyVariantUltraMonthly ??
-    normalizeOptionalString(source.LEMONSQUEEZY_VARIANT_ULTRA_MONTHLY);
-  const lemonSqueezyVariantUltraYearly =
-    overrides.lemonSqueezyVariantUltraYearly ??
-    normalizeOptionalString(source.LEMONSQUEEZY_VARIANT_ULTRA_YEARLY);
-  const lemonSqueezyVariantBusinessMonthly =
-    overrides.lemonSqueezyVariantBusinessMonthly ??
-    normalizeOptionalString(source.LEMONSQUEEZY_VARIANT_BUSINESS_MONTHLY);
-  const lemonSqueezyVariantBusinessYearly =
-    overrides.lemonSqueezyVariantBusinessYearly ??
-    normalizeOptionalString(source.LEMONSQUEEZY_VARIANT_BUSINESS_YEARLY);
-  const skillsRoot =
-    overrides.skillsRoot ?? normalizeOptionalString(source.LOOMIC_SKILLS_ROOT);
-  const workerConcurrency =
-    overrides.workerConcurrency ??
-    (source.WORKER_CONCURRENCY
-      ? Number.parseInt(source.WORKER_CONCURRENCY, 10)
-      : undefined);
-  const workerImageConcurrency =
-    overrides.workerImageConcurrency ??
-    (source.WORKER_IMAGE_CONCURRENCY
-      ? Number.parseInt(source.WORKER_IMAGE_CONCURRENCY, 10)
-      : undefined);
-  const workerVideoConcurrency =
-    overrides.workerVideoConcurrency ??
-    (source.WORKER_VIDEO_CONCURRENCY
-      ? Number.parseInt(source.WORKER_VIDEO_CONCURRENCY, 10)
-      : undefined);
-  const workerId =
-    overrides.workerId ?? normalizeOptionalString(source.WORKER_ID);
-  const workerPollIntervalMs =
-    overrides.workerPollIntervalMs ??
-    (source.WORKER_POLL_INTERVAL_MS
-      ? Number.parseInt(source.WORKER_POLL_INTERVAL_MS, 10)
-      : undefined);
-  const workerMaxBatchSize =
-    overrides.workerMaxBatchSize ??
-    (source.WORKER_MAX_BATCH_SIZE
-      ? Number.parseInt(source.WORKER_MAX_BATCH_SIZE, 10)
-      : undefined);
-
-  // Resolve default agent model based on available provider keys.
-  // Explicit LOOMIC_AGENT_MODEL always takes precedence; otherwise fall back
-  // to Gemini 2.5 Flash when only Google/Vertex is configured.
-  const explicitModel =
-    overrides.agentModel ?? parseAgentModel(source.LOOMIC_AGENT_MODEL);
-  const resolvedAgentModel =
-    explicitModel ??
-    resolveDefaultAgentModel({
-      googleApiKey,
-      googleVertexProject,
-      openAIApiKey,
-    });
-
+  const merged: Record<string, unknown> = { ...source };
+  for (const [property, value] of Object.entries(overrides)) {
+    if (property === "version" || value === undefined) continue;
+    const key = propertyToKey.get(property as keyof ServerEnvironment);
+    if (key) merged[key] = value;
+  }
   return {
-    agentBackendMode:
-      overrides.agentBackendMode ??
-      parseAgentBackendMode(source.LOOMIC_AGENT_BACKEND_MODE),
-    agentModel: resolvedAgentModel,
-    allowExternalSkillImport:
-      overrides.allowExternalSkillImport ??
-      source.LOOMIC_ALLOW_EXTERNAL_SKILL_IMPORT === "true",
-    allowLocalAgentExecute:
-      overrides.allowLocalAgentExecute ??
-      source.LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE === "true",
-    port: overrides.port ?? parsePort(source.LOOMIC_SERVER_PORT ?? source.PORT),
-    rateLimitDefaultPerMinute:
-      overrides.rateLimitDefaultPerMinute ??
-      parsePositiveInteger(
-        "LOOMIC_RATE_LIMIT_DEFAULT_PER_MINUTE",
-        source.LOOMIC_RATE_LIMIT_DEFAULT_PER_MINUTE,
-        300,
-      ),
-    rateLimitGenerationPerMinute:
-      overrides.rateLimitGenerationPerMinute ??
-      parsePositiveInteger(
-        "LOOMIC_RATE_LIMIT_GENERATION_PER_MINUTE",
-        source.LOOMIC_RATE_LIMIT_GENERATION_PER_MINUTE,
-        10,
-      ),
-    rateLimitImageProxyPerMinute:
-      overrides.rateLimitImageProxyPerMinute ??
-      parsePositiveInteger(
-        "LOOMIC_RATE_LIMIT_IMAGE_PROXY_PER_MINUTE",
-        source.LOOMIC_RATE_LIMIT_IMAGE_PROXY_PER_MINUTE,
-        60,
-      ),
-    rateLimitSkillImportPerHour:
-      overrides.rateLimitSkillImportPerHour ??
-      parsePositiveInteger(
-        "LOOMIC_RATE_LIMIT_SKILL_IMPORT_PER_HOUR",
-        source.LOOMIC_RATE_LIMIT_SKILL_IMPORT_PER_HOUR,
-        5,
-      ),
-    rateLimitUploadsPerMinute:
-      overrides.rateLimitUploadsPerMinute ??
-      parsePositiveInteger(
-        "LOOMIC_RATE_LIMIT_UPLOADS_PER_MINUTE",
-        source.LOOMIC_RATE_LIMIT_UPLOADS_PER_MINUTE,
-        20,
-      ),
-    version: overrides.version ?? readServerVersion(),
-    webOrigin:
-      overrides.webOrigin ?? source.LOOMIC_WEB_ORIGIN ?? DEFAULT_WEB_ORIGIN,
-    ...(agentFilesRoot ? { agentFilesRoot } : {}),
-    ...(googleApiKey ? { googleApiKey } : {}),
-    ...(googleApplicationCredentials ? { googleApplicationCredentials } : {}),
-    ...(openAIApiBase ? { openAIApiBase } : {}),
-    ...(openAIApiKey ? { openAIApiKey } : {}),
-    ...(supabaseUrl ? { supabaseUrl } : {}),
-    ...(supabaseAnonKey ? { supabaseAnonKey } : {}),
-    ...(supabaseDbUrl ? { supabaseDbUrl } : {}),
-    ...(supabaseJwtSecret ? { supabaseJwtSecret } : {}),
-    ...(supabaseServiceRoleKey ? { supabaseServiceRoleKey } : {}),
-    ...(supabaseProjectId ? { supabaseProjectId } : {}),
-    ...(googleFontsApiKey ? { googleFontsApiKey } : {}),
-    ...(googleVertexProject ? { googleVertexProject } : {}),
-    ...(googleVertexLocation ? { googleVertexLocation } : {}),
-    ...(googleVertexVideoLocation ? { googleVertexVideoLocation } : {}),
-    ...(replicateApiToken ? { replicateApiToken } : {}),
-    ...(volcesApiKey ? { volcesApiKey } : {}),
-    ...(volcesBaseUrl ? { volcesBaseUrl } : {}),
-    ...(lemonSqueezyApiKey ? { lemonSqueezyApiKey } : {}),
-    ...(lemonSqueezyStoreId ? { lemonSqueezyStoreId } : {}),
-    ...(lemonSqueezyWebhookSecret ? { lemonSqueezyWebhookSecret } : {}),
-    ...(lemonSqueezyVariantStarterMonthly
-      ? { lemonSqueezyVariantStarterMonthly }
-      : {}),
-    ...(lemonSqueezyVariantStarterYearly
-      ? { lemonSqueezyVariantStarterYearly }
-      : {}),
-    ...(lemonSqueezyVariantProMonthly ? { lemonSqueezyVariantProMonthly } : {}),
-    ...(lemonSqueezyVariantProYearly ? { lemonSqueezyVariantProYearly } : {}),
-    ...(lemonSqueezyVariantUltraMonthly
-      ? { lemonSqueezyVariantUltraMonthly }
-      : {}),
-    ...(lemonSqueezyVariantUltraYearly
-      ? { lemonSqueezyVariantUltraYearly }
-      : {}),
-    ...(lemonSqueezyVariantBusinessMonthly
-      ? { lemonSqueezyVariantBusinessMonthly }
-      : {}),
-    ...(lemonSqueezyVariantBusinessYearly
-      ? { lemonSqueezyVariantBusinessYearly }
-      : {}),
-    ...(skillsRoot ? { skillsRoot } : {}),
-    ...(workerConcurrency ? { workerConcurrency } : {}),
-    ...(workerImageConcurrency ? { workerImageConcurrency } : {}),
-    ...(workerVideoConcurrency ? { workerVideoConcurrency } : {}),
-    ...(workerId ? { workerId } : {}),
-    ...(workerPollIntervalMs ? { workerPollIntervalMs } : {}),
-    ...(workerMaxBatchSize ? { workerMaxBatchSize } : {}),
+    ...parseServerEnvironment(merged, options),
+    version: overrides.version ?? SERVER_VERSION,
   };
 }
 
-function parseAgentBackendMode(rawMode: string | undefined): AgentBackendMode {
-  if (!rawMode) {
-    return DEFAULT_AGENT_BACKEND_MODE;
-  }
+// Read once at module initialization rather than on every app/test parse.
+const SERVER_VERSION = readServerVersion();
 
-  if (rawMode === "state" || rawMode === "filesystem") {
-    return rawMode;
-  }
-
-  throw new Error(`Invalid LOOMIC_AGENT_BACKEND_MODE value: ${rawMode}`);
-}
-
-function parseAgentFilesRoot(rawRoot: string | undefined) {
-  return normalizeOptionalString(rawRoot);
-}
-
-function parseAgentModel(rawModel: string | undefined) {
-  return normalizeOptionalString(rawModel);
-}
-
-function normalizeOptionalString(value: string | undefined) {
-  const normalizedValue = value?.trim();
-  return normalizedValue || undefined;
-}
-
-function parsePort(rawPort: string | undefined) {
-  if (!rawPort) {
-    return DEFAULT_SERVER_PORT;
-  }
-
-  const port = Number.parseInt(rawPort, 10);
-  if (!Number.isInteger(port) || port <= 0) {
-    throw new Error(`Invalid LOOMIC_SERVER_PORT value: ${rawPort}`);
-  }
-
-  return port;
-}
-
-function parsePositiveInteger(
-  name: string,
-  rawValue: string | undefined,
-  defaultValue: number,
-) {
-  if (rawValue === undefined) return defaultValue;
-  const value = Number(rawValue);
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`Invalid ${name} value: ${rawValue}`);
-  }
-  return value;
-}
-
-function readServerVersion() {
+function readServerVersion(): string {
   const packageJson = readFileSync(
     new URL("../../package.json", import.meta.url),
     "utf8",
   );
-
   const parsed = JSON.parse(packageJson) as { version?: string };
   return parsed.version ?? "0.0.0";
 }

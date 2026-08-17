@@ -98,6 +98,41 @@ test("root test command wires node:test and turbo package tests", async () => {
   assert.match(manifest.scripts.test, /test:packages/);
 });
 
+test("environment template validator rejects drift without resolving secrets", async () => {
+  const { validateEnvironmentContracts } = await import(
+    "../scripts/validate-env-template.mjs"
+  );
+  const issues = validateEnvironmentContracts({
+    envTemplate: [
+      "OPENAI_API_KEY=placeholder",
+      "UNKNOWN_ENV=value",
+      "LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE=true",
+    ].join("\n"),
+    deployments: [
+      {
+        name: "vercel.json",
+        metadata: {
+          process: "web",
+          variables: ["OPENAI_API_KEY"],
+        },
+      },
+    ],
+    requireCompleteTemplate: false,
+  });
+
+  assert.ok(issues.some((issue) => issue.includes("UNKNOWN_ENV")));
+  assert.ok(issues.some((issue) => issue.includes("dangerous")));
+  assert.ok(issues.some((issue) => issue.includes("public/private")));
+  assert.ok(!issues.join("\n").includes("placeholder"));
+});
+
+test("workspace tests run the checked-in environment contract validator", async () => {
+  const manifest = await readJson("package.json");
+
+  assert.match(manifest.scripts["validate:env"], /validate-env-template/);
+  assert.match(manifest.scripts["test:workspace"], /validate:env/);
+});
+
 test("vitest workspace config exists for later package-level adoption", async () => {
   const workspaceConfig = await readText("vitest.workspace.ts");
 
