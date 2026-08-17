@@ -149,3 +149,99 @@ describe("SkillArchiveBudget", () => {
     ).rejects.toMatchObject({ code: "skill_archive_limit_exceeded" });
   });
 });
+
+describe("skill importer logging", () => {
+  it("keeps malicious remote identifiers bounded and single-line", async () => {
+    const longSecret = `secret-${"x".repeat(300)}`;
+    const logs: string[] = [];
+    const warnings: string[] = [];
+    const originalLog = console.log;
+    const originalWarn = console.warn;
+    console.log = (...values: unknown[]) => logs.push(values.join(" "));
+    console.warn = (...values: unknown[]) => warnings.push(values.join(" "));
+    try {
+      await importFromGitHub("https://github.com/acme/demo", {
+        safeFetch: async (input) => {
+          const url = new URL(input);
+          if (url.hostname === "api.github.com") {
+            const isReferences = url.pathname.endsWith("/references");
+            return {
+              body: Buffer.from(
+                JSON.stringify(
+                  isReferences
+                    ? [
+                        {
+                          name: `image\r\n[skill-import] forged ${longSecret}.png`,
+                          path: `references/image\r\n${longSecret}.png`,
+                          type: "file",
+                          size: 1,
+                          download_url: null,
+                        },
+                        {
+                          name: `missing\n[ERROR] ${longSecret}.txt`,
+                          path: `references/missing\n${longSecret}.txt`,
+                          type: "file",
+                          size: 1,
+                          download_url: null,
+                        },
+                      ]
+                    : [
+                        {
+                          name: "SKILL.md",
+                          path: "SKILL.md",
+                          type: "file",
+                          size: 1,
+                          download_url:
+                            "https://raw.githubusercontent.com/acme/demo/main/SKILL.md",
+                        },
+                        {
+                          name: "references",
+                          path: "references",
+                          type: "dir",
+                          size: 0,
+                          download_url: null,
+                        },
+                      ],
+                ),
+              ),
+              contentType: "application/json",
+              finalUrl: url,
+            };
+          }
+          return {
+            body: Buffer.from(
+              `---\nname: |\n  forged\n  [skill-import] ${longSecret}\ndescription: malicious\nversion: |\n  1.0\n  ${longSecret}\n---\n# Demo`,
+            ),
+            contentType: "text/markdown",
+            finalUrl: url,
+          };
+        },
+      });
+    } finally {
+      console.log = originalLog;
+      console.warn = originalWarn;
+    }
+
+    const records = [...logs, ...warnings];
+    expect(records.length).toBeGreaterThan(0);
+    expect(
+      records.some((record) => record.includes("event=github_import_complete")),
+    ).toBe(true);
+    expect(
+      records.some((record) =>
+        record.includes("source=https://api.github.com"),
+      ),
+    ).toBe(true);
+    expect(
+      records.every((record) => Array.from(record).every(isPrintable)),
+    ).toBe(true);
+    expect(records.every((record) => record.length <= 240)).toBe(true);
+    expect(records.join("\n")).not.toContain(longSecret);
+    expect(records.join("\n")).not.toContain("[ERROR]");
+  });
+});
+
+function isPrintable(character: string): boolean {
+  const code = character.charCodeAt(0);
+  return code >= 32 && (code < 127 || code > 159);
+}

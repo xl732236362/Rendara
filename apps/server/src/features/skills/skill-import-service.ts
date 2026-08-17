@@ -460,7 +460,7 @@ async function githubApiFetch(
   fetcher: SkillSafeFetcher,
 ): Promise<SafeFetchResult> {
   console.log(
-    `[skill-import] GitHub API request: source=${safeUrlOrigin(url)}`,
+    `[skill-import] event=github_api_request source=${safeUrlOrigin(url)}`,
   );
   try {
     return await fetcher(url, GITHUB_API_POLICY);
@@ -552,12 +552,12 @@ async function collectGitHubFiles(
       // Skip binary files
       if (isBinaryFile(item.name)) {
         budget.accept(relativePath, item.size);
-        console.log(`[skill-import] Skipping binary file: ${relativePath}`);
+        console.log("[skill-import] event=github_binary_file_skipped");
         continue;
       }
 
       if (!item.download_url) {
-        console.warn(`[skill-import] No download URL for file: ${item.path}`);
+        console.warn("[skill-import] event=github_download_url_missing");
         continue;
       }
 
@@ -604,7 +604,7 @@ export async function importFromGitHub(
   const budget = SkillArchiveBudget.forArchive(0);
   const { owner, repo, path, ref } = parseGitHubUrl(repoUrl);
   console.log(
-    `[skill-import] Importing from GitHub: ${owner}/${repo} path="${path}" ref="${ref ?? "default"}"`,
+    `[skill-import] event=github_import_started repo=${safeLogIdentifier(owner)}/${safeLogIdentifier(repo)} path=${safeLogIdentifier(path || "root")} ref=${safeLogIdentifier(ref ?? "default")}`,
   );
 
   // Step 1: List the target directory contents
@@ -629,9 +629,7 @@ export async function importFromGitHub(
   budget.accept("SKILL.md", Buffer.byteLength(skillContent, "utf8"));
   const manifest = parseSkillManifest(skillContent);
 
-  console.log(
-    `[skill-import] Parsed manifest: name="${manifest.name}" version="${manifest.version ?? "unversioned"}"`,
-  );
+  console.log("[skill-import] event=github_manifest_parsed");
 
   // Step 3: Collect files from allowed subdirectories
   const allowedDirs = ["scripts", "references", "assets"];
@@ -655,7 +653,7 @@ export async function importFromGitHub(
   }
 
   console.log(
-    `[skill-import] GitHub import complete: ${files.length} files collected from ${owner}/${repo}`,
+    `[skill-import] event=github_import_complete files=${files.length} repo=${safeLogIdentifier(owner)}/${safeLogIdentifier(repo)}`,
   );
 
   return {
@@ -779,7 +777,9 @@ export async function importFromTarballUrl(
   dependencies: SkillImportDependencies = {},
 ): Promise<ImportedSkill> {
   const sourceOrigin = safeUrlOrigin(url);
-  console.log(`[skill-import] Downloading tarball: source=${sourceOrigin}`);
+  console.log(
+    `[skill-import] event=tarball_download_started source=${sourceOrigin}`,
+  );
   const fetcher = dependencies.safeFetch ?? safeFetch;
   let response: SafeFetchResult;
   try {
@@ -793,7 +793,7 @@ export async function importFromTarballUrl(
   const buffer = response.body;
 
   console.log(
-    `[skill-import] Tarball downloaded: ${(buffer.length / 1024).toFixed(1)} KB, extracting...`,
+    `[skill-import] event=tarball_download_complete bytes=${buffer.length}`,
   );
 
   const entries = await extractTarballEntries(buffer);
@@ -849,9 +849,7 @@ export async function importFromTarballUrl(
     skillContent =
       readmeEntry?.content ?? `# ${shortName}\n\n${manifest.description}`;
 
-    console.log(
-      `[skill-import] No SKILL.md found, using package.json + README.md fallback for "${shortName}"`,
-    );
+    console.log("[skill-import] event=tarball_manifest_fallback");
   } else {
     throw new SkillImportError(
       "manifest_not_found",
@@ -859,9 +857,7 @@ export async function importFromTarballUrl(
     );
   }
 
-  console.log(
-    `[skill-import] Parsed tarball manifest: name="${manifest.name}" version="${manifest.version ?? "unversioned"}"`,
-  );
+  console.log("[skill-import] event=tarball_manifest_parsed");
 
   // Collect files from allowed subdirectories
   const ALLOWED_DIR_PATTERN = /^(scripts|references|assets)\//i;
@@ -881,7 +877,7 @@ export async function importFromTarballUrl(
     }));
 
   console.log(
-    `[skill-import] Tarball import complete: ${files.length} files collected from ${sourceOrigin}`,
+    `[skill-import] event=tarball_import_complete files=${files.length} source=${sourceOrigin}`,
   );
 
   return {
@@ -915,7 +911,7 @@ export async function importSkillFromUrl(
   const source = detectImportSource(url);
 
   console.log(
-    `[skill-import] Import requested: source=${safeUrlOrigin(url)} type=${source}`,
+    `[skill-import] event=import_requested source=${safeUrlOrigin(url)} type=${source}`,
   );
 
   if (hasUrlCredentials(url)) {
@@ -954,6 +950,15 @@ function safeUrlOrigin(value: string): string {
   } catch {
     return "invalid-url";
   }
+}
+
+function safeLogIdentifier(value: string, maxLength = 64): string {
+  const withoutControls = Array.from(value, (character) => {
+    const code = character.charCodeAt(0);
+    return code < 32 || (code >= 127 && code <= 159) ? "_" : character;
+  }).join("");
+  const singleLine = withoutControls.replace(/\s+/g, " ").trim();
+  return (singleLine || "none").slice(0, maxLength);
 }
 
 function safeCanonicalSourceUrl(value: string): string {
