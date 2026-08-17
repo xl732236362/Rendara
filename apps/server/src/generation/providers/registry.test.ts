@@ -229,4 +229,78 @@ describe("ProviderRegistry", () => {
       'Duplicate image model ID: "__proto__" (providers: "0", "second")',
     );
   });
+
+  it("exposes a frozen image provider facade with captured behavior", async () => {
+    const source = imageProvider("stable-provider", "stable/model") as {
+      name: string;
+      models: Array<{ id: string; displayName: string; description: string }>;
+      generate: ImageProvider["generate"];
+    };
+    source.generate = async () => ({
+      url: "original",
+      mimeType: "image/png",
+      width: 1,
+      height: 1,
+    });
+    const registry = new ProviderRegistry()
+      .registerImageProvider(source)
+      .seal();
+
+    source.name = "mutated-provider";
+    source.models = [];
+    source.generate = async () => ({
+      url: "replacement",
+      mimeType: "image/png",
+      width: 2,
+      height: 2,
+    });
+    const facade = registry.getImageProvider("stable-provider");
+
+    expect(facade).not.toBe(source);
+    expect(facade.name).toBe("stable-provider");
+    expect(facade.models.map((model) => model.id)).toEqual(["stable/model"]);
+    expect(
+      (await facade.generate({ prompt: "p", model: "stable/model" })).url,
+    ).toBe("original");
+    expect(Object.isFrozen(facade)).toBe(true);
+    expect(Object.isFrozen(facade.models)).toBe(true);
+  });
+
+  it("binds class video provider generation to the original instance", async () => {
+    class StatefulVideoProvider implements VideoProvider {
+      readonly name = "class-provider";
+      readonly models = videoProvider("fixture", "class/model").models;
+      readonly prefix = "bound";
+
+      async generate() {
+        return {
+          url: `${this.prefix}:original`,
+          mimeType: "video/mp4",
+          width: 1,
+          height: 1,
+          durationSeconds: 1,
+        };
+      }
+    }
+
+    const source = new StatefulVideoProvider();
+    const registry = new ProviderRegistry()
+      .registerVideoProvider(source)
+      .seal();
+    (source as { generate: VideoProvider["generate"] }).generate =
+      async () => ({
+        url: "replacement",
+        mimeType: "video/mp4",
+        width: 2,
+        height: 2,
+        durationSeconds: 2,
+      });
+
+    const facade = registry.getVideoProvider("class-provider");
+    const result = await facade.generate({ prompt: "p", model: "class/model" });
+
+    expect(facade).not.toBe(source);
+    expect(result.url).toBe("bound:original");
+    expect(Object.isFrozen(facade)).toBe(true);
+  });
 });

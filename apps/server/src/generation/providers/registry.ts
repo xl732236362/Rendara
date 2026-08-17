@@ -41,7 +41,14 @@ export class ProviderRegistry implements ProviderCatalog {
       throw new Error(`Duplicate image provider name: "${providerName}"`);
     }
     const models = this.#snapshotModels("image", providerName, provider.models);
-    this.#imageProviders.set(providerName, provider);
+    // Bind to the source instance so class providers retain private/runtime
+    // client state while the public callable identity remains sealed.
+    const facade = deepFreeze<ImageProvider>({
+      name: providerName,
+      models,
+      generate: provider.generate.bind(provider),
+    });
+    this.#imageProviders.set(providerName, facade);
     this.#imageModels.set(providerName, models);
     return this;
   }
@@ -56,7 +63,12 @@ export class ProviderRegistry implements ProviderCatalog {
       throw new Error(`Duplicate video provider name: "${providerName}"`);
     }
     const models = this.#snapshotModels("video", providerName, provider.models);
-    this.#videoProviders.set(providerName, provider);
+    const facade = deepFreeze<VideoProvider>({
+      name: providerName,
+      models: models as unknown as readonly VideoModelInfo[],
+      generate: provider.generate.bind(provider),
+    });
+    this.#videoProviders.set(providerName, facade);
     this.#videoModels.set(providerName, models);
     return this;
   }
@@ -207,7 +219,11 @@ export class ProviderRegistry implements ProviderCatalog {
 }
 
 function deepFreeze<T>(value: T): T {
-  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+  if (
+    value &&
+    (typeof value === "object" || typeof value === "function") &&
+    !Object.isFrozen(value)
+  ) {
     Object.freeze(value);
     for (const child of Object.values(value)) deepFreeze(child);
   }
