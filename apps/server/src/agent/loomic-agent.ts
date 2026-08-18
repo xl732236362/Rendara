@@ -6,7 +6,6 @@ import type {
   BaseStore,
 } from "@langchain/langgraph-checkpoint";
 import { ChatOpenAI } from "@langchain/openai";
-import { createDeepAgent } from "deepagents";
 
 import type { ApplyCanvasOperations } from "../application/canvas/apply-canvas-operations.js";
 import {
@@ -16,6 +15,8 @@ import {
 } from "../config/env.js";
 import type { ProviderCatalog } from "../generation/providers/registry.js";
 import type { ConnectionManager } from "../ws/connection-manager.js";
+import { type ExactAgent, createExactLoomicAgent } from "./agent-factory.js";
+import { type AgentCapability, createAgentAuthority } from "./capabilities.js";
 import { LOOMIC_SYSTEM_PROMPT } from "./prompts/loomic-main.js";
 import { createVideoSubAgent } from "./sub-agents.js";
 import type {
@@ -25,10 +26,7 @@ import type {
 import { createMainAgentTools } from "./tools/index.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
 
-export type LoomicAgent = Pick<
-  ReturnType<typeof createDeepAgent>,
-  "stream" | "streamEvents"
->;
+export type LoomicAgent = Pick<ExactAgent, "stream" | "streamEvents">;
 
 export type LoomicAgentFactory = (options: {
   applyCanvasOperations?: ApplyCanvasOperations;
@@ -52,7 +50,7 @@ export type LoomicAgentFactory = (options: {
   }) => Promise<string>;
 }) => LoomicAgent;
 
-export function createLoomicDeepAgent(options: {
+export function createLoomicAgent(options: {
   applyCanvasOperations?: ApplyCanvasOperations;
   brandKitId?: string | null;
   canvasId?: string;
@@ -85,43 +83,55 @@ export function createLoomicDeepAgent(options: {
     options.createUserClient ??
     ((_accessToken: string): never => {
       throw new Error(
-        "inspect_canvas is unavailable: no createUserClient was provided to createLoomicDeepAgent.",
+        "inspect_canvas is unavailable: no createUserClient was provided to createLoomicAgent.",
       );
     });
 
-  let systemPrompt = options.brandKitId
+  const systemPrompt = options.brandKitId
     ? LOOMIC_SYSTEM_PROMPT +
       "\n\n当前项目已绑定品牌套件。在进行设计相关工作时，请先使用 get_brand_kit 工具查询品牌信息，确保设计符合品牌规范。"
     : LOOMIC_SYSTEM_PROMPT;
 
-  return createDeepAgent({
+  const tools = createMainAgentTools({
+    ...(options.applyCanvasOperations && options.resolveWorkspaceId
+      ? {
+          applyCanvasOperations: options.applyCanvasOperations,
+          resolveWorkspaceId: options.resolveWorkspaceId,
+        }
+      : {}),
+    createUserClient,
+    providerRegistry: options.providerRegistry,
+    ...(options.brandKitId != null ? { brandKitId: options.brandKitId } : {}),
+    ...(options.connectionManager
+      ? { connectionManager: options.connectionManager }
+      : {}),
+    ...(options.persistImage ? { persistImage: options.persistImage } : {}),
+    ...(options.submitImageJob
+      ? { submitImageJob: options.submitImageJob }
+      : {}),
+    ...(options.submitVideoJob
+      ? { submitVideoJob: options.submitVideoJob }
+      : {}),
+  });
+  const toolNames = new Set(tools.map((registeredTool) => registeredTool.name));
+  const capabilities: AgentCapability[] = [
+    "image.generate",
+    "video.generate",
+    "agent.delegate",
+  ];
+  if (toolNames.has("inspect_canvas")) capabilities.push("canvas.read");
+  if (toolNames.has("manipulate_canvas")) capabilities.push("canvas.mutate");
+  if (toolNames.has("get_brand_kit")) capabilities.push("brand_kit.read");
+  if (toolNames.has("project_search")) capabilities.push("project.search");
+
+  return createExactLoomicAgent({
+    authority: createAgentAuthority(capabilities),
     ...(options.checkpointer ? { checkpointer: options.checkpointer } : {}),
     model: resolvedModel,
-    name: "loomic",
     ...(options.store ? { store: options.store } : {}),
     subagents: [createVideoSubAgent(options.providerRegistry)],
     systemPrompt,
-    tools: createMainAgentTools({
-      ...(options.applyCanvasOperations && options.resolveWorkspaceId
-        ? {
-            applyCanvasOperations: options.applyCanvasOperations,
-            resolveWorkspaceId: options.resolveWorkspaceId,
-          }
-        : {}),
-      createUserClient,
-      providerRegistry: options.providerRegistry,
-      ...(options.brandKitId != null ? { brandKitId: options.brandKitId } : {}),
-      ...(options.connectionManager
-        ? { connectionManager: options.connectionManager }
-        : {}),
-      ...(options.persistImage ? { persistImage: options.persistImage } : {}),
-      ...(options.submitImageJob
-        ? { submitImageJob: options.submitImageJob }
-        : {}),
-      ...(options.submitVideoJob
-        ? { submitVideoJob: options.submitVideoJob }
-        : {}),
-    }),
+    tools,
   });
 }
 

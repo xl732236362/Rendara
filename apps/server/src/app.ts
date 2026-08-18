@@ -15,7 +15,7 @@ import {
   type BuiltinSkillCatalog,
   loadRepositoryBuiltinSkillCatalog,
 } from "./agent/builtin-skills/catalog.js";
-import type { LoomicAgentFactory } from "./agent/deep-agent.js";
+import type { LoomicAgentFactory } from "./agent/loomic-agent.js";
 import {
   type AgentPersistenceService,
   createAgentPersistenceService,

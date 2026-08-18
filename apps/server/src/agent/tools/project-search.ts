@@ -1,9 +1,6 @@
-import type { ToolRuntime } from "@langchain/core/tools";
-import type { BackendFactory, BackendProtocol } from "deepagents";
 import { tool } from "langchain";
 import { z } from "zod";
 
-const DEFAULT_SEARCH_ROOT = "/workspace";
 const DEFAULT_MAX_MATCHES = 5;
 
 const projectSearchSchema = z.object({
@@ -24,23 +21,21 @@ type ProjectSearchResult = {
   summary: string;
 };
 
+export interface ProjectSearchPort {
+  search(input: {
+    query: string;
+    glob?: string;
+  }): Promise<readonly { line: number; path: string; text: string }[]>;
+}
+
 export async function runProjectSearch(
-  backend: BackendProtocol,
+  searchPort: ProjectSearchPort,
   input: ProjectSearchInput,
 ): Promise<ProjectSearchResult> {
-  const rawMatches = await backend.grepRaw(
-    input.query,
-    DEFAULT_SEARCH_ROOT,
-    input.glob ?? null,
-  );
-
-  if (typeof rawMatches === "string") {
-    return {
-      matchCount: 0,
-      matches: [],
-      summary: rawMatches,
-    };
-  }
+  const rawMatches = await searchPort.search({
+    query: input.query,
+    ...(input.glob ? { glob: input.glob } : {}),
+  });
 
   const sortedMatches = [...rawMatches].sort((left, right) => {
     if (left.path === right.path) {
@@ -70,31 +65,11 @@ export async function runProjectSearch(
   };
 }
 
-export function createProjectSearchTool(
-  backend: BackendProtocol | BackendFactory,
-) {
-  return tool(
-    async (input, runtime: ToolRuntime) => {
-      return await runProjectSearch(resolveBackend(backend, runtime), input);
-    },
-    {
-      name: "project_search",
-      description:
-        "Search the Loomic workspace for matching project text without using shell execution.",
-      schema: projectSearchSchema,
-    },
-  );
-}
-
-function resolveBackend(
-  backend: BackendProtocol | BackendFactory,
-  runtime: ToolRuntime,
-): BackendProtocol {
-  if (typeof backend === "function") {
-    return backend({
-      state: runtime.state,
-    });
-  }
-
-  return backend;
+export function createProjectSearchTool(searchPort: ProjectSearchPort) {
+  return tool(async (input) => await runProjectSearch(searchPort, input), {
+    name: "project_search",
+    description:
+      "Search the Loomic workspace for matching project text without using shell execution.",
+    schema: projectSearchSchema,
+  });
 }

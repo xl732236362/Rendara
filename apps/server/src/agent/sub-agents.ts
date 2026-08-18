@@ -1,11 +1,11 @@
-import type { SubAgent } from "deepagents";
 import type { ProviderCatalog } from "../generation/providers/registry.js";
 
+import type { SubagentDefinition } from "./agent-factory.js";
 import { createVideoGenerateTool } from "./tools/video-generate.js";
 
 export function createVideoSubAgent(
   providerRegistry: ProviderCatalog,
-): SubAgent {
+): SubagentDefinition {
   return {
     name: "video_generate",
     description:

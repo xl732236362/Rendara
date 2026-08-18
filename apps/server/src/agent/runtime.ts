@@ -42,8 +42,8 @@ import {
   type LoomicAgent,
   type LoomicAgentFactory,
   createDefaultModelSpecifier,
-  createLoomicDeepAgent,
-} from "./deep-agent.js";
+  createLoomicAgent,
+} from "./loomic-agent.js";
 import type { AgentPersistenceService } from "./persistence/index.js";
 import { adaptDeepAgentStream } from "./stream-adapter.js";
 import type { SubmitImageJobFn } from "./tools/image-generate.js";
@@ -295,7 +295,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
   const resolvedAgentFactory: LoomicAgentFactory =
     options.agentFactory ??
     ((agentOptions) =>
-      createLoomicDeepAgent({
+      createLoomicAgent({
         ...agentOptions,
         providerRegistry: options.providerRegistry,
         ...(options.createUserClient
