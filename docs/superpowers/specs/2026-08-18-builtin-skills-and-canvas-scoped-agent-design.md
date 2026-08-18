@@ -54,6 +54,7 @@ Every accepted Agent run requires an explicit non-empty `canvasId`. Session- or 
 ```ts
 interface AgentExecutionContext {
   runId: string;
+  attemptId: string;
   userId: string;
   workspaceId: string;
   projectId: string;
@@ -65,7 +66,9 @@ interface AgentExecutionContext {
 }
 ```
 
-`AcceptAgentRun` authenticates, resolves the canonical project and workspace from the canvas, computes policy, filters Skills, persists the context, and only then publishes the run and acknowledges HTTP/WebSocket callers. Persistence failure creates no executable run. Every project-scoped tool and side effect uses the persisted `projectId` and re-resolves the canvas relationship before access; a moved or inconsistent canvas fails closed rather than silently adopting another project or workspace.
+`AcceptAgentRun` requires a client-generated `clientRequestId` and enforces a unique `(userId, clientRequestId)` acceptance key. It authenticates, resolves the canonical project and workspace from the canvas, computes policy, filters Skills, and atomically writes the run, initial execution attempt/context, and `agent.run.accepted` outbox record before acknowledging HTTP/WebSocket callers. A retry with the same key and identical canonical request returns the existing `runId`; reuse with different input fails. The outbox dispatcher publishes durably, so crashes before publish or acknowledgement cannot lose or create a second accepted run. Persistence failure creates no accepted or executable run.
+
+An execution attempt is claimed by one lease owner with a fencing token; stale owners cannot emit events, return model output, or invoke tools after lease loss. Before invoking any effectful tool, the runtime durably checkpoints its logical tool-call ID and canonical input. The canonical application use case then records the effect/result under the stable `runId + logicalToolCallId` idempotency key before the Agent checkpoint can advance past that tool. Crash recovery resumes from this durable checkpoint and preserves the logical tool-call ID across attempts; `attemptId` is recorded for audit and fencing but is not part of the effect key. Replaying the same key and canonical input returns the recorded result, while key reuse with different input fails before side effects. Loomic does not claim exactly-once model inference, but it does prevent a checkpoint replay from duplicating generation submission, asset persistence, or canvas mutation. Every project-scoped tool and side effect uses the persisted `projectId` and re-resolves the canvas relationship before access; a moved or inconsistent canvas fails closed rather than silently adopting another project or workspace.
 
 Resume/retry first requires the stored `skillCatalogDigest` to equal the active process catalog digest. A mismatch returns `skill_catalog_changed`; the caller may submit a new run through `AcceptAgentRun`, but the existing run cannot silently adopt new Skill summaries, instructions, or files. After the digest check, resume/retry intersects the stored capability snapshot with current deployment policy and current resource authorization: authority can shrink but never grow implicitly. It computes the current `capabilityPolicyVersion` from the complete canonical policy, then derives `effectiveSkillNames`, the exact main-Agent tool set, and every subagent definition/tool set from the reduced capability set. The complete derived state is persisted atomically as a new execution attempt before a fresh Agent instance is constructed; persistence or construction failure produces no model or tool execution, and an Agent instance from an earlier attempt is never reused.
 
@@ -96,9 +99,11 @@ The minimum mapping is:
 - `asset.persist` gates explicit persistence of non-generation artifacts, such as an authorized canvas screenshot, through the canonical asset application port for the bound canvas/project/workspace. Generation jobs use only their narrower capability-specific persistence described above.
 - `agent.delegate` gates `task`; subagents receive the same context and a subset of parent capabilities.
 
-Every node/canvas operation is a tool call. Tool input may contain node IDs and operation payloads but never `canvasId`, `projectId`, `workspaceId`, database filters, or storage paths. The tool adapter supplies the bound context, validates node ownership/kind and operation schema, calls the application port, and returns a bounded result. Generated media enters the canvas only through the same canonical operation boundary.
+Every node/canvas operation is a tool call. Tool input may contain schema-approved opaque domain IDs such as node, asset, or job IDs and bounded operation payloads, but never `canvasId`, `projectId`, `workspaceId`, database filters, raw external URLs, object keys, or storage paths. The tool adapter supplies the bound context and resolves every supplied domain ID through its canonical application port under that exact canvas/project/workspace; missing, foreign, wrong-kind, or wrong-job IDs fail before data return or side effects. Generated media enters the canvas only through the same canonical operation boundary, and a result job must match the originating bound generation request.
 
-HTTP/WS input, prompts, model output, Skill content, and subagents are never capability authorities. High-risk application ports revalidate current resource access and capability before every side effect. Canvas browser RPCs carry both `userId` and bound `canvasId` and route only to a currently authorized connection bound to that canvas.
+Every tool schema has an explicit resource envelope. Serialized input is at most 256 KiB and a canvas mutation contains at most 100 operations. Text/JSON output is at most 64 KiB and 100 records per call; larger query/search results use an opaque cursor bound to the run, tool, canonical query, and resource context rather than returning a full canvas dump. The screenshot tool caps output at 2,048 by 2,048 pixels and 5 MiB after server-controlled encoding. Other binary content is never returned inline. Envelope overflow fails with `tool_input_too_large` or `tool_result_too_large`; truncation is never silent.
+
+HTTP/WS input, prompts, model output, Skill content, and subagents are never capability authorities. Before every tool invocation, the adapter verifies that the execution attempt is active, revalidates current user/resource access, and intersects the attempt snapshot with current deployment policy; revoked access or capability returns no data and performs no effect. Read tools repeat the active/access check immediately before returning data. Every mutating application use case receives `attemptId`, the current fencing token, and the effect idempotency key, then conditionally commits its business write/effect record/outbox only while the same attempt remains active and the fencing token still matches; this guard and commit occur in one transaction rather than as check-then-act. Cancellation or a terminal attempt state returns `run_not_active`; a tool already in flight cannot publish data or commit an Agent-owned effect after that transition. Bytes uploaded to external storage before a rejected conditional commit remain unreferenced and eligible for bounded orphan cleanup; they never become an asset or canvas result. Canvas browser RPCs carry both `userId` and bound `canvasId` and route only to a currently authorized connection bound to that canvas.
 
 The composition root constructs the final tool array from the allowlist. Tests assert its exact tool-name snapshot. DeepAgents/LangChain framework tools are not implicitly trusted: `execute`, generic fetch, filesystem read/write/edit, and any other unclassified auto-injected tool must be absent. Read-only framework state tools such as TODO management may remain only when explicitly recorded in the mapping as having no external resource access. If `createDeepAgent` cannot produce the exact allowed set, Phase 3 must compose the Agent from lower-level LangChain middleware rather than expose extra tools and rely on runtime errors.
 
@@ -121,7 +126,7 @@ The Skills navigation item and workspace page are removed without replacement. B
 
 Structured logs record catalog identity, run/resource identifiers, effective capabilities/Skills, tool decisions, bound canvas, affected node IDs/counts, result status, and sanitized error code. They never record access tokens, prompts, Skill contents, full canvas content, binary content, or provider secrets.
 
-Uncertainty fails closed. Stable errors include `canvas_context_required`, `canvas_access_denied`, `node_access_denied`, `capability_denied`, `skill_catalog_invalid`, `skill_catalog_changed`, `skill_read_budget_exceeded`, and `tool_not_authorized`.
+Uncertainty fails closed. Stable errors include `canvas_context_required`, `canvas_access_denied`, `node_access_denied`, `capability_denied`, `run_not_active`, `skill_catalog_invalid`, `skill_catalog_changed`, `skill_read_budget_exceeded`, `tool_input_too_large`, `tool_result_too_large`, and `tool_not_authorized`.
 
 ## Completion Evidence
 
@@ -132,14 +137,20 @@ Phase 3 is complete only when evidence proves:
 - Only manifest-listed, capability-compatible Skills can be discovered or read; unlisted files, invalid packages, traversal, forged/cross-run cursors, and Skill read-budget overflow fail.
 - `json-image-prompt` works through `image.generate`; `canvas-design` is not loaded and no loaded Skill references `execute`, Shell, Python, or package installation.
 - Run creation requires and persists canonical user/workspace/project/canvas scope before acknowledgement; stale, moved, inconsistent, or cross-canvas access is denied.
+- Duplicate acceptance, crash-before-publish, and publish-before-acknowledgement create one accepted run and return one stable `runId`.
+- Lease fencing blocks stale attempt owners; replayed effectful tool calls cannot duplicate generation submission, asset persistence, or canvas mutation.
+- Fault injection before tool-request checkpoint, after checkpoint before effect, and after effect before tool-result checkpoint preserves one logical effect and a replayable recorded result.
 - Resume rejects a changed Skill catalog, persists any capability reduction as a new attempt, and never executes against stale catalog or authority metadata.
 - Resume/retry atomically rebuilds and records policy version, effective Skills, main-Agent tools, and every subagent tool set, then constructs a fresh Agent instance.
 - The effective main-Agent and every subagent tool-name snapshot exactly matches policy.
 - Main Agent, concurrent subagents, and all attempts share one atomic per-run Skill read budget; retries are idempotent and concurrency cannot exceed it.
 - `execute`, process-spawn APIs, `LocalShellBackend`, Sandbox backends, generic network fetch, generic filesystem tools, and sandbox-file persistence are unreachable from Agent construction.
 - Every node/canvas read or mutation is observed as an authorized tool call; architecture tests reject Agent imports or calls into repositories, Supabase, Excalidraw/browser internals, and canvas services outside tool adapters.
-- Tool schemas reject caller-supplied canvas/project/workspace IDs and storage paths; cross-canvas node IDs fail before side effects.
+- Tool schemas reject caller-supplied canvas/project/workspace IDs, raw URLs, object keys, and storage paths; cross-scope node, asset, job, and other domain IDs fail before data return or side effects.
+- Tool input, record, text-result, and screenshot envelopes reject or paginate oversized work without silent truncation or full-canvas dumps.
 - Direct application-port calls, framework middleware, backend operations, and delegation cannot bypass capability checks.
+- Access revocation, capability revocation, cancellation, and terminal attempt transitions prevent subsequent tool data return and side effects, including calls already in flight.
+- Cancellation-versus-effect and lease-loss-versus-effect concurrency tests prove the active-attempt/fencing guard and business commit are atomic, with no published asset, job, or canvas mutation from the losing call.
 - One user with two canvases open cannot route screenshot, mutation, generation result, or events to the other canvas.
 - Authorized canvas, generation, brand-kit, search, asset, and safe delegation workflows continue to work.
 - Generation persistence accepts only the bound job's validated provider output; arbitrary asset persistence remains unavailable without `asset.persist`.
