@@ -21,12 +21,17 @@ export type BackgroundJobType = z.infer<typeof backgroundJobTypeSchema>;
 
 // --- Payloads ---
 
+const inputAssetIdsShape = {
+  input_asset_ids: z.array(z.string().uuid()).max(8).optional(),
+};
+
 export const imageGenerationPayloadSchema = z.object({
   prompt: z.string().min(1),
   title: z.string().min(1).optional(),
   model: z.string().optional(),
   aspect_ratio: z.string().optional(),
   input_images: z.array(z.string()).optional(),
+  ...inputAssetIdsShape,
   quality: z.enum(["standard", "hd", "ultra"]).optional(),
 });
 export type ImageGenerationPayload = z.infer<
@@ -82,7 +87,7 @@ export type GenerationSubmissionRequest = z.infer<
 
 export const generationSubmissionResponseSchema = z.object({
   jobId: z.string().uuid(),
-  status: z.literal("queued"),
+  status: backgroundJobStatusSchema,
 });
 export type GenerationSubmissionResponse = z.infer<
   typeof generationSubmissionResponseSchema
@@ -200,6 +205,7 @@ export const createImageJobRequestSchema = z.object({
   session_id: z.string().uuid().optional(),
   thread_id: z.string().optional(),
   prompt: z.string().min(1),
+  ...inputAssetIdsShape,
   model: z.string().optional(),
   aspect_ratio: z.string().optional(),
   quality: z.enum(["standard", "hd", "ultra"]).optional(),

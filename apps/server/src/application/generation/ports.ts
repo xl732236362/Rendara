@@ -1,4 +1,5 @@
 import type {
+  BackgroundJobStatus,
   BackgroundJobType,
   GenerationSubmissionRequest,
   SubscriptionPlan,
@@ -27,7 +28,7 @@ export type AtomicJobSubmissionCommand = {
 
 export type GenerationSubmissionOutcome = {
   id: string;
-  status: "queued";
+  status: BackgroundJobStatus;
   replayed: boolean;
 };
 

@@ -99,11 +99,13 @@ describe("@loomic/shared contracts", () => {
         prompt: "A product photograph",
         model: "image-model",
         aspect_ratio: "16:9",
+        input_asset_ids: ["550e8400-e29b-41d4-a716-446655440004"],
       }),
     ).toMatchObject({
       type: "image_generation",
       thread_id: "thread-image",
       prompt: "A product photograph",
+      input_asset_ids: ["550e8400-e29b-41d4-a716-446655440004"],
     });
     expect(
       requestSchema.parse({
@@ -131,12 +133,29 @@ describe("@loomic/shared contracts", () => {
       jobId: "550e8400-e29b-41d4-a716-446655440000",
       status: "queued",
     });
+    expect(
+      responseSchema.parse({
+        jobId: "550e8400-e29b-41d4-a716-446655440000",
+        status: "succeeded",
+      }),
+    ).toEqual({
+      jobId: "550e8400-e29b-41d4-a716-446655440000",
+      status: "succeeded",
+    });
     expect(() =>
       requestSchema.parse({
         type: "image_generation",
         idempotency_key: "request-invalid-1",
         prompt: "Wrong media fields",
         duration: 5,
+      }),
+    ).toThrow();
+    expect(() =>
+      requestSchema.parse({
+        type: "image_generation",
+        idempotency_key: "request-invalid-assets",
+        prompt: "Invalid reference",
+        input_asset_ids: ["not-a-uuid"],
       }),
     ).toThrow();
   });

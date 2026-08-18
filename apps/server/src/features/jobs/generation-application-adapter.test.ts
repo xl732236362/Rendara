@@ -65,6 +65,72 @@ describe("createJobServiceGenerationPorts", () => {
     });
   });
 
+  it.each([
+    "queued",
+    "running",
+    "failed",
+    "cancel_requested",
+    "succeeded",
+    "dead_letter",
+    "canceled",
+  ] as const)("preserves the current %s status on idempotent replay", async (status) => {
+    const jobService = {
+      submitJob: vi.fn(async () => ({
+        job: { id: jobId, status },
+        debitTransactionId: "77777777-7777-4777-8777-777777777777",
+        replayed: true,
+      })),
+      cancelJob: vi.fn(),
+    } as unknown as JobService;
+    const ports = createJobServiceGenerationPorts({
+      jobService,
+      toAuthenticatedUser: () => user,
+    });
+
+    await expect(
+      ports.jobs.submit({
+        principal,
+        workspaceId: principal.workspaceId,
+        jobType: "image_generation",
+        idempotencyKey: "request-replay-1",
+        requestFingerprint:
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        creditsCost: 7,
+        description: "Image generation: image/default",
+        payload: { prompt: "draw", model: "image/default" },
+      }),
+    ).resolves.toEqual({ id: jobId, status, replayed: true });
+  });
+
+  it("rejects a non-queued status for a newly created submission", async () => {
+    const jobService = {
+      submitJob: vi.fn(async () => ({
+        job: { id: jobId, status: "running" },
+        debitTransactionId: "77777777-7777-4777-8777-777777777777",
+        replayed: false,
+      })),
+      cancelJob: vi.fn(),
+    } as unknown as JobService;
+    const ports = createJobServiceGenerationPorts({
+      jobService,
+      toAuthenticatedUser: () => user,
+    });
+
+    await expect(
+      ports.jobs.submit({
+        principal,
+        workspaceId: principal.workspaceId,
+        jobType: "image_generation",
+        idempotencyKey: "request-new-invalid",
+        requestFingerprint:
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        creditsCost: 7,
+        description: "Image generation: image/default",
+        payload: { prompt: "draw", model: "image/default" },
+      }),
+    ).rejects.toMatchObject({ code: "application_error" });
+  });
+
   it("maps cancel_requested to the public canceling outcome", async () => {
     const jobService = {
       submitJob: vi.fn(),

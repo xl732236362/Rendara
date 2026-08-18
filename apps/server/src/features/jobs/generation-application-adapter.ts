@@ -18,10 +18,12 @@ export function createJobServiceGenerationPorts(options: {
           options.toAuthenticatedUser(principal),
           input,
         );
-        if (outcome.job.status !== "queued") throw invalidLegacyOutcome();
+        if (!outcome.replayed && outcome.job.status !== "queued") {
+          throw invalidLegacyOutcome();
+        }
         return {
           id: outcome.job.id,
-          status: "queued",
+          status: outcome.job.status,
           replayed: outcome.replayed,
         };
       },
