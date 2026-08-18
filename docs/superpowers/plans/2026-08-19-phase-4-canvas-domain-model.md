@@ -20,4 +20,4 @@
 - [x] Validate existing canvas operation output through the registry at the application boundary.
 - [x] Run shared/server tests, typechecks, build, database reset/tests, and diff checks.
 - [x] Record evidence in `docs/tech/phase-4-verification.md` and update the engineering issue register.
-- [ ] Push the completed phase to `origin/main`.
+- [x] Push the completed phase to `origin/main` (commits `37455f2`, `385d68f`).
