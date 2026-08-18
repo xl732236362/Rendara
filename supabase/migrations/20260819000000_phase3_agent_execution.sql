@@ -122,3 +122,122 @@ grant execute on function public.accept_agent_run(
   uuid, uuid, uuid, text, text, uuid, text, text, uuid, uuid, uuid,
   jsonb, text, text, jsonb
 ) to service_role;
+
+create table public.agent_skill_read_budgets (
+  run_id uuid primary key references public.agent_runs(id) on delete cascade,
+  distinct_reads integer not null default 0 check (distinct_reads between 0 and 16),
+  returned_bytes integer not null default 0 check (returned_bytes between 0 and 262144),
+  updated_at timestamptz not null default now()
+);
+
+create table public.agent_skill_reads (
+  run_id uuid not null references public.agent_runs(id) on delete cascade,
+  logical_read_key text not null,
+  byte_count integer not null check (byte_count between 0 and 32768),
+  next_cursor text,
+  created_at timestamptz not null default now(),
+  primary key (run_id, logical_read_key)
+);
+
+create table public.agent_skill_read_cursors (
+  cursor text primary key,
+  run_id uuid not null references public.agent_runs(id) on delete cascade,
+  skill_name text not null,
+  path text not null,
+  byte_offset integer not null check (byte_offset > 0),
+  created_at timestamptz not null default now()
+);
+
+create index agent_skill_read_cursors_run_idx
+  on public.agent_skill_read_cursors(run_id, cursor);
+
+alter table public.agent_skill_read_budgets enable row level security;
+alter table public.agent_skill_reads enable row level security;
+alter table public.agent_skill_read_cursors enable row level security;
+revoke all on table public.agent_skill_read_budgets from anon, authenticated;
+revoke all on table public.agent_skill_reads from anon, authenticated;
+revoke all on table public.agent_skill_read_cursors from anon, authenticated;
+grant select, insert, update, delete on table public.agent_skill_read_budgets to service_role;
+grant select, insert, update, delete on table public.agent_skill_reads to service_role;
+grant select, insert, update, delete on table public.agent_skill_read_cursors to service_role;
+
+create or replace function public.reserve_agent_skill_read(
+  p_run_id uuid,
+  p_logical_read_key text,
+  p_byte_count integer,
+  p_next_cursor text,
+  p_skill_name text,
+  p_path text,
+  p_next_byte_offset integer
+) returns table(next_cursor text, repeated boolean)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_existing public.agent_skill_reads%rowtype;
+  v_budget public.agent_skill_read_budgets%rowtype;
+begin
+  select * into v_existing
+  from public.agent_skill_reads r
+  where r.run_id = p_run_id and r.logical_read_key = p_logical_read_key;
+  if found then
+    return query select v_existing.next_cursor, true;
+    return;
+  end if;
+
+  insert into public.agent_skill_read_budgets(run_id)
+  values (p_run_id)
+  on conflict (run_id) do nothing;
+  select * into v_budget
+  from public.agent_skill_read_budgets b
+  where b.run_id = p_run_id
+  for update;
+
+  -- A concurrent identical read may have committed while this call waited
+  -- for the per-run budget lock. Recheck to keep retries idempotent.
+  select * into v_existing
+  from public.agent_skill_reads r
+  where r.run_id = p_run_id and r.logical_read_key = p_logical_read_key;
+  if found then
+    return query select v_existing.next_cursor, true;
+    return;
+  end if;
+
+  if v_budget.distinct_reads >= 16
+     or v_budget.returned_bytes + p_byte_count > 262144 then
+    raise exception 'skill_read_budget_exceeded';
+  end if;
+
+  if p_next_cursor is not null then
+    if p_skill_name is null or p_path is null or p_next_byte_offset is null then
+      raise exception 'skill_cursor_invalid';
+    end if;
+    insert into public.agent_skill_read_cursors(
+      cursor, run_id, skill_name, path, byte_offset
+    ) values (
+      p_next_cursor, p_run_id, p_skill_name, p_path, p_next_byte_offset
+    );
+  end if;
+
+  insert into public.agent_skill_reads(
+    run_id, logical_read_key, byte_count, next_cursor
+  ) values (
+    p_run_id, p_logical_read_key, p_byte_count, p_next_cursor
+  );
+  update public.agent_skill_read_budgets
+  set distinct_reads = distinct_reads + 1,
+      returned_bytes = returned_bytes + p_byte_count,
+      updated_at = now()
+  where run_id = p_run_id;
+
+  return query select p_next_cursor, false;
+end;
+$$;
+
+revoke all on function public.reserve_agent_skill_read(
+  uuid, text, integer, text, text, text, integer
+) from public, anon, authenticated;
+grant execute on function public.reserve_agent_skill_read(
+  uuid, text, integer, text, text, text, integer
+) to service_role;

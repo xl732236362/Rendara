@@ -616,6 +616,7 @@ export function buildAppFromEnv(
     connectionManager.dispose();
   });
   const agentRuns = createAgentRunService({
+    agentExecutionRepository,
     applyCanvasOperations: useCases.canvas.applyOperations,
     attachGeneratedAsset: useCases.canvas.attachGeneratedAsset,
     agentPersistenceService,
@@ -629,6 +630,13 @@ export function buildAppFromEnv(
       : { eventDelayMs: options.mockEventDelayMs }),
     env,
     providerRegistry,
+    builtinSkillCatalog: {
+      get digest() {
+        return getAppBuiltinSkillCatalog(app).digest;
+      },
+      list: () => getAppBuiltinSkillCatalog(app).list(),
+      get: (name) => getAppBuiltinSkillCatalog(app).get(name),
+    },
     ...(jobService ? { jobService } : {}),
     creditService,
     tierGuard,

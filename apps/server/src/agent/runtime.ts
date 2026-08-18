@@ -25,6 +25,7 @@ import type { AttachGeneratedAsset } from "../application/canvas/attach-generate
 import type { SubmitGeneration } from "../application/generation/submit-generation.js";
 import type { ServerEnv } from "../config/env.js";
 import { AppError } from "../errors/app-error.js";
+import type { AgentExecutionRepository } from "../features/agent-runs/agent-execution-repository.js";
 import type { AgentRunMetadataService } from "../features/agent-runs/agent-run-service.js";
 import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
 import type { CreditService } from "../features/credits/credit-service.js";
@@ -38,6 +39,7 @@ import type { UserSupabaseClient } from "../supabase/user.js";
 import { sanitizeErrorForClient } from "../utils/error-sanitizer.js";
 import type { ConnectionManager } from "../ws/connection-manager.js";
 import { createPipelineLogger } from "../ws/logger.js";
+import type { BuiltinSkillCatalog } from "./builtin-skills/catalog.js";
 import {
   type LoomicAgent,
   type LoomicAgentFactory,
@@ -238,6 +240,8 @@ type RuntimeRunRecord = RunCreateRequest & {
 };
 
 type CreateAgentRuntimeOptions = {
+  agentExecutionRepository?: AgentExecutionRepository;
+  builtinSkillCatalog?: BuiltinSkillCatalog;
   agentPersistenceService?: AgentPersistenceService;
   applyCanvasOperations?: ApplyCanvasOperations;
   attachGeneratedAsset?: AttachGeneratedAsset;
@@ -885,6 +889,20 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
 
       let agent: LoomicAgent;
       try {
+        const executionContext = options.agentExecutionRepository
+          ? await options.agentExecutionRepository.getExecutionContext(runId)
+          : null;
+        if (options.agentExecutionRepository && !executionContext) {
+          throw new Error("run_not_active");
+        }
+        if (
+          executionContext &&
+          options.builtinSkillCatalog &&
+          executionContext.skillCatalogDigest !==
+            options.builtinSkillCatalog.digest
+        ) {
+          throw new Error("skill_catalog_changed");
+        }
         const resolvedModel = run.modelOverride
           ? run.modelOverride.includes(":")
             ? run.modelOverride
@@ -997,6 +1015,13 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           ...(submitImageJob ? { submitImageJob } : {}),
           ...(submitVideoJob ? { submitVideoJob } : {}),
           ...(persistence ? { store: persistence.store } : {}),
+          ...(executionContext ? { executionContext } : {}),
+          ...(options.builtinSkillCatalog
+            ? { builtinSkillCatalog: options.builtinSkillCatalog }
+            : {}),
+          ...(options.agentExecutionRepository
+            ? { agentExecutionRepository: options.agentExecutionRepository }
+            : {}),
         });
         rlog.lap("agent_factory_done");
       } catch (error) {

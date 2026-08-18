@@ -13,10 +13,13 @@ import {
   DEFAULT_GOOGLE_AGENT_MODEL,
   type ServerEnv,
 } from "../config/env.js";
+import type { AgentExecutionRepository } from "../features/agent-runs/agent-execution-repository.js";
 import type { ProviderCatalog } from "../generation/providers/registry.js";
 import type { ConnectionManager } from "../ws/connection-manager.js";
 import { type ExactAgent, createExactLoomicAgent } from "./agent-factory.js";
+import type { BuiltinSkillCatalog } from "./builtin-skills/catalog.js";
 import { type AgentCapability, createAgentAuthority } from "./capabilities.js";
+import type { AgentExecutionContext } from "./execution-context.js";
 import { LOOMIC_SYSTEM_PROMPT } from "./prompts/loomic-main.js";
 import { createVideoSubAgent } from "./sub-agents.js";
 import type {
@@ -48,6 +51,9 @@ export type LoomicAgentFactory = (options: {
     userId: string;
     canvasId: string;
   }) => Promise<string>;
+  executionContext?: AgentExecutionContext;
+  builtinSkillCatalog?: BuiltinSkillCatalog;
+  agentExecutionRepository?: AgentExecutionRepository;
 }) => LoomicAgent;
 
 export function createLoomicAgent(options: {
@@ -70,6 +76,9 @@ export function createLoomicAgent(options: {
     userId: string;
     canvasId: string;
   }) => Promise<string>;
+  executionContext?: AgentExecutionContext;
+  builtinSkillCatalog?: BuiltinSkillCatalog;
+  agentExecutionRepository?: AgentExecutionRepository;
 }): LoomicAgent {
   applyOpenAICompatEnv(options.env);
 
@@ -112,6 +121,15 @@ export function createLoomicAgent(options: {
     ...(options.submitVideoJob
       ? { submitVideoJob: options.submitVideoJob }
       : {}),
+    ...(options.executionContext
+      ? { executionContext: options.executionContext }
+      : {}),
+    ...(options.builtinSkillCatalog
+      ? { builtinSkillCatalog: options.builtinSkillCatalog }
+      : {}),
+    ...(options.agentExecutionRepository
+      ? { agentExecutionRepository: options.agentExecutionRepository }
+      : {}),
   });
   const toolNames = new Set(tools.map((registeredTool) => registeredTool.name));
   const capabilities: AgentCapability[] = [
@@ -123,6 +141,7 @@ export function createLoomicAgent(options: {
   if (toolNames.has("manipulate_canvas")) capabilities.push("canvas.mutate");
   if (toolNames.has("get_brand_kit")) capabilities.push("brand_kit.read");
   if (toolNames.has("project_search")) capabilities.push("project.search");
+  if (toolNames.has("read_builtin_skill")) capabilities.push("skill.read");
 
   return createExactLoomicAgent({
     authority: createAgentAuthority(capabilities),
