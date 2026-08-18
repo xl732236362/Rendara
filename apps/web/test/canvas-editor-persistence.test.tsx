@@ -103,16 +103,22 @@ describe("canvas durable persistence", () => {
       "rejected",
     ],
   ] as const)("classifies save failures as %s", async (error, kind) => {
+    let elements: Record<string, unknown>[] = [{ id: "original" }];
+    const updateScene = vi.fn((next) => {
+      elements = next;
+    });
     const mutation = createDurableSceneMutation({
       cancelPendingSave: vi.fn(),
-      getSceneElements: () => [],
-      updateScene: vi.fn(),
+      getSceneElements: () => elements,
+      updateScene,
       buildContent: () => ({ elements: [], appState: {}, files: {} }),
       enqueueSave: vi.fn().mockRejectedValue(error),
     });
 
-    await expect(mutation((elements) => [...elements])).resolves.toEqual({
-      kind,
-    });
+    await expect(
+      mutation((current) => [...current, { id: "uncommitted" }]),
+    ).resolves.toEqual({ kind });
+    expect(elements).toEqual([{ id: "original" }]);
+    expect(updateScene).toHaveBeenCalledTimes(2);
   });
 });

@@ -49,13 +49,17 @@ export function createDurableSceneMutation(options: {
 }): DurableSceneMutation {
   return async (mutate) => {
     options.cancelPendingSave();
-    const nextElements = mutate(options.getSceneElements());
+    const previousElements = [...options.getSceneElements()];
+    const nextElements = mutate(previousElements);
     options.updateScene(nextElements);
     const content = options.buildContent(nextElements);
     try {
       await options.enqueueSave(content);
       return { kind: "committed" };
     } catch (error) {
+      // The server did not acknowledge this snapshot. Restore the prior live
+      // scene so recovery can retry the same durable business operation.
+      options.updateScene(previousElements);
       if (
         error instanceof ApiTimeoutError ||
         (error instanceof ApiApplicationError && error.status >= 500)

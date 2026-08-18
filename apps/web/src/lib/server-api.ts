@@ -1,6 +1,7 @@
 import {
   type AssetSignedUrlResponse,
   type CanvasDetail,
+  type CreateImageJobRequest,
   type ChatMessageCreateRequest,
   type GenerateImageResponse,
   type GenerateVideoResponse,
@@ -33,6 +34,7 @@ import {
   canvasGetResponseSchema,
   canvasSaveRequestSchema,
   canvasSaveResponseSchema,
+  createImageJobRequestSchema,
   chatMessageCreateRequestSchema,
   generateImageRequestSchema,
   generateImageResponseSchema,
@@ -457,6 +459,20 @@ export function fetchJob(
     method: "GET",
     path: `/api/jobs/${jobId}`,
     accessToken,
+    responseSchema: jobResponseSchema,
+  });
+}
+
+export function submitImageJob(
+  accessToken: string,
+  body: CreateImageJobRequest,
+): Promise<JobResponse> {
+  return apiFetch({
+    method: "POST",
+    path: "/api/jobs/image-generation",
+    accessToken,
+    requestSchema: createImageJobRequestSchema,
+    body,
     responseSchema: jobResponseSchema,
   });
 }
