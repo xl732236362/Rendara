@@ -87,6 +87,17 @@ describe("application environment composition", () => {
     await app.close();
   });
 
+  it("fails startup when the built-in Skill catalog is invalid", async () => {
+    const app = buildAppFromEnv(loadServerEnv({}, {}), {
+      builtinSkillCatalogLoader: async () => {
+        throw new Error("skill_catalog_invalid");
+      },
+    });
+
+    await expect(app.ready()).rejects.toThrow("skill_catalog_invalid");
+    await app.close();
+  });
+
   it("keeps canvas capabilities when queued generation is unavailable", async () => {
     let factoryOptions: Record<string, unknown> | undefined;
     const app = buildAppFromEnv(loadServerEnv({}, {}), {

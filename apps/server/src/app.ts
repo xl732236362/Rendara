@@ -11,6 +11,10 @@ import type { UseCases } from "./application/use-cases.js";
 import { createDomainEventPublisher } from "./events/domain-event-publisher.js";
 import { startOutboxDispatcher } from "./events/outbox-dispatcher.js";
 
+import {
+  type BuiltinSkillCatalog,
+  loadRepositoryBuiltinSkillCatalog,
+} from "./agent/builtin-skills/catalog.js";
 import type { LoomicAgentFactory } from "./agent/deep-agent.js";
 import {
   type AgentPersistenceService,
@@ -126,6 +130,7 @@ export type BuildAppOptions = {
   agentModel?: BaseLanguageModel | string;
   agentPersistenceService?: AgentPersistenceService;
   agentRunMetadataService?: AgentRunMetadataService;
+  builtinSkillCatalogLoader?: () => Promise<BuiltinSkillCatalog>;
   auth?: RequestAuthenticator;
   brandKitService?: BrandKitService;
   canvasService?: CanvasService;
@@ -149,12 +154,22 @@ export type BuildAppOptions = {
 };
 
 const appUseCases = new WeakMap<FastifyInstance, Readonly<UseCases>>();
+const appBuiltinSkillCatalogs = new WeakMap<
+  FastifyInstance,
+  BuiltinSkillCatalog
+>();
 
 /** Read-only composition diagnostics for tests and process-level integrations. */
 export function getAppUseCases(app: FastifyInstance): Readonly<UseCases> {
   const useCases = appUseCases.get(app);
   if (!useCases) throw new Error("Application use cases are not composed.");
   return useCases;
+}
+
+export function getAppBuiltinSkillCatalog(app: FastifyInstance) {
+  const catalog = appBuiltinSkillCatalogs.get(app);
+  if (!catalog) throw new Error("Built-in Skill catalog is not loaded.");
+  return catalog;
 }
 
 function snapshotUseCases(candidate: Readonly<UseCases>): Readonly<UseCases> {
@@ -202,6 +217,20 @@ export function buildAppFromEnv(
 
   const app = Fastify({
     logger: { level: "info" },
+  });
+  const loadCatalog =
+    options.builtinSkillCatalogLoader ?? loadRepositoryBuiltinSkillCatalog;
+  app.addHook("onReady", async () => {
+    const catalog = await loadCatalog();
+    appBuiltinSkillCatalogs.set(app, catalog);
+    app.log.info(
+      {
+        event: "builtin_skill_catalog_loaded",
+        digest: catalog.digest,
+        skillNames: catalog.list().map((skill) => skill.name),
+      },
+      "Built-in Skill catalog loaded",
+    );
   });
   registerErrorHandler(app);
   void app.register(multipart, {

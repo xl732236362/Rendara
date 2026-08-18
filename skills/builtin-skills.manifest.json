@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "skills": [
+    {
+      "name": "json-image-prompt",
+      "path": "json-image-prompt",
+      "requiredCapabilities": ["image.generate"]
+    }
+  ]
+}
