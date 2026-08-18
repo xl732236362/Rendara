@@ -371,27 +371,36 @@ describe("@loomic/shared contracts", () => {
     expect(parsed.service).toBe("loomic-server");
   });
 
-  it("accepts canvasId as optional field", () => {
+  it("requires canvasId and clientRequestId for run creation", () => {
     const result = runCreateRequestSchema.parse({
+      canvasId: "canvas-1",
+      clientRequestId: "request-1",
       sessionId: "session-1",
       conversationId: "conv-1",
       prompt: "Hello",
-      canvasId: "canvas-1",
     });
     expect(result.canvasId).toBe("canvas-1");
+    expect(result.clientRequestId).toBe("request-1");
   });
 
-  it("succeeds without canvasId (backward compat)", () => {
-    const result = runCreateRequestSchema.parse({
+  it("rejects run creation without canvasId or clientRequestId", () => {
+    const base = {
       sessionId: "session-1",
       conversationId: "conv-1",
       prompt: "Hello",
-    });
-    expect(result.canvasId).toBeUndefined();
+    };
+    expect(() =>
+      runCreateRequestSchema.parse({ ...base, clientRequestId: "request-1" }),
+    ).toThrow();
+    expect(() =>
+      runCreateRequestSchema.parse({ ...base, canvasId: "canvas-1" }),
+    ).toThrow();
   });
 
   it("accepts optional attachments in run creation", () => {
     const result = runCreateRequestSchema.parse({
+      canvasId: "canvas-1",
+      clientRequestId: "request-attachments",
       sessionId: "session-1",
       conversationId: "conv-1",
       prompt: "Analyze this image",
@@ -409,6 +418,8 @@ describe("@loomic/shared contracts", () => {
 
   it("accepts optional image generation preference in run creation", () => {
     const result = runCreateRequestSchema.parse({
+      canvasId: "canvas-1",
+      clientRequestId: "request-image-preference",
       sessionId: "session-1",
       conversationId: "conv-1",
       prompt: "Generate a campaign key visual",
@@ -427,6 +438,8 @@ describe("@loomic/shared contracts", () => {
 
   it("accepts optional mentions in run creation", () => {
     const result = runCreateRequestSchema.parse({
+      canvasId: "canvas-1",
+      clientRequestId: "request-mentions",
       sessionId: "session-1",
       conversationId: "conv-1",
       prompt: "参考品牌资产生成一张海报",
@@ -457,6 +470,8 @@ describe("@loomic/shared contracts", () => {
 
   it("accepts sessionId and conversationId for run creation", () => {
     const request = runCreateRequestSchema.parse({
+      canvasId: "canvas_123",
+      clientRequestId: "request-session",
       sessionId: "session_123",
       conversationId: "conversation_123",
       prompt: "Create a new storyboard outline",
@@ -476,6 +491,8 @@ describe("@loomic/shared contracts", () => {
   it("rejects run creation without a real sessionId", () => {
     expect(() =>
       runCreateRequestSchema.parse({
+        canvasId: "canvas_123",
+        clientRequestId: "request-missing-session",
         conversationId: "conversation_123",
         prompt: "Create a new storyboard outline",
       }),

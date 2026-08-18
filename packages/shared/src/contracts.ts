@@ -15,6 +15,7 @@ export const userIdSchema = identifierSchema;
 export const workspaceIdSchema = identifierSchema;
 export const projectIdSchema = identifierSchema;
 export const canvasIdSchema = identifierSchema;
+export const clientRequestIdSchema = z.string().min(1).max(128);
 export const canvasRevisionSchema = z.number().int().nonnegative().safe();
 
 export const workspaceTypeSchema = z.enum(["personal", "team"]);
@@ -68,7 +69,8 @@ export const runCreateRequestSchema = z.object({
   sessionId: sessionIdSchema,
   conversationId: conversationIdSchema,
   prompt: z.string(),
-  canvasId: canvasIdSchema.optional(),
+  canvasId: canvasIdSchema,
+  clientRequestId: clientRequestIdSchema,
   attachments: z.array(imageAttachmentSchema).optional(),
   imageGenerationPreference: imageGenerationPreferenceSchema.optional(),
   videoGenerationPreference: videoGenerationPreferenceSchema.optional(),

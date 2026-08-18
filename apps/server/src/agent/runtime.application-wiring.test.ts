@@ -55,6 +55,7 @@ describe("Agent runtime application wiring", () => {
     const run = service.createRun(
       {
         canvasId: "canvas-1",
+        clientRequestId: "request-1",
         conversationId: "conversation-1",
         prompt: "hello",
         sessionId: "session-1",
@@ -128,6 +129,7 @@ describe("Agent runtime application wiring", () => {
     const run = service.createRun(
       {
         canvasId: "canvas-1",
+        clientRequestId: "request-2",
         conversationId: "conversation-1",
         prompt: "hello",
         sessionId: "session-1",
@@ -189,6 +191,8 @@ describe("Agent runtime application wiring", () => {
       providerRegistry: new ProviderRegistry().seal(),
     });
     const run = service.createRun({
+      canvasId: "canvas-team",
+      clientRequestId: "request-3",
       conversationId: "conversation-1",
       prompt: "hello",
       sessionId: "session-1",
@@ -259,6 +263,7 @@ describe("Agent runtime application wiring", () => {
     const run = service.createRun(
       {
         canvasId: "canvas-team",
+        clientRequestId: "request-4",
         conversationId: "conversation-1",
         prompt: "hello",
         sessionId: "session-1",
@@ -324,6 +329,7 @@ describe("Agent runtime application wiring", () => {
     const run = service.createRun(
       {
         canvasId: "canvas-foreign",
+        clientRequestId: "request-5",
         conversationId: "conversation-1",
         prompt: "hello",
         sessionId: "session-1",
@@ -365,7 +371,11 @@ describe("Agent runtime application wiring", () => {
         submitVideoJob = options.submitVideoJob;
         return { async *streamEvents() {}, async *stream() {} };
       }) as never,
-      createUserClient: (() => workspaceClient()) as never,
+      createUserClient: (() =>
+        canvasWorkspaceClient({
+          canvasId: "canvas-1",
+          workspaceId: "22222222-2222-4222-8222-222222222222",
+        })) as never,
       env: loadServerEnv({}, {}),
       jobService: {
         getJobAdmin: async () => ({
@@ -384,6 +394,8 @@ describe("Agent runtime application wiring", () => {
     });
     const run = service.createRun(
       {
+        canvasId: "canvas-1",
+        clientRequestId: "request-6",
         conversationId: "conversation-1",
         prompt: "hello",
         sessionId: "session-1",
@@ -428,6 +440,7 @@ describe("Agent runtime application wiring", () => {
         idempotency_key: expect.stringMatching(
           /^agent:[^:]+:image:[0-9a-f]{32}$/,
         ),
+        canvas_id: "canvas-1",
         type: "image_generation",
         prompt: "image",
         title: "Image",
@@ -449,6 +462,7 @@ describe("Agent runtime application wiring", () => {
         idempotency_key: expect.stringMatching(
           /^agent:[^:]+:video:[0-9a-f]{32}$/,
         ),
+        canvas_id: "canvas-1",
         type: "video_generation",
         prompt: "video",
         model: "video/model",

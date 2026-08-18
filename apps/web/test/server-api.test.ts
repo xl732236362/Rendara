@@ -62,6 +62,8 @@ describe("authenticated server API", () => {
 
     await createRun(
       {
+        canvasId: "canvas_123",
+        clientRequestId: "request_123",
         sessionId: "session_123",
         conversationId: "conversation_123",
         prompt: "Hello",
@@ -92,6 +94,8 @@ describe("authenticated server API", () => {
     });
 
     await createRun({
+      canvasId: "canvas_123",
+      clientRequestId: "request_123",
       sessionId: "session_123",
       conversationId: "conversation_123",
       prompt: "Hello",

@@ -26,6 +26,7 @@ describe("HTTP run authorization", () => {
         sessionId: "session-1",
         conversationId: "other-canvas",
         canvasId: "other-canvas",
+        clientRequestId: "request-1",
         prompt: "test",
       },
     });

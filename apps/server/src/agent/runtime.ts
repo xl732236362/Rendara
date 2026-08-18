@@ -393,11 +393,21 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
       runOptions?: {
         accessToken?: string;
         model?: string;
+        runId?: string;
         threadId?: string;
         userId?: string;
       },
     ): RunCreateResponse {
-      const runId = runIdFactory();
+      const runId = runOptions?.runId ?? runIdFactory();
+      const existing = runs.get(runId);
+      if (existing) {
+        return {
+          conversationId: existing.conversationId,
+          runId,
+          sessionId: existing.sessionId,
+          status: "accepted",
+        };
+      }
       const { accessToken: _ignoredAccessToken, ...runInput } = input;
 
       runs.set(runId, {

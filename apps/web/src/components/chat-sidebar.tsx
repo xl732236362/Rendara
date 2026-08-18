@@ -546,6 +546,7 @@ export function ChatSidebar({
               conversationId: canvasId,
               prompt: text,
               canvasId,
+              clientRequestId: crypto.randomUUID(),
               accessToken: accessTokenRef.current,
               ...(currentAttachments.length > 0
                 ? { attachments: currentAttachments }

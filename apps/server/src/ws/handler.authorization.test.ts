@@ -203,6 +203,7 @@ describe("WebSocket resource commands", () => {
         action: "agent.run",
         payload: {
           canvasId: "other-canvas",
+          clientRequestId: "request-1",
           conversationId: "other-canvas",
           sessionId: "other-session",
           prompt: "test",

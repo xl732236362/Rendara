@@ -9,6 +9,7 @@ import {
 } from "@loomic/shared";
 import type { ContentBlock, ToolBlock } from "@loomic/shared";
 import type { AgentRunService } from "../agent/runtime.js";
+import type { AcceptAgentRun } from "../application/agent/accept-agent-run.js";
 import type { AgentRunMetadataService } from "../features/agent-runs/agent-run-service.js";
 import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
 import type { ChatService } from "../features/chat/chat-service.js";
@@ -32,6 +33,7 @@ import type { CanvasEventBuffer } from "./event-buffer.js";
 import { createPipelineLogger } from "./logger.js";
 
 type RegisterWsOptions = {
+  acceptAgentRun?: AcceptAgentRun;
   agentRuns: AgentRunService;
   authorization: ResourceAuthorization;
   agentRunMetadataService?: AgentRunMetadataService;
@@ -209,7 +211,8 @@ export async function bindAuthenticatedSocket(
             sessionId: p.sessionId,
             conversationId: p.conversationId,
             prompt: p.prompt,
-            ...(p.canvasId !== undefined ? { canvasId: p.canvasId } : {}),
+            canvasId: p.canvasId,
+            clientRequestId: p.clientRequestId,
             ...(p.attachments !== undefined
               ? { attachments: p.attachments }
               : {}),
@@ -322,7 +325,10 @@ async function handleRunCommand(
     authenticatedUser,
     payload,
   );
-  log.info("started", { prompt: payload.prompt.slice(0, 80) });
+  log.info("started", {
+    canvasId: payload.canvasId,
+    clientRequestId: payload.clientRequestId,
+  });
 
   // Resolve thread + model in parallel
   const [threadId, model] = await Promise.all([
@@ -358,28 +364,29 @@ async function handleRunCommand(
   const resolvedModel = payload.model ?? model;
   log.lap("resolve", { threadId: !!threadId, model: resolvedModel });
 
+  if (!services.acceptAgentRun) {
+    throw new Error("Agent acceptance is not configured.");
+  }
+  const accepted = await services.acceptAgentRun(
+    payload,
+    {
+      userId: authenticatedUser.id,
+      accessToken: authenticatedUser.accessToken,
+    },
+    {
+      ...(resolvedModel ? { model: resolvedModel } : {}),
+      ...(threadId ? { threadId } : {}),
+    },
+  );
   const response = agentRuns.createRun(payload, {
     accessToken: authenticatedUser.accessToken,
+    runId: accepted.runId,
     userId: authenticatedUser.id,
     ...(resolvedModel ? { model: resolvedModel } : {}),
     ...(threadId ? { threadId } : {}),
   });
   const runId = response.runId;
   log.lap("run_created", { runId });
-
-  // Persist run metadata
-  if (threadId && services.agentRunMetadataService) {
-    try {
-      await services.agentRunMetadataService.createAcceptedRun({
-        ...(resolvedModel ? { model: resolvedModel } : {}),
-        runId,
-        sessionId: payload.sessionId,
-        threadId,
-      });
-    } catch {
-      // Non-fatal
-    }
-  }
 
   // Bind this connection to the canvas so events route correctly
   connectionManager.bindCanvas(connectionId, canvasId);

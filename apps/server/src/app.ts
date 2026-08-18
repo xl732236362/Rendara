@@ -15,6 +15,7 @@ import {
   type BuiltinSkillCatalog,
   loadRepositoryBuiltinSkillCatalog,
 } from "./agent/builtin-skills/catalog.js";
+import { createAgentAuthority } from "./agent/capabilities.js";
 import type { LoomicAgentFactory } from "./agent/loomic-agent.js";
 import {
   type AgentPersistenceService,
@@ -22,10 +23,18 @@ import {
 } from "./agent/persistence/index.js";
 import { createAgentRunService } from "./agent/runtime.js";
 import {
+  type AcceptAgentRun,
+  createAcceptAgentRun,
+} from "./application/agent/accept-agent-run.js";
+import {
   type ServerEnv,
   loadServerEnv,
   resolveDefaultAgentModel,
 } from "./config/env.js";
+import {
+  type AgentExecutionRepository,
+  createAgentExecutionRepository,
+} from "./features/agent-runs/agent-execution-repository.js";
 import {
   type AgentRunMetadataService,
   createAgentRunMetadataService,
@@ -126,6 +135,8 @@ import { CanvasEventBuffer } from "./ws/event-buffer.js";
 import { registerWsRoute } from "./ws/handler.js";
 
 export type BuildAppOptions = {
+  acceptAgentRun?: AcceptAgentRun;
+  agentExecutionRepository?: AgentExecutionRepository;
   agentFactory?: LoomicAgentFactory;
   agentModel?: BaseLanguageModel | string;
   agentPersistenceService?: AgentPersistenceService;
@@ -239,6 +250,7 @@ export function buildAppFromEnv(
   void app.register(async (instance) => {
     await instance.register(websocket);
     await registerWsRoute(instance, {
+      acceptAgentRun,
       agentRuns,
       agentRunMetadataService,
       auth,
@@ -278,6 +290,79 @@ export function buildAppFromEnv(
           .eq("id", runId)
           .single();
         return error || !data ? null : data.session_id;
+      },
+    });
+  const agentExecutionRepository =
+    options.agentExecutionRepository ??
+    createAgentExecutionRepository({ getAdminClient });
+  const resolveAgentCanvasScope = async (
+    principal: { userId: string; accessToken?: string },
+    canvasId: string,
+  ) => {
+    if (!principal.accessToken) throw new Error("canvas_access_denied");
+    const client = createUserClient(principal.accessToken);
+    const { data, error } = await client
+      .from("canvases")
+      .select("id, project_id, projects!inner(workspace_id)")
+      .eq("id", canvasId)
+      .maybeSingle();
+    const row = data as unknown as {
+      id?: string;
+      project_id?: string;
+      projects?: { workspace_id?: string };
+    } | null;
+    if (
+      error ||
+      row?.id !== canvasId ||
+      !row.project_id ||
+      !row.projects?.workspace_id
+    ) {
+      throw new Error("canvas_access_denied");
+    }
+    return {
+      canvasId,
+      projectId: row.project_id,
+      workspaceId: row.projects.workspace_id,
+    };
+  };
+  const acceptAgentRun =
+    options.acceptAgentRun ??
+    createAcceptAgentRun({
+      catalog: {
+        get digest() {
+          return getAppBuiltinSkillCatalog(app).digest;
+        },
+        list: () => getAppBuiltinSkillCatalog(app).list(),
+      },
+      repository: agentExecutionRepository,
+      onAccepted: (event) =>
+        app.log.info(
+          { event: "agent_run_accepted", ...event },
+          "Agent run acceptance persisted",
+        ),
+      resolveAuthority: () =>
+        createAgentAuthority([
+          "skill.read",
+          "canvas.read",
+          "canvas.mutate",
+          "asset.persist",
+          "image.generate",
+          "video.generate",
+          "brand_kit.read",
+          "project.search",
+          "agent.delegate",
+        ]),
+      resolveScope: resolveAgentCanvasScope,
+      requireSessionScope: async (principal, sessionId) => {
+        if (!principal.accessToken) throw new Error("canvas_access_denied");
+        const client = createUserClient(principal.accessToken);
+        const { data, error } = await client
+          .from("chat_sessions")
+          .select("canvas_id")
+          .eq("id", sessionId)
+          .maybeSingle();
+        if (error || !data?.canvas_id) throw new Error("canvas_access_denied");
+        return resolveAgentCanvasScope(principal, data.canvas_id);
       },
     });
   const viewerService =
@@ -609,6 +694,7 @@ export function buildAppFromEnv(
       }),
   });
   void registerRunRoutes(app, agentRuns, {
+    acceptAgentRun,
     agentRunMetadataService,
     auth,
     authorization: resourceAuthorization,
