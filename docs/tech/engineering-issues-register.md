@@ -297,8 +297,8 @@
 - 状态：部分解决
 - 证据：`agent/backends/prod.ts` 使用与 API/Worker 同容器的 `LocalShellBackend`。代码注释明确指出 `virtualMode` 只限制文件工具，不限制 `execute`；shell 仍可访问完整容器文件系统和网络。
 - 影响：受用户提示、模型输出或外部 skill 影响的命令可以读取应用源码、`/proc`、挂载凭证和同容器文件，访问内网或发起外部攻击。按 DeepAgents 官方 production/sandboxes 指引，这种本地 shell 适合受信开发环境，不构成多租户隔离。
-- 建议方向：生产执行迁移到一次性容器、microVM 或受支持的远端 sandbox provider；落实只读根文件系统、非 root 用户、seccomp/AppArmor、CPU/内存/PID/磁盘限额、网络默认拒绝、域名 allowlist、超时和销毁审计。完成隔离前应关闭面向不可信用户的 execute。
-- 阶段 0 结果：危险的本地执行能力现已默认关闭，生产环境未精确配置允许开关时拒绝创建本地 Shell。真正的远端隔离执行环境仍列入阶段 3，因此本项保持“部分解决”。
+- 最终方向：Loomic Agent 不需要任意代码执行。阶段 3 永久删除 `execute`、`LocalShellBackend`、进程创建、Sandbox backend 和恢复开关；所有节点/画布能力只通过显式授权工具实现。未来重新引入任意执行必须另立安全设计。
+- 阶段 0 结果：危险的本地执行能力现已默认关闭。阶段 3 完成实际删除前本项保持“部分解决”。
 
 ### ENG-028：WebSocket 资源操作缺少对象级授权
 
@@ -324,7 +324,7 @@
 - 状态：部分解决
 - 证据：用户可从 GitHub、npm tarball 和 marketplace 导入包含 `SKILL.md`、scripts 与 references 的内容，并自动启用到 workspace；Agent 同时拥有不受容器隔离的 execute 能力。导入过程没有签名、固定 commit/integrity、恶意规则扫描或首次执行审批。
 - 影响：仓库所有者更新、依赖劫持、恶意 README/SKILL 指令或 prompt injection 都可能转化为服务端命令执行和数据外传。
-- 最终方向：不再接收任何用户或外部 Skill。阶段 3 永久删除创建、导入、市场、安装、启停及相关数据模型，运行时只加载仓库 manifest 显式列出的内置 Skill；模型定向执行仍必须进入真正隔离的 sandbox。
+- 最终方向：不再接收任何用户或外部 Skill。阶段 3 永久删除创建、导入、市场、安装、启停及相关数据模型，运行时只加载仓库 manifest 显式列出的内置 Skill；依赖任意执行的 Skill 不得进入 manifest。
 - 阶段 0 结果：外部导入能力已默认关闭；显式开启后导入的 Skill 也默认禁用并要求人工审阅，来源与下载范围受到约束。当时规划的签名和审批体系已由后续产品决策取消，本项仍保持“部分解决”直至动态 Skill 路径被彻底删除。
 - 阶段 1 进展：新增 transport-neutral `ImportSkill` 并收紧导入边界，作为阶段 3 删除动态 Skill 前的临时保护。阶段 3 将删除该用例、HTTP import、marketplace、workspace installation 和数据库投影，而不是继续演进它们。
 

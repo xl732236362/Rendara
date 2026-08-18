@@ -21,7 +21,7 @@ Phase 2 owns transactional generation submission, charging, queue insertion, job
 
 The following are explicitly out of scope:
 
-- Phase 3 Sandbox and Skill supply-chain controls.
+- Phase 3 removal of Agent arbitrary execution and dynamic Skills, plus explicit canvas-scoped tool governance.
 - Phase 4's complete versioned node protocol and registry.
 - Phase 5's shared realtime bus, CRDT, and cross-node replay infrastructure.
 - Guaranteeing that an external model provider is invoked exactly once when the provider has no idempotency API.
@@ -249,4 +249,3 @@ Phase 2 is complete only when:
 - the Phase 2 verification record, issue register, and operational runbook contain exact evidence;
 - an independent review finds no unresolved critical correctness or scope issue;
 - no Phase 3, 4, or 5 subsystem is pulled into the implementation.
-

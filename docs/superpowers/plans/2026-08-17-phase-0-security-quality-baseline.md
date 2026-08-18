@@ -161,7 +161,7 @@ if (!env.allowLocalAgentExecute) {
 }
 ```
 
-本阶段保留显式开发开关，仅用于受信本地环境；阶段 3 将替换为远端 sandbox。
+本阶段暂时保留仅用于受信本地环境的显式开发开关。后续阶段 3 决策已收紧为永久删除 Agent 的 `execute`、本地 backend 与恢复开关，不再建设远端 Sandbox。
 
 - [x] **Step 4: 运行 Agent 相关测试和 typecheck**
 

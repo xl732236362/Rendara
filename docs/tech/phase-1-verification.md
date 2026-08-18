@@ -107,7 +107,7 @@ Windows 上 npm 安装的 Supabase wrapper 没有可用 binary，验收使用官
 - ENG-012/013/014/023：版本化业务节点协议、共享画布模型、节点 registry 和单一 model catalog 仍是后续架构工作。
 - ENG-025：已强制 Phase 1 关键边界，但完整跨层 import/循环依赖图尚未纳入门禁。
 - ENG-006：Biome 门禁可用且 warning 从约 465 降至 443，历史 warning 仍需按模块清理。
-- ENG-027/030：Agent 隔离沙箱，以及删除动态 Skill、改用仓库清单内置 Skill 的目标架构仍属于阶段 3。
+- ENG-027/030：永久删除 Agent 任意执行，以及删除动态 Skill、改用仓库清单内置 Skill 的目标架构仍属于阶段 3。
 
 ## 验收矩阵
 

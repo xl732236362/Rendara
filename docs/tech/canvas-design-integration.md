@@ -1,52 +1,13 @@
-# Canvas Design Skill — Integration & Verification Guide
+# Canvas Design Skill - Retired Integration
 
-## Local Development Setup
+## Status
 
-### Prerequisites
+This integration is retired and must not be enabled in development, test, or production.
 
-- Python 3.x installed locally
-- `pip install pillow reportlab`
-- Font files in `skills/canvas-design/canvas-fonts/`
+The current `canvas-design` Skill depends on Agent-reachable Python execution, Pillow, reportlab, host fonts, and sandbox-file persistence. Loomic's approved Phase 3 boundary permanently removes `execute`, Shell/process backends, generic filesystem access, and Sandbox infrastructure. The package is therefore excluded from `skills/builtin-skills.manifest.json` and cannot be discovered or loaded by an Agent.
 
-### Environment Variables
+Do not restore `LOOMIC_SANDBOX_ROOT`, `LOOMIC_SKILLS_ROOT`, `LOOMIC_AGENT_BACKEND_MODE`, `LocalShellBackend`, `persist_sandbox_file`, automatic Skill directory discovery, or Python dependencies for this integration.
 
-```bash
-# .env.local additions
-LOOMIC_SANDBOX_ROOT=/tmp/loomic-sandbox-dev
-LOOMIC_SKILLS_ROOT=./skills
-```
+`canvas-design` may return only as a redesigned internal Skill whose complete workflow uses fixed Loomic tools from the closed capability map. Every canvas or node read and mutation must be an authorized tool call bound to the run's persisted `canvasId`; the Agent must not access canvas services, repositories, Supabase, Excalidraw/browser internals, host files, processes, or the network directly.
 
-### Verification Steps
-
-1. Start dev server: `pnpm dev`
-2. Open a project in the web UI
-3. Send message: "帮我生成一张极简主义风格的海报"
-4. Verify:
-   - Agent activates canvas-design skill (check server logs for `[SkillsMiddleware]`)
-   - Agent calls `execute` tool with Python code
-   - Generated PNG appears in sandbox tmpdir
-   - Agent calls `persist_sandbox_file` to upload
-   - User receives downloadable URL
-   - Sandbox tmpdir cleaned up after run
-
-### Production Deployment
-
-The Dockerfile handles everything:
-- Python + Pillow + reportlab installed in image
-- Skills + fonts copied to `/opt/loomic/skills/`
-- Default env vars work out of the box
-
-### Troubleshooting
-
-| Issue | Cause | Fix |
-|-------|-------|-----|
-| `execute` tool not available | Backend not sandbox | Check `LOOMIC_AGENT_BACKEND_MODE=state` and backend factory returns LocalShellBackend |
-| Fonts not found | Wrong FONT_DIR | Check `LOOMIC_SKILLS_ROOT` env var |
-| Sandbox dir fills up | Cleanup failed | Check runtime.ts finally block; add cron cleanup as safety net |
-| Python not found | Not in Docker image | Rebuild Docker image |
-| Skill not discovered | Skills path misconfigured | Check `/skills/` route in CompositeBackend |
-
-### Adding New Skills
-
-Place new skills in `skills/<skill-name>/SKILL.md`. They are automatically
-discovered by SkillsMiddleware on next agent run. No code changes needed.
+The authoritative decision and completion criteria are in `docs/superpowers/specs/2026-08-18-builtin-skills-and-canvas-scoped-agent-design.md`.

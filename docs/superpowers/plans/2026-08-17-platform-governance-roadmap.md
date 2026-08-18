@@ -17,7 +17,7 @@
 | 0 | 安全与质量基线 | WS 授权、safe-fetch、入口限流、危险能力关闭、CI、真实构建 | 当前状态 | P0 外部攻击面关闭，干净 checkout 全门禁通过 |
 | 1 | 契约与应用内核 | 统一 Zod/AppError/config/model catalog/use cases | 阶段 0 通过 | 所有入口复用应用用例，边界统一校验 |
 | 2 | 数据库与一致性 | 状态机、幂等、outbox、积分事务、canvas revision、RLS | 阶段 1 契约稳定 | 重试/取消/并发测试全部通过 |
-| 3 | Agent 隔离与内置 Skill | 远端隔离 sandbox、画布级 capability、仓库 manifest、移除动态 Skill | 阶段 0 临时关闭危险能力、阶段 2 canvas revision 可用 | 不可信代码无法访问应用容器和内网；Agent 不能跨画布；仅清单内置 Skill 可加载 |
+| 3 | Agent 工具边界与内置 Skill | 永久移除 execute、画布级 capability、仓库 manifest、移除动态 Skill | 阶段 0 临时关闭危险能力、阶段 2 canvas revision 可用 | Agent 只能通过授权工具操作当前画布；无任意执行；仅清单内置 Skill 可加载 |
 | 4 | 画布领域模型 | 版本化节点、registry、patch、asset manifest | 阶段 2 revision 可用 | 新节点通过单点注册完成扩展 |
 | 5 | 实时横向扩展 | 共享事件层、cursor replay、run ownership | 阶段 1 授权契约和阶段 2 run 状态稳定 | 双 API 副本与重启恢复测试通过 |
 | 6 | 前端数据与模块化 | Query 层、分页、API 分域、大组件拆分 | 阶段 1 API 契约稳定、阶段 4 节点 registry 稳定 | 数据缓存/失效一致，关键 E2E 通过 |

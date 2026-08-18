@@ -14,7 +14,7 @@
 
 - Phase 0 is merged on `main`; `pnpm ci:check` passes with 157 tests and 465 recorded lint warnings.
 - In scope: ENG-019, ENG-020, ENG-021, ENG-022, ENG-024, ENG-026, plus the application-boundary portion of ENG-017 and the contract foundation for ENG-012/023.
-- Deferred: database transactions/state machine/revision (phase 2), sandbox and Skill trust (phase 3), full canvas node registry (phase 4), shared realtime state (phase 5), Query caching/component decomposition (phase 6), global telemetry (phase 7).
+- Deferred: database transactions/state machine/revision (phase 2), removal of Agent arbitrary execution and dynamic Skills plus explicit tool governance (phase 3), full canvas node registry (phase 4), shared realtime state (phase 5), Query caching/component decomposition (phase 6), global telemetry (phase 7).
 - Phase 1 does not claim ENG-007, ENG-008, ENG-009, ENG-012-014, ENG-017, ENG-023, or ENG-025 fully solved where the roadmap assigns their target form to later phases.
 
 ## Task 1: Align Zod And Complete Boundary Contracts

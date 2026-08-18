@@ -9,7 +9,7 @@ Loomic 已具备完整的 AI 创作产品雏形：Next.js 前端、Fastify API�
 治理结果必须满足：
 
 1. 不同用户和工作区的数据、事件、运行与文件不能互相访问。
-2. Agent 执行代码不能读取服务容器、凭证或任意访问网络。
+2. Agent 不具备任意代码执行能力，只能通过服务端显式授权的工具访问当前画布及其他产品能力。
 3. 生成、扣费、任务和画布修改在重试、取消和并发下保持一致。
 4. 新增模型、Provider、任务类型或画布节点时，只扩展对应注册项和能力实现。
 5. 每个阶段结束后系统均可运行、演示和测试，并原则上可独立回退；阶段 3 永久删除尚未上线的用户 Skill 数据属于已批准的前滚例外。
@@ -43,7 +43,7 @@ Web / HTTP / WebSocket / Agent Tools / Worker
                     |
               Repository Ports
                     |
- Supabase / PGMQ / Storage / Providers / Sandbox
+ Supabase / PGMQ / Storage / Providers
 ```
 
 ### 3.1 包与模块职责
@@ -53,7 +53,7 @@ Web / HTTP / WebSocket / Agent Tools / Worker
 - `packages/canvas-domain`：节点 schema、版本迁移、构造器、布局、操作、revision 和 patch。不得依赖 DOM、React 或数据库。
 - `apps/server/src/domain`：任务状态机、计费规则、授权规则和幂等语义。
 - `apps/server/src/application`：提交生成、取消生成、修改画布和 Agent capability 等用例。
-- `apps/server/src/infrastructure`：Supabase repositories、PGMQ、Storage、Provider、safe-fetch、sandbox 和事件总线。
+- `apps/server/src/infrastructure`：Supabase repositories、PGMQ、Storage、Provider、safe-fetch 和事件总线。
 - `apps/server/src/interfaces`：HTTP、WebSocket、Agent tools 和 Worker adapters。
 - `apps/web/src/data`：统一 API client、schema parse、query key、缓存、重试和失效。
 - `apps/web/src/features`：按 canvas、chat、billing、projects 等产品能力组织界面；内置 Skill 不提供用户管理 feature。
@@ -143,24 +143,20 @@ Web / HTTP / WebSocket / Agent Tools / Worker
 - 两个并发画布写入中，过期 revision 明确失败。
 - 临时 Supabase 从零重建并通过跨租户正反权限测试。
 
-## 阶段 3：Agent 隔离、内置 Skill 与画布能力边界
+## 阶段 3：Agent 工具边界、内置 Skill 与画布能力治理
 
-### Sandbox
+### 禁止任意执行
 
-- 使用一次性容器、microVM 或成熟远端 sandbox provider，不在 API/Worker 容器执行用户代码。
-- 每次 run 使用独立身份和文件系统，非 root、只读根文件系统。
-- 设置 CPU、内存、PID、磁盘、执行时间和输出上限。
-- 阶段 3 Sandbox 完全禁止网络出站；未来确有需求时另行设计域名授权和代理，不在本阶段预留宽松入口。
-- Sandbox 不接收 Supabase service role、Provider key 或应用内部网络权限。
-- 输出只通过 Sandbox 文件 port 受限下载，服务端验证路径、大小、MIME/magic bytes 并生成文件名，再经资产应用端口持久化。
-- 每次 run 创建独立 lease；有效策略与 lease 生命周期持久化，`finally` 清理和重启后的 orphan reconciler 均幂等执行。
-- 内置 Skill 脚本从启动时验证的内存 catalog 上传到 Sandbox，不挂载 API 宿主目录；产物只通过 Sandbox 文件 port 下载。
+- 永久移除 Agent 的 `execute`、Shell、Python、进程创建、包安装、通用网络请求和 Sandbox backend。
+- 开发、测试和生产使用相同边界，不保留 `allowLocalAgentExecute` 或其他配置开关。
+- 依赖代码执行的 `canvas-design` 不进入内置 manifest；重新设计为固定业务工具前不可加载。
+- 未来若重新引入任意执行，必须建立新的安全设计，不能通过配置恢复旧路径。
 
 ### 内置 Skill 模型
 
 - 永久移除用户创建、导入、下载、市场安装、工作区安装和启停 Skill 的产品能力及数据模型。
 - Skill 只来自仓库 `skills/`，并且必须由仓库级 manifest 显式列入并声明所需 capability；目录发现、请求、数据库和用户文件不能授予加载资格。
-- manifest 内容在启动时复制为内存只读 `/skills/` backend，并通过 DeepAgents 官方 `skills` 配置加载；Agent 不直接读取宿主 Skill 目录。
+- manifest 内容在启动时复制为不可变内存 catalog；Agent 只能通过受控只读 `read_builtin_skill` 工具读取有效 Skill，不接触宿主文件系统。
 - 每个 run 只看到其 capability 快照满足全部前置条件的 Skill；Skill 声明只能缩小可见集合，不能反向授予 capability。
 - 内置 Skill 随应用代码审查、测试和发布，不建设外部来源 hash、签名、审批、revision 或兼容迁移体系。
 - 先发布只读取内置 manifest 的运行时，再以前滚 migration 删除动态 Skill 表和历史数据；不提供恢复路径。
@@ -168,17 +164,18 @@ Web / HTTP / WebSocket / Agent Tools / Worker
 ### 画布与 Capability 边界
 
 - 每个 Agent run 必须绑定已授权的当前 `canvasId`，服务端解析并冻结 user/workspace/canvas 上下文。
-- Capability 只取服务端部署 allowlist、Provider/Sandbox 可用能力和画布/项目/工作区授权的交集。
+- Capability 只取服务端部署 allowlist、Provider 可用能力和画布/项目/工作区授权的交集。
 - 客户端请求、prompt、模型输出和 Skill 内容均不能授予 capability。
 - 未授权工具不注册；高风险应用用例在副作用前再次检查同一执行上下文，工具不能改写目标 canvas/workspace。
 - DeepAgents 自动文件工具、`task`、backend 路由和所有 subagent 同样受 capability map 约束，不能成为应用工具之外的旁路。
+- 所有节点和画布读取、选择、创建、修改、删除、布局、截图及生成结果写入都通过显式工具调用；Agent 不直接访问 repository、Supabase、Excalidraw/browser 内部状态或 canvas service。
 
 ### 验收
 
 - 只有 manifest 明确列出的仓库内置 Skill 能进入 Agent，外部或用户内容没有导入和执行路径。
 - Agent 只能操作当前已授权画布，未授权工具不可见且应用端口直接调用同样被拒绝。
 - 同一用户打开多个画布时，浏览器 RPC 仍按绑定 `canvasId` 路由，不能仅按 userId 选择连接。
-- Sandbox 销毁后无法再次读取 run 文件。
+- Agent 和 subagent 的有效工具集合不包含 `execute`、通用文件/网络工具或任何未分类工具。
 
 ## 阶段 4：画布领域模型与节点扩展体系
 
@@ -263,7 +260,7 @@ Web / HTTP / WebSocket / Agent Tools / Worker
 - 统一结构化 logger，标准字段包括 requestId、userId、workspaceId、sessionId、runId、jobId、provider/model、durationMs、attempt 和 errorCode。
 - 敏感字段默认禁止记录；prompt 和第三方响应只记录长度、hash 或经批准摘要。
 - 接入 OpenTelemetry traces，串联 HTTP -> use case -> DB/outbox -> Worker -> Provider -> Storage。
-- 指标覆盖 API 延迟/错误率、WS 连接、queue lag、最老消息、生成成功率、Provider 延迟、积分异常、sandbox 资源和画布冲突率。
+- 指标覆盖 API 延迟/错误率、WS 连接、queue lag、最老消息、生成成功率、Provider 延迟、积分异常、Agent 工具拒绝和画布冲突率。
 
 ### 健康与发布
 
@@ -296,7 +293,7 @@ Web / HTTP / WebSocket / Agent Tools / Worker
 
 ### 安全集成测试
 
-- SSRF、重定向、压缩炸弹、跨租户 WS、非清单 Skill 加载、跨画布工具调用、sandbox 文件/网络逃逸。
+- SSRF、重定向、压缩炸弹、跨租户 WS、非清单 Skill 加载、未授权工具注入、直接画布访问和跨画布工具调用。
 
 ### 端到端测试
 
@@ -335,7 +332,7 @@ Web / HTTP / WebSocket / Agent Tools / Worker
 - 当前尚未上线，允许重建开发/测试数据库及调整内部 API。
 - 采用分阶段治理，每个阶段保持项目可运行。
 - 安全边界和一致性优先于功能扩展与代码美化。
-- 不在 API 容器中运行不可信 shell。
+- 永久移除 Agent 可触达的 Shell、进程执行与通用文件/网络工具；节点和画布能力只能通过绑定当前画布的授权工具调用。
 - 用户和外部来源不能创建、导入、安装或配置 Skill；阶段 3 对相关开发数据和 schema 的删除采用前滚修复，不提供功能回退。
 - 画布采用 revision + operation/patch，不继续依赖无条件整文档覆盖。
 - Agent、HTTP、WebSocket 和 Worker 共享应用用例，不复制业务编排。
