@@ -62,7 +62,14 @@ describe("canvas image generation UI", () => {
       }),
     };
 
-    render(<CanvasToolMenu accessToken="token" excalidrawApi={api} />);
+    render(
+      <CanvasToolMenu
+        accessToken="token"
+        projectId="project-1"
+        startImageGeneration={vi.fn()}
+        excalidrawApi={api}
+      />,
+    );
 
     act(() => {
       onChange?.(
@@ -196,7 +203,14 @@ describe("canvas image generation UI", () => {
       }),
     };
 
-    render(<CanvasToolMenu accessToken="token" excalidrawApi={api} />);
+    render(
+      <CanvasToolMenu
+        accessToken="token"
+        projectId="project-1"
+        startImageGeneration={vi.fn()}
+        excalidrawApi={api}
+      />,
+    );
 
     act(() => {
       onChange?.(
@@ -242,18 +256,8 @@ describe("canvas image generation UI", () => {
     });
   });
 
-  it("replaces the placeholder even when the editor panel unmounts", async () => {
-    const generation = deferred<{
-      url: string;
-      prompt: string;
-      mimeType: string;
-      width: number;
-      height: number;
-    }>();
-    generateImageDirectMock.mockReturnValue(generation.promise);
-    fetchAsDataURLMock.mockResolvedValue("data:image/png;base64,dGVzdA==");
-
-    let elements: Array<Record<string, unknown>> = [
+  it("submits one durable attempt for repeated Enter presses", async () => {
+    const elements: Array<Record<string, unknown>> = [
       {
         id: "generator-1",
         type: "rectangle",
@@ -273,196 +277,46 @@ describe("canvas image generation UI", () => {
       },
     ];
     const api = {
-      addFiles: vi.fn(),
       getSceneElements: vi.fn(() => elements),
-      updateScene: vi.fn(
-        (scene: { elements?: Array<Record<string, unknown>> }) => {
-          if (scene.elements) elements = scene.elements;
-        },
-      ),
+      updateScene: vi.fn(),
     };
-
-    const view = render(
+    let release!: () => void;
+    const startAttempt = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    render(
       <ImageGeneratorPanel
         elementId="generator-1"
         elementBounds={{ x: 10, y: 20, width: 400, height: 400 }}
         data={elements[0]?.customData as ImageGeneratorData}
         excalidrawApi={api}
         accessToken="token"
+        projectId="project-1"
+        startAttempt={startAttempt}
         canvasScrollZoom={{ scrollX: 0, scrollY: 0, zoom: 1 }}
         onClose={vi.fn()}
       />,
     );
 
-    fireEvent.keyDown(screen.getByPlaceholderText("今天我们要创作什么"), {
+    const prompt = screen.getByPlaceholderText("今天我们要创作什么");
+    fireEvent.keyDown(prompt, {
       key: "Enter",
     });
-    await waitFor(() => expect(generateImageDirectMock).toHaveBeenCalledOnce());
-
-    view.unmount();
-    elements = elements.map((element) =>
-      element.id === "generator-1"
-        ? {
-            ...element,
-            x: 110,
-            y: 120,
-            width: 640,
-            height: 360,
-            angle: Math.PI / 3,
-          }
-        : element,
-    );
-    generation.resolve({
-      url: "https://example.test/generated.png",
+    fireEvent.keyDown(prompt, {
+      key: "Enter",
+    });
+    expect(startAttempt).toHaveBeenCalledOnce();
+    expect(startAttempt).toHaveBeenCalledWith("generator-1", {
       prompt: "A test image",
-      mimeType: "image/png",
-      width: 1024,
-      height: 1024,
+      model: "gpt-image-2",
+      aspectRatio: "1:1",
+      quality: "standard",
+      referenceAssetIds: [],
     });
-
-    await waitFor(() => expect(fetchAsDataURLMock).toHaveBeenCalledOnce());
-    expect(api.addFiles).toHaveBeenCalledOnce();
-    expect(elements.some((element) => element.type === "image")).toBe(true);
-    expect(
-      elements.find((element) => element.id === "generator-1")?.isDeleted,
-    ).toBe(true);
-    expect(elements.find((element) => element.type === "image")).toMatchObject({
-      x: 110,
-      y: 120,
-      width: 640,
-      height: 360,
-      angle: Math.PI / 3,
-    });
-  });
-
-  it("does not recreate a generator deleted while generation is pending", async () => {
-    const generation = deferred<{
-      url: string;
-      prompt: string;
-      mimeType: string;
-      width: number;
-      height: number;
-    }>();
-    generateImageDirectMock.mockReturnValue(generation.promise);
-    fetchAsDataURLMock.mockResolvedValue("data:image/png;base64,dGVzdA==");
-
-    let elements: Array<Record<string, unknown>> = [
-      {
-        id: "deleted-generator",
-        type: "rectangle",
-        x: 10,
-        y: 20,
-        width: 400,
-        height: 400,
-        angle: 0,
-        version: 1,
-        customData: {
-          type: "image-generator",
-          status: "idle",
-          prompt: "A deleted test image",
-          model: "gpt-image-2",
-          aspectRatio: "1:1",
-          quality: "standard",
-        },
-      },
-    ];
-    const api = {
-      addFiles: vi.fn(),
-      getSceneElements: vi.fn(() => elements),
-      updateScene: vi.fn(
-        (scene: { elements?: Array<Record<string, unknown>> }) => {
-          if (scene.elements) elements = scene.elements;
-        },
-      ),
-    };
-
-    render(
-      <ImageGeneratorPanel
-        elementId="deleted-generator"
-        elementBounds={{ x: 10, y: 20, width: 400, height: 400, angle: 0 }}
-        data={elements[0]?.customData as ImageGeneratorData}
-        excalidrawApi={api}
-        accessToken="token"
-        canvasScrollZoom={{ scrollX: 0, scrollY: 0, zoom: 1 }}
-        onClose={vi.fn()}
-      />,
-    );
-
-    fireEvent.keyDown(screen.getByPlaceholderText("今天我们要创作什么"), {
-      key: "Enter",
-    });
-    await waitFor(() => expect(generateImageDirectMock).toHaveBeenCalledOnce());
-    elements = elements.map((element) =>
-      element.id === "deleted-generator"
-        ? { ...element, isDeleted: true }
-        : element,
-    );
-
-    generation.resolve({
-      url: "https://example.test/generated.png",
-      prompt: "A deleted test image",
-      mimeType: "image/png",
-      width: 1024,
-      height: 1024,
-    });
-
-    await waitFor(() => expect(fetchAsDataURLMock).toHaveBeenCalledOnce());
-    await waitFor(() => expect(generateImageDirectMock).toHaveBeenCalledOnce());
-    expect(api.addFiles).not.toHaveBeenCalled();
-    expect(elements.some((element) => element.type === "image")).toBe(false);
-  });
-
-  it("recovers an orphaned generating placeholder as retryable", async () => {
-    let elements: Array<Record<string, unknown>> = [
-      {
-        id: "orphaned-generator",
-        type: "rectangle",
-        x: 10,
-        y: 20,
-        width: 400,
-        height: 400,
-        version: 1,
-        customData: {
-          type: "image-generator",
-          status: "generating",
-          prompt: "A test image",
-          model: "gpt-image-2",
-          aspectRatio: "1:1",
-          quality: "standard",
-        },
-      },
-    ];
-    const api = {
-      addFiles: vi.fn(),
-      getSceneElements: vi.fn(() => elements),
-      updateScene: vi.fn(
-        (scene: { elements?: Array<Record<string, unknown>> }) => {
-          if (scene.elements) elements = scene.elements;
-        },
-      ),
-    };
-
-    render(
-      <ImageGeneratorPanel
-        elementId="orphaned-generator"
-        elementBounds={{ x: 10, y: 20, width: 400, height: 400 }}
-        data={elements[0]?.customData as ImageGeneratorData}
-        excalidrawApi={api}
-        accessToken="token"
-        canvasScrollZoom={{ scrollX: 0, scrollY: 0, zoom: 1 }}
-        onClose={vi.fn()}
-      />,
-    );
-
-    await waitFor(() => {
-      expect(
-        (
-          elements.find((element) => element.id === "orphaned-generator")
-            ?.customData as Record<string, unknown>
-        ).status,
-      ).toBe("error");
-    });
-    expect(screen.getByPlaceholderText("今天我们要创作什么")).toBeEnabled();
-    expect(screen.getByText("上次生成已中断，请重试。")).toBeInTheDocument();
+    expect(generateImageDirectMock).not.toHaveBeenCalled();
+    release();
   });
 });

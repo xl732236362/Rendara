@@ -33,10 +33,15 @@ type CanvasApi = {
   onChange?(listener: () => void): (() => void) | void;
 };
 
-type StartAttemptFields = Pick<
+export type StartImageGenerationAttempt = (
+  elementId: string,
+  fields: Pick<
   ImageGeneratorData,
   "prompt" | "model" | "aspectRatio" | "quality" | "referenceAssetIds"
->;
+  >,
+) => Promise<void>;
+
+type StartAttemptFields = Parameters<StartImageGenerationAttempt>[1];
 
 const INITIAL_POLL_MS = 1_000;
 const MAX_POLL_MS = 15_000;

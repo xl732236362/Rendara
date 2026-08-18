@@ -5,10 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useGenerationErrorHandler } from "../../hooks/use-generation-error-handler";
-import {
-  createExcalidrawImageElement,
-  fetchAsDataURL,
-} from "../../lib/canvas-elements";
+import type { StartImageGenerationAttempt } from "../../hooks/use-canvas-image-generation";
 import {
   type ImageGeneratorData,
   resizeImageGeneratorElement,
@@ -16,7 +13,7 @@ import {
 } from "../../lib/canvas-image-generator";
 import { panelAnchor } from "../../lib/canvas-overlay-geometry";
 import type { ImageModelInfo } from "../../lib/server-api";
-import { fetchImageModels, generateImageDirect } from "../../lib/server-api";
+import { fetchImageModels, getAssetUrl, uploadFile } from "../../lib/server-api";
 
 type ImageGeneratorPanelProps = {
   elementId: string;
@@ -30,6 +27,8 @@ type ImageGeneratorPanelProps = {
   data: ImageGeneratorData;
   excalidrawApi: any;
   accessToken: string;
+  projectId: string;
+  startAttempt: StartImageGenerationAttempt;
   canvasScrollZoom: {
     scrollX: number;
     scrollY: number;
@@ -47,22 +46,14 @@ const QUALITIES = [
   { value: "ultra", label: "4K" },
 ] as const;
 
-// The request must outlive panel selection changes. Persisted `generating`
-// elements without an entry here are orphaned and can be retried safely.
-const activeImageGenerations = new Set<string>();
-
-function generateId(): string {
-  return (
-    Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
-  ).slice(0, 20);
-}
-
 export function ImageGeneratorPanel({
   elementId,
   elementBounds,
   data,
   excalidrawApi,
   accessToken,
+  projectId,
+  startAttempt,
   canvasScrollZoom,
   onClose,
 }: ImageGeneratorPanelProps) {
@@ -70,31 +61,28 @@ export function ImageGeneratorPanel({
   const [model, setModel] = useState(data.model);
   const [aspectRatio, setAspectRatio] = useState(data.aspectRatio);
   const [quality, setQuality] = useState(data.quality);
-  const orphanedGeneration =
-    data.status === "generating" && !activeImageGenerations.has(elementId);
-  const [loading, setLoading] = useState(
-    data.status === "generating" && !orphanedGeneration,
-  );
-  const [error, setError] = useState<string | null>(
-    orphanedGeneration
-      ? "上次生成已中断，请重试。"
-      : (data.errorMessage ?? null),
-  );
+  const loading = data.status === "generating";
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(data.errorMessage ?? null);
   const [models, setModels] = useState<ImageModelInfo[]>([]);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [showRatioDropdown, setShowRatioDropdown] = useState(false);
   const [showQualityDropdown, setShowQualityDropdown] = useState(false);
   const [refImages, setRefImages] = useState<
-    Array<{ id: string; dataUrl: string; file: File }>
-  >([]);
+    Array<{ assetId: string; previewUrl: string }>
+  >(
+    (data.referenceAssetIds ?? []).map((assetId) => ({
+      assetId,
+      previewUrl: "",
+    })),
+  );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const refInputRef = useRef<HTMLInputElement>(null);
   const accessTokenRef = useRef(accessToken);
   accessTokenRef.current = accessToken;
   const { handleGenerationError } = useGenerationErrorHandler();
-  // AbortController for in-flight generation requests so we can cancel on unmount
-  const abortRef = useRef<AbortController | null>(null);
+  const startingRef = useRef(false);
 
   // Fetch available models with error logging
   useEffect(() => {
@@ -112,13 +100,40 @@ export function ImageGeneratorPanel({
   }, []);
 
   useEffect(() => {
-    if (!orphanedGeneration) return;
-    console.warn("[image-gen] Recovering orphaned generation", { elementId });
-    updateImageGeneratorElement(excalidrawApi, elementId, {
-      status: "error",
-      errorMessage: "上次生成已中断，请重试。",
-    });
-  }, [excalidrawApi, elementId, orphanedGeneration]);
+    const unresolved = refImages.filter((image) => !image.previewUrl);
+    if (unresolved.length === 0) return;
+    let cancelled = false;
+    void Promise.all(
+      unresolved.map(async ({ assetId }) => ({
+        assetId,
+        previewUrl: (await getAssetUrl(accessTokenRef.current, assetId)).url,
+      })),
+    )
+      .then((resolved) => {
+        if (cancelled) return;
+        const urls = new Map(
+          resolved.map((image) => [image.assetId, image.previewUrl]),
+        );
+        setRefImages((current) =>
+          current.map((image) => ({
+            ...image,
+            previewUrl: urls.get(image.assetId) ?? image.previewUrl,
+          })),
+        );
+      })
+      .catch((previewError) => {
+        console.warn("[image-gen] reference preview resolution failed", {
+          count: unresolved.length,
+          error:
+            previewError instanceof Error
+              ? previewError.message
+              : String(previewError),
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [refImages]);
 
   // Close dropdowns when clicking outside the panel
   useEffect(() => {
@@ -159,6 +174,7 @@ export function ImageGeneratorPanel({
 
   const handleAspectRatioChange = useCallback(
     (ratio: string) => {
+      if (loading) return;
       setAspectRatio(ratio);
       setShowRatioDropdown(false);
       resizeImageGeneratorElement(excalidrawApi, elementId, ratio);
@@ -166,121 +182,48 @@ export function ImageGeneratorPanel({
         aspectRatio: ratio,
       });
     },
-    [excalidrawApi, elementId],
+    [excalidrawApi, elementId, loading],
   );
 
   const handleQualityChange = useCallback(
     (q: string) => {
+      if (loading) return;
       setQuality(q);
       setShowQualityDropdown(false);
       updateImageGeneratorElement(excalidrawApi, elementId, { quality: q });
     },
-    [excalidrawApi, elementId],
+    [excalidrawApi, elementId, loading],
   );
 
   const handleModelChange = useCallback(
     (m: string) => {
+      if (loading) return;
       setModel(m);
       setShowModelDropdown(false);
       updateImageGeneratorElement(excalidrawApi, elementId, { model: m });
     },
-    [excalidrawApi, elementId],
+    [excalidrawApi, elementId, loading],
   );
 
   const handleGenerate = useCallback(async () => {
-    if (!prompt.trim() || loading) return;
-
-    // Cancel any previous in-flight request
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    activeImageGenerations.add(elementId);
-
-    setLoading(true);
+    if (!prompt.trim() || loading || uploading || startingRef.current) return;
+    startingRef.current = true;
     setError(null);
-    updateImageGeneratorElement(excalidrawApi, elementId, {
-      status: "generating",
-      prompt: prompt.trim(),
-      model,
-      aspectRatio,
-      quality,
-    });
-
     try {
-      const result = await generateImageDirect(
-        accessTokenRef.current,
-        prompt.trim(),
-        { model, aspectRatio, quality },
-      );
-
-      // Check if this generation was cancelled while awaiting
-      if (controller.signal.aborted) return;
-
-      // Download and insert as real image element at same position
-      const dataURL = await fetchAsDataURL(result.url, accessTokenRef.current);
-      if (controller.signal.aborted) return;
-
-      const sceneElements = excalidrawApi.getSceneElements();
-      const livePlaceholder = sceneElements.find(
-        (element: any) => element.id === elementId && !element.isDeleted,
-      );
-      if (!livePlaceholder) {
-        console.info(
-          "[image-gen] Placeholder removed before completion; generated asset remains in storage",
-          { elementId },
-        );
-        onClose();
-        return;
-      }
-
-      const fileId = generateId();
-      excalidrawApi.addFiles([
-        {
-          id: fileId,
-          dataURL,
-          mimeType: result.mimeType,
-          created: Date.now(),
-        },
-      ]);
-
-      const imageElement = createExcalidrawImageElement({
-        fileId,
-        x: livePlaceholder.x as number,
-        y: livePlaceholder.y as number,
-        width: livePlaceholder.width as number,
-        height: livePlaceholder.height as number,
-        angle: (livePlaceholder.angle as number) ?? 0,
-        title: prompt.trim().slice(0, 60),
+      await startAttempt(elementId, {
+        prompt: prompt.trim(),
+        model,
+        aspectRatio,
+        quality,
+        referenceAssetIds: refImages.map((image) => image.assetId),
       });
-
-      // Replace: delete placeholder, add image
-      const elements = sceneElements.map((el: any) => {
-        if (el.id === elementId) return { ...el, isDeleted: true };
-        return el;
-      });
-      excalidrawApi.updateScene({
-        elements: [...elements, imageElement],
-        captureUpdate: "IMMEDIATELY",
-      });
-
-      onClose();
     } catch (err) {
-      // Ignore aborted requests (user cancelled or component unmounted)
-      if (controller.signal.aborted) return;
-
-      console.error("[image-gen] Generation error:", err);
       const handled = handleGenerationError(err);
       if (!handled) {
         setError("图片生成失败，请重试或更换模型。");
       }
-      setLoading(false);
-      updateImageGeneratorElement(excalidrawApi, elementId, {
-        status: "error",
-        errorMessage: "生成失败",
-      });
     } finally {
-      activeImageGenerations.delete(elementId);
-      if (abortRef.current === controller) abortRef.current = null;
+      startingRef.current = false;
     }
   }, [
     prompt,
@@ -288,10 +231,10 @@ export function ImageGeneratorPanel({
     model,
     aspectRatio,
     quality,
-    excalidrawApi,
     elementId,
-    elementBounds,
-    onClose,
+    refImages,
+    startAttempt,
+    uploading,
     handleGenerationError,
   ]);
 
@@ -408,30 +351,43 @@ export function ImageGeneratorPanel({
             type="file"
             accept="image/png,image/jpeg,image/webp,image/gif"
             multiple
+            disabled={loading || uploading}
             className="hidden"
-            onChange={(e) => {
+            onChange={async (e) => {
               const files = e.target.files;
               if (!files) return;
-              Array.from(files).forEach((file) => {
-                const reader = new FileReader();
-                reader.onload = () => {
-                  setRefImages((prev) => [
-                    ...prev,
-                    {
-                      id: generateId(),
-                      dataUrl: reader.result as string,
-                      file,
-                    },
-                  ]);
-                };
-                reader.readAsDataURL(file);
-              });
               e.target.value = "";
+              setUploading(true);
+              setError(null);
+              try {
+                const uploaded = await Promise.all(
+                  Array.from(files).map((file) =>
+                    uploadFile(accessTokenRef.current, file, projectId),
+                  ),
+                );
+                const next = uploaded.map(({ asset, url }) => ({
+                  assetId: asset.id,
+                  previewUrl: url,
+                }));
+                setRefImages((previous) => {
+                  const merged = [...previous, ...next].slice(0, 8);
+                  updateImageGeneratorElement(excalidrawApi, elementId, {
+                    referenceAssetIds: merged.map((image) => image.assetId),
+                  });
+                  return merged;
+                });
+              } catch (uploadError) {
+                handleGenerationError(uploadError);
+                setError("参考图片上传失败，请重试。");
+              } finally {
+                setUploading(false);
+              }
             }}
           />
           <button
             type="button"
             onClick={() => refInputRef.current?.click()}
+            disabled={loading || uploading}
             className={`flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-muted ${
               refImages.length > 0
                 ? "text-foreground"
@@ -445,19 +401,28 @@ export function ImageGeneratorPanel({
           {refImages.length > 0 && (
             <div className="flex items-center gap-1 ml-1">
               {refImages.map((img) => (
-                <div key={img.id} className="relative group">
+                <div key={img.assetId} className="relative group">
                   <img
-                    src={img.dataUrl}
+                    src={img.previewUrl}
                     alt="ref"
                     className="h-7 w-7 rounded object-cover border border-border"
                   />
                   <button
                     type="button"
-                    onClick={() =>
-                      setRefImages((prev) =>
-                        prev.filter((r) => r.id !== img.id),
-                      )
-                    }
+                    disabled={loading}
+                    onClick={() => {
+                      setRefImages((previous) => {
+                        const next = previous.filter(
+                          (reference) => reference.assetId !== img.assetId,
+                        );
+                        updateImageGeneratorElement(excalidrawApi, elementId, {
+                          referenceAssetIds: next.map(
+                            (reference) => reference.assetId,
+                          ),
+                        });
+                        return next;
+                      });
+                    }}
                     className="absolute -top-1 -right-1 hidden group-hover:flex h-3.5 w-3.5 items-center justify-center rounded-full bg-primary text-primary-foreground text-[8px]"
                   >
                     x
@@ -540,7 +505,7 @@ export function ImageGeneratorPanel({
           <button
             type="button"
             onClick={() => void handleGenerate()}
-            disabled={!prompt.trim() || loading}
+            disabled={!prompt.trim() || loading || uploading}
             className="flex h-8 min-w-12 items-center justify-center gap-1 rounded-full bg-primary p-2 text-primary-foreground transition-colors hover:bg-primary/80 hover:accent-glow disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
           >
             {loading ? (

@@ -34,6 +34,7 @@ import {
   isVideoGeneratorElement,
 } from "../lib/canvas-video-generator";
 import { ImageGeneratorPanel } from "./canvas/image-generator-panel";
+import type { StartImageGenerationAttempt } from "../hooks/use-canvas-image-generation";
 import { VideoGeneratorPanel } from "./canvas/video-generator-panel";
 import { VideoPlayerPanel } from "./canvas/video-player-panel";
 
@@ -91,6 +92,8 @@ const TOOL_LABELS: Record<ToolType, string> = {
 
 type CanvasToolMenuProps = {
   accessToken: string;
+  projectId: string;
+  startImageGeneration: StartImageGenerationAttempt;
   excalidrawApi: any;
   leftPanelOpen?: boolean;
 };
@@ -170,6 +173,8 @@ const GeneratingOverlay = memo(function GeneratingOverlay({
 
 export function CanvasToolMenu({
   accessToken,
+  projectId,
+  startImageGeneration,
   excalidrawApi,
   leftPanelOpen,
 }: CanvasToolMenuProps) {
@@ -595,6 +600,8 @@ export function CanvasToolMenu({
           data={generatorData}
           excalidrawApi={excalidrawApi}
           accessToken={accessToken}
+          projectId={projectId}
+          startAttempt={startImageGeneration}
           canvasScrollZoom={canvasScrollZoom}
           onClose={handleCloseGenerator}
         />
