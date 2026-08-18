@@ -24,16 +24,13 @@ describe("server environment schema", () => {
     },
   );
 
-  it("rejects invalid enums and URLs in one actionable error", () => {
+  it("rejects invalid URLs in one actionable error", () => {
     expect(() =>
       parseServerEnvironment({
-        LOOMIC_AGENT_BACKEND_MODE: "memory",
         LOOMIC_WEB_ORIGIN: "not a url",
         OPENAI_API_BASE: "also not a url",
       }),
-    ).toThrowError(
-      /LOOMIC_AGENT_BACKEND_MODE[\s\S]*LOOMIC_WEB_ORIGIN[\s\S]*OPENAI_API_BASE/,
-    );
+    ).toThrowError(/LOOMIC_WEB_ORIGIN[\s\S]*OPENAI_API_BASE/);
   });
 
   it("trims strings and normalizes blank optional values", () => {
@@ -41,40 +38,11 @@ describe("server environment schema", () => {
       LOOMIC_AGENT_MODEL: "  custom-model  ",
       OPENAI_API_KEY: "  openai-secret  ",
       REPLICATE_API_TOKEN: "   ",
-      LOOMIC_SKILLS_ROOT: "  ./skills  ",
     });
 
     expect(env.agentModel).toBe("custom-model");
     expect(env.openAIApiKey).toBe("openai-secret");
     expect(env.replicateApiToken).toBeUndefined();
-    expect(env.skillsRoot).toBe("./skills");
-  });
-
-  it("enables dangerous capabilities only for the exact true literal", () => {
-    expect(
-      parseServerEnvironment({ LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE: "true" })
-        .allowLocalAgentExecute,
-    ).toBe(true);
-  });
-
-  it.each(["TRUE", "1", "yes", " true ", null, 1, {}])(
-    "rejects invalid supplied boolean %j",
-    (value) => {
-      expect(() =>
-        parseServerEnvironment({ LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE: value }),
-      ).toThrow(/LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE/);
-    },
-  );
-
-  it("accepts exact false and typed booleans", () => {
-    expect(
-      parseServerEnvironment({ LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE: "false" })
-        .allowLocalAgentExecute,
-    ).toBe(false);
-    expect(
-      parseServerEnvironment({ LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE: true })
-        .allowLocalAgentExecute,
-    ).toBe(true);
   });
 
   it("requires production API dependencies and its resolved default provider", () => {

@@ -33,10 +33,7 @@ describe("Agent runtime application wiring", () => {
           canvasId: "canvas-1",
           workspaceId: "workspace-1",
         })) as never,
-      env: loadServerEnv(
-        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
-        {},
-      ),
+      env: loadServerEnv({}, {}),
       jobService: {} as never,
       providerRegistry: new ProviderRegistry().seal(),
       submitGeneration: vi.fn(async () => {
@@ -117,10 +114,7 @@ describe("Agent runtime application wiring", () => {
           canvasId: "canvas-1",
           workspaceId: "workspace-1",
         })) as never,
-      env: loadServerEnv(
-        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
-        {},
-      ),
+      env: loadServerEnv({}, {}),
       jobService: {} as never,
       providerRegistry: new ProviderRegistry().seal(),
       submitGeneration: vi.fn(async () => {
@@ -178,15 +172,12 @@ describe("Agent runtime application wiring", () => {
     const service = createAgentRunService({
       agentFactory: ((options: Record<string, unknown>) => {
         factoryOptions = options;
-        toolNames = createMainAgentTools(
-          (options.backendResult as { factory: never }).factory,
-          {
-            applyCanvasOperations: options.applyCanvasOperations as never,
-            createUserClient,
-            providerRegistry: new ProviderRegistry().seal(),
-            resolveWorkspaceId: options.resolveWorkspaceId as never,
-          },
-        ).map((registeredTool) => registeredTool.name);
+        toolNames = createMainAgentTools({
+          applyCanvasOperations: options.applyCanvasOperations as never,
+          createUserClient,
+          providerRegistry: new ProviderRegistry().seal(),
+          resolveWorkspaceId: options.resolveWorkspaceId as never,
+        }).map((registeredTool) => registeredTool.name);
         return {
           async *streamEvents() {},
           async *stream() {},
@@ -194,10 +185,7 @@ describe("Agent runtime application wiring", () => {
       }) as never,
       applyCanvasOperations: applyCanvasOperations as never,
       createUserClient,
-      env: loadServerEnv(
-        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
-        {},
-      ),
+      env: loadServerEnv({}, {}),
       providerRegistry: new ProviderRegistry().seal(),
     });
     const run = service.createRun({
@@ -263,10 +251,7 @@ describe("Agent runtime application wiring", () => {
         return { async *streamEvents() {}, async *stream() {} };
       }) as never,
       createUserClient: createUserClient as never,
-      env: loadServerEnv(
-        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
-        {},
-      ),
+      env: loadServerEnv({}, {}),
       jobService: {} as never,
       providerRegistry: new ProviderRegistry().seal(),
       submitGeneration,
@@ -331,10 +316,7 @@ describe("Agent runtime application wiring", () => {
       }) as never,
       createUserClient: (() =>
         canvasWorkspaceClient({ canvasId: null, workspaceId: null })) as never,
-      env: loadServerEnv(
-        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
-        {},
-      ),
+      env: loadServerEnv({}, {}),
       jobService: {} as never,
       providerRegistry: new ProviderRegistry().seal(),
       submitGeneration,
@@ -384,10 +366,7 @@ describe("Agent runtime application wiring", () => {
         return { async *streamEvents() {}, async *stream() {} };
       }) as never,
       createUserClient: (() => workspaceClient()) as never,
-      env: loadServerEnv(
-        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
-        {},
-      ),
+      env: loadServerEnv({}, {}),
       jobService: {
         getJobAdmin: async () => ({
           status: "succeeded",

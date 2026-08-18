@@ -93,8 +93,6 @@ describe("application environment composition", () => {
     const app = buildAppFromEnv(
       loadServerEnv(
         {
-          agentBackendMode: "filesystem",
-          agentFilesRoot: process.cwd(),
           allowExternalSkillImport: false,
         },
         {},

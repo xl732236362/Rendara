@@ -111,7 +111,7 @@ test("environment template validator rejects drift without resolving secrets", a
     envTemplate: [
       "OPENAI_API_KEY=placeholder",
       "UNKNOWN_ENV=value",
-      "LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE=true",
+      "LOOMIC_ALLOW_EXTERNAL_SKILL_IMPORT=true",
     ].join("\n"),
     deployments: [
       {

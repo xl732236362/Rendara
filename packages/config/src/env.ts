@@ -26,13 +26,9 @@ const descriptor = (
   ...extra,
 });
 
-export type AgentBackendMode = "filesystem" | "state";
 export type ServerEnvironment = {
-  agentBackendMode: AgentBackendMode;
-  agentFilesRoot?: string;
   agentModel: string;
   allowExternalSkillImport: boolean;
-  allowLocalAgentExecute: boolean;
   googleApiKey?: string;
   googleApplicationCredentials?: string;
   googleServiceAccountJson?: string;
@@ -57,7 +53,6 @@ export type ServerEnvironment = {
   supabaseUrl?: string;
   volcesApiKey?: string;
   volcesBaseUrl?: string;
-  skillsRoot?: string;
   workerConcurrency?: number;
   workerImageConcurrency?: number;
   workerVideoConcurrency?: number;
@@ -81,10 +76,6 @@ export type ServerEnvironment = {
 export const envDescriptors = [
   descriptor("LOOMIC_SERVER_PORT", "port", "private", ["api"]),
   descriptor("PORT", "port", "private", ["api"]),
-  descriptor("LOOMIC_AGENT_BACKEND_MODE", "agentBackendMode", "private", [
-    "api",
-    "worker",
-  ]),
   descriptor("LOOMIC_WEB_ORIGIN", "webOrigin", "public", ["api"]),
   descriptor("NEXT_PUBLIC_SERVER_BASE_URL", undefined, "public", ["web"]),
   descriptor("SUPABASE_URL", "supabaseUrl", "private", ["api", "worker"], {
@@ -154,15 +145,6 @@ export const envDescriptors = [
   ]),
   descriptor("VOLCES_API_KEY", "volcesApiKey", "secret", ["api", "worker"]),
   descriptor("VOLCES_BASE_URL", "volcesBaseUrl", "private", ["api", "worker"]),
-  descriptor("LOOMIC_AGENT_FILES_ROOT", "agentFilesRoot", "private", ["api"]),
-  descriptor("LOOMIC_SKILLS_ROOT", "skillsRoot", "private", ["api", "worker"]),
-  descriptor(
-    "LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE",
-    "allowLocalAgentExecute",
-    "private",
-    ["api"],
-    { dangerous: true },
-  ),
   descriptor(
     "LOOMIC_ALLOW_EXTERNAL_SKILL_IMPORT",
     "allowExternalSkillImport",
@@ -310,7 +292,6 @@ const exactBoolean = z.preprocess((value: unknown) => {
 export const serverEnvironmentSchema = z.object({
   LOOMIC_SERVER_PORT: strictInteger(1, 65_535).optional(),
   PORT: strictInteger(1, 65_535).optional(),
-  LOOMIC_AGENT_BACKEND_MODE: z.enum(["state", "filesystem"]).default("state"),
   LOOMIC_WEB_ORIGIN: z.url().trim().default("http://localhost:3000"),
   SUPABASE_URL: optionalUrl,
   SUPABASE_ANON_KEY: optionalString,
@@ -331,9 +312,6 @@ export const serverEnvironmentSchema = z.object({
   REPLICATE_API_TOKEN: optionalString,
   VOLCES_API_KEY: optionalString,
   VOLCES_BASE_URL: optionalUrl,
-  LOOMIC_AGENT_FILES_ROOT: optionalString,
-  LOOMIC_SKILLS_ROOT: optionalString,
-  LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE: exactBoolean.default(false),
   LOOMIC_ALLOW_EXTERNAL_SKILL_IMPORT: exactBoolean.default(false),
   LOOMIC_RATE_LIMIT_DEFAULT_PER_MINUTE: strictInteger(1, 100_000).default(300),
   LOOMIC_RATE_LIMIT_GENERATION_PER_MINUTE: strictInteger(1, 100_000).default(

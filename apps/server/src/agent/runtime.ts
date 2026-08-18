@@ -1,6 +1,5 @@
 // @credits-system — Agent tool runtime with credit checks before image/video generation
 import { createHash, randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { BaseLanguageModel } from "@langchain/core/language_models/base";
@@ -39,7 +38,6 @@ import type { UserSupabaseClient } from "../supabase/user.js";
 import { sanitizeErrorForClient } from "../utils/error-sanitizer.js";
 import type { ConnectionManager } from "../ws/connection-manager.js";
 import { createPipelineLogger } from "../ws/logger.js";
-import { createAgentBackend } from "./backends/index.js";
 import {
   type LoomicAgent,
   type LoomicAgentFactory,
@@ -48,8 +46,6 @@ import {
 } from "./deep-agent.js";
 import type { AgentPersistenceService } from "./persistence/index.js";
 import { adaptDeepAgentStream } from "./stream-adapter.js";
-// execute 工具由 deepagents 内置提供（LocalShellBackend 作为 sandbox backend）
-// 不需要自定义代码执行工具
 import type { SubmitImageJobFn } from "./tools/image-generate.js";
 import { buildCanvasSummaryForContext } from "./tools/inspect-canvas.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
@@ -917,418 +913,394 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         }
       }
 
-      // Create backend — production uses StateBackend (no local shell).
-      const backendResult = createAgentBackend(options.env, run.canvasId, {
-        hasWorkspaceSkills: workspaceSkills.length > 0,
-      });
-
+      let agent: LoomicAgent;
       try {
-        let agent: LoomicAgent;
-        try {
-          const resolvedModel = run.modelOverride
-            ? run.modelOverride.includes(":")
-              ? run.modelOverride
-              : createDefaultModelSpecifier({ agentModel: run.modelOverride })
-            : options.model;
+        const resolvedModel = run.modelOverride
+          ? run.modelOverride.includes(":")
+            ? run.modelOverride
+            : createDefaultModelSpecifier({ agentModel: run.modelOverride })
+          : options.model;
 
-          // Build persistImage closure using the user's Supabase client.
-          // Client creation is deferred into the closure so it only runs
-          // when an image is actually generated (avoids throwing in tests
-          // that don't configure Supabase env vars).
-          let persistImage:
-            | ((url: string, mime: string, prompt: string) => Promise<string>)
-            | undefined;
-          if (options.createUserClient && run.accessToken) {
-            const createClient = options.createUserClient;
-            const accessToken = run.accessToken;
-            persistImage = async (sourceUrl, mimeType, prompt) => {
-              const client = createClient(accessToken) as UserSupabaseClient;
-              const response = await fetch(sourceUrl);
-              if (!response.ok)
-                throw new Error(`Download failed: ${response.status}`);
-              const buffer = Buffer.from(await response.arrayBuffer());
-              const ext = mimeType === "image/webp" ? "webp" : "png";
-              const slug = prompt
-                .slice(0, 40)
-                .replace(/[^a-zA-Z0-9]+/g, "-")
-                .replace(/^-|-$/g, "");
-              const fileName = `gen-${slug}-${Date.now()}.${ext}`;
+        // Build persistImage closure using the user's Supabase client.
+        // Client creation is deferred into the closure so it only runs
+        // when an image is actually generated (avoids throwing in tests
+        // that don't configure Supabase env vars).
+        let persistImage:
+          | ((url: string, mime: string, prompt: string) => Promise<string>)
+          | undefined;
+        if (options.createUserClient && run.accessToken) {
+          const createClient = options.createUserClient;
+          const accessToken = run.accessToken;
+          persistImage = async (sourceUrl, mimeType, prompt) => {
+            const client = createClient(accessToken) as UserSupabaseClient;
+            const response = await fetch(sourceUrl);
+            if (!response.ok)
+              throw new Error(`Download failed: ${response.status}`);
+            const buffer = Buffer.from(await response.arrayBuffer());
+            const ext = mimeType === "image/webp" ? "webp" : "png";
+            const slug = prompt
+              .slice(0, 40)
+              .replace(/[^a-zA-Z0-9]+/g, "-")
+              .replace(/^-|-$/g, "");
+            const fileName = `gen-${slug}-${Date.now()}.${ext}`;
 
-              const { data: ws } = await client
-                .from("workspaces")
-                .select("id")
-                .eq("type", "personal")
-                .limit(1)
-                .single();
-              const workspaceId = ws?.id ?? "default";
-              const objectPath = `${workspaceId}/${Date.now()}-${fileName}`;
+            const { data: ws } = await client
+              .from("workspaces")
+              .select("id")
+              .eq("type", "personal")
+              .limit(1)
+              .single();
+            const workspaceId = ws?.id ?? "default";
+            const objectPath = `${workspaceId}/${Date.now()}-${fileName}`;
 
-              const { error: uploadError } = await client.storage
-                .from("project-assets")
-                .upload(objectPath, buffer, {
-                  contentType: mimeType,
-                  upsert: false,
-                });
-              if (uploadError)
-                throw new Error(`Upload failed: ${uploadError.message}`);
+            const { error: uploadError } = await client.storage
+              .from("project-assets")
+              .upload(objectPath, buffer, {
+                contentType: mimeType,
+                upsert: false,
+              });
+            if (uploadError)
+              throw new Error(`Upload failed: ${uploadError.message}`);
 
-              const { data: urlData } = client.storage
-                .from("project-assets")
-                .getPublicUrl(objectPath);
+            const { data: urlData } = client.storage
+              .from("project-assets")
+              .getPublicUrl(objectPath);
 
-              return urlData.publicUrl;
-            };
-          }
+            return urlData.publicUrl;
+          };
+        }
 
-          // Resolve brand kit ID from canvas → project in a single joined query
-          let brandKitId: string | null = null;
-          if (run.canvasId && run.accessToken && options.createUserClient) {
+        // Resolve brand kit ID from canvas → project in a single joined query
+        let brandKitId: string | null = null;
+        if (run.canvasId && run.accessToken && options.createUserClient) {
+          try {
+            const client = options.createUserClient(run.accessToken) as any;
+            const { data: canvas } = await client
+              .from("canvases")
+              .select("project_id, projects!inner(brand_kit_id)")
+              .eq("id", run.canvasId)
+              .maybeSingle();
+            brandKitId = canvas?.projects?.brand_kit_id ?? null;
+          } catch (err) {
+            // Fallback: joined query may fail if FK isn't exposed via PostgREST
+            // In that case, try the two-step approach
             try {
               const client = options.createUserClient(run.accessToken) as any;
-              const { data: canvas } = await client
+              const { data: c } = await client
                 .from("canvases")
-                .select("project_id, projects!inner(brand_kit_id)")
+                .select("project_id")
                 .eq("id", run.canvasId)
                 .maybeSingle();
-              brandKitId = canvas?.projects?.brand_kit_id ?? null;
-            } catch (err) {
-              // Fallback: joined query may fail if FK isn't exposed via PostgREST
-              // In that case, try the two-step approach
-              try {
-                const client = options.createUserClient(run.accessToken) as any;
-                const { data: c } = await client
-                  .from("canvases")
-                  .select("project_id")
-                  .eq("id", run.canvasId)
+              if (c?.project_id) {
+                const { data: p } = await client
+                  .from("projects")
+                  .select("brand_kit_id")
+                  .eq("id", c.project_id)
                   .maybeSingle();
-                if (c?.project_id) {
-                  const { data: p } = await client
-                    .from("projects")
-                    .select("brand_kit_id")
-                    .eq("id", c.project_id)
-                    .maybeSingle();
-                  brandKitId = p?.brand_kit_id ?? null;
-                }
-              } catch (err2) {
-                console.warn("Failed to resolve brand kit ID:", err2);
+                brandKitId = p?.brand_kit_id ?? null;
               }
+            } catch (err2) {
+              console.warn("Failed to resolve brand kit ID:", err2);
             }
           }
+        }
 
-          rlog.lap("brand_kit_resolved");
+        rlog.lap("brand_kit_resolved");
 
-          // Pre-write workspace skill SKILL.md files AND associated files
-          // (scripts/, references/, assets/) into the Store so the agent can
-          // read_file them via the /workspace-skills/ route.
-          const store = persistence?.store;
-          if (workspaceSkills.length > 0 && store && run.canvasId) {
-            const storeNamespace = [
-              "projects",
-              run.canvasId,
-              "workspace-skills",
-            ];
-            const now_ = new Date().toISOString();
+        // Pre-write workspace skill SKILL.md files AND associated files
+        // (scripts/, references/, assets/) into the Store so the agent can
+        // read_file them via the /workspace-skills/ route.
+        const store = persistence?.store;
+        if (workspaceSkills.length > 0 && store && run.canvasId) {
+          const storeNamespace = ["projects", run.canvasId, "workspace-skills"];
+          const now_ = new Date().toISOString();
 
-            const writeOps: Promise<void>[] = [];
-            for (const skill of workspaceSkills) {
-              // Write SKILL.md
+          const writeOps: Promise<void>[] = [];
+          for (const skill of workspaceSkills) {
+            // Write SKILL.md
+            writeOps.push(
+              store.put(storeNamespace, `/${skill.name}/SKILL.md`, {
+                content: skill.content.split("\n"),
+                created_at: now_,
+                modified_at: now_,
+              }),
+            );
+            // Write associated files (scripts/, references/, assets/)
+            for (const file of skill.files) {
               writeOps.push(
-                store.put(storeNamespace, `/${skill.name}/SKILL.md`, {
-                  content: skill.content.split("\n"),
+                store.put(storeNamespace, `/${skill.name}/${file.path}`, {
+                  content: file.content.split("\n"),
                   created_at: now_,
                   modified_at: now_,
                 }),
               );
-              // Write associated files (scripts/, references/, assets/)
-              for (const file of skill.files) {
-                writeOps.push(
-                  store.put(storeNamespace, `/${skill.name}/${file.path}`, {
-                    content: file.content.split("\n"),
-                    created_at: now_,
-                    modified_at: now_,
-                  }),
-                );
-              }
             }
-
-            await Promise.all(writeOps);
-            const totalFiles = workspaceSkills.reduce(
-              (sum, s) => sum + s.files.length,
-              0,
-            );
-            rlog.lap("workspace_skills_stored", {
-              count: workspaceSkills.length,
-              files: totalFiles,
-            });
           }
 
-          agent = resolvedAgentFactory({
-            ...(options.applyCanvasOperations && resolveWorkspaceId
-              ? {
-                  applyCanvasOperations: options.applyCanvasOperations,
-                  resolveWorkspaceId,
-                }
-              : {}),
-            backendResult,
-            ...(brandKitId ? { brandKitId } : {}),
-            ...(run.canvasId ? { canvasId: run.canvasId } : {}),
-            ...(persistence ? { checkpointer: persistence.checkpointer } : {}),
-            ...(options.connectionManager
-              ? { connectionManager: options.connectionManager }
-              : {}),
-            env: options.env,
-            providerRegistry: options.providerRegistry,
-            ...(resolvedModel ? { model: resolvedModel } : {}),
-            ...(persistImage ? { persistImage } : {}),
-            // execute 工具由 LocalShellBackend 自动提供，无需手动传递
-            ...(submitImageJob ? { submitImageJob } : {}),
-            ...(submitVideoJob ? { submitVideoJob } : {}),
-            ...(persistence ? { store: persistence.store } : {}),
-            ...(workspaceSkills.length > 0 ? { workspaceSkills } : {}),
+          await Promise.all(writeOps);
+          const totalFiles = workspaceSkills.reduce(
+            (sum, s) => sum + s.files.length,
+            0,
+          );
+          rlog.lap("workspace_skills_stored", {
+            count: workspaceSkills.length,
+            files: totalFiles,
           });
-          rlog.lap("agent_factory_done");
-        } catch (error) {
-          const failedEvent = toFailedEvent(runId, now, error);
-          run.status = "failed";
-          await updatePersistedRunFailure(
-            options.agentRunMetadataService,
-            run,
-            now,
-            error,
-          );
-          yield failedEvent;
-          return;
         }
 
-        let stream: AsyncIterable<unknown>;
-        try {
-          // Auto-inject canvas state summary so the agent has immediate awareness
-          // of what's on the canvas without needing to call inspect_canvas first.
-          let canvasSummary: string | null = null;
-          if (run.canvasId && run.accessToken && options.createUserClient) {
-            try {
-              const canvasClient = options.createUserClient(
-                run.accessToken,
-              ) as any;
-              const { data: canvasData } = await canvasClient
-                .from("canvases")
-                .select("content")
-                .eq("id", run.canvasId)
-                .single();
-              if (canvasData?.content?.elements) {
-                canvasSummary = buildCanvasSummaryForContext(
-                  canvasData.content.elements as Array<Record<string, unknown>>,
-                );
+        agent = resolvedAgentFactory({
+          ...(options.applyCanvasOperations && resolveWorkspaceId
+            ? {
+                applyCanvasOperations: options.applyCanvasOperations,
+                resolveWorkspaceId,
               }
-            } catch {
-              // Non-critical — agent can still call inspect_canvas manually
+            : {}),
+          ...(brandKitId ? { brandKitId } : {}),
+          ...(run.canvasId ? { canvasId: run.canvasId } : {}),
+          ...(persistence ? { checkpointer: persistence.checkpointer } : {}),
+          ...(options.connectionManager
+            ? { connectionManager: options.connectionManager }
+            : {}),
+          env: options.env,
+          providerRegistry: options.providerRegistry,
+          ...(resolvedModel ? { model: resolvedModel } : {}),
+          ...(persistImage ? { persistImage } : {}),
+          ...(submitImageJob ? { submitImageJob } : {}),
+          ...(submitVideoJob ? { submitVideoJob } : {}),
+          ...(persistence ? { store: persistence.store } : {}),
+          ...(workspaceSkills.length > 0 ? { workspaceSkills } : {}),
+        });
+        rlog.lap("agent_factory_done");
+      } catch (error) {
+        const failedEvent = toFailedEvent(runId, now, error);
+        run.status = "failed";
+        await updatePersistedRunFailure(
+          options.agentRunMetadataService,
+          run,
+          now,
+          error,
+        );
+        yield failedEvent;
+        return;
+      }
+
+      let stream: AsyncIterable<unknown>;
+      try {
+        // Auto-inject canvas state summary so the agent has immediate awareness
+        // of what's on the canvas without needing to call inspect_canvas first.
+        let canvasSummary: string | null = null;
+        if (run.canvasId && run.accessToken && options.createUserClient) {
+          try {
+            const canvasClient = options.createUserClient(
+              run.accessToken,
+            ) as any;
+            const { data: canvasData } = await canvasClient
+              .from("canvases")
+              .select("content")
+              .eq("id", run.canvasId)
+              .single();
+            if (canvasData?.content?.elements) {
+              canvasSummary = buildCanvasSummaryForContext(
+                canvasData.content.elements as Array<Record<string, unknown>>,
+              );
             }
+          } catch {
+            // Non-critical — agent can still call inspect_canvas manually
           }
-
-          const hasAttachments = run.attachments && run.attachments.length > 0;
-          let userMessage: HumanMessage;
-          let attachmentDataMap: Record<string, string> = {};
-
-          if (hasAttachments) {
-            // Download images and build parallel data structures:
-            // 1. imageBlocks: base64 content parts for LLM vision
-            // 2. downloaded: assetId → base64 mapping for tool resolution
-            const downloaded: Array<{
-              assetId: string;
-              mimeType: string;
-              base64: string;
-            }> = [];
-            const imageBlocks = await Promise.all(
-              run.attachments!.map(async (a) => {
-                try {
-                  let b64: string;
-                  let mime: string;
-
-                  // Handle data URIs directly (canvas-ref images) — no fetch needed
-                  const dataUriMatch = a.url.match(
-                    /^data:([^;]+);base64,(.+)$/,
-                  );
-                  if (dataUriMatch) {
-                    mime = dataUriMatch[1]!;
-                    b64 = dataUriMatch[2]!;
-                  } else {
-                    const res = await fetch(a.url);
-                    const buf = Buffer.from(await res.arrayBuffer());
-                    mime =
-                      a.mimeType ||
-                      res.headers.get("content-type") ||
-                      "image/png";
-                    b64 = buf.toString("base64");
-                  }
-
-                  downloaded.push({
-                    assetId: a.assetId,
-                    mimeType: mime,
-                    base64: b64,
-                  });
-                  // Use standard LangChain image_url format — works with both
-                  // Google Gemini and OpenAI adapters. The Anthropic-style
-                  // { type: "image", source_type: "base64" } format is NOT
-                  // recognized by @langchain/google-genai and gets serialized
-                  // as raw text, blowing past the token limit.
-                  return {
-                    type: "image_url" as const,
-                    image_url: `data:${mime};base64,${b64}`,
-                  };
-                } catch {
-                  return {
-                    type: "image_url" as const,
-                    image_url: a.url,
-                  };
-                }
-              }),
-            );
-
-            // Build XML text tags for LLM to reference by assetId
-            const { text: enrichedPrompt } = buildUserMessage(
-              run.prompt,
-              run.attachments!,
-              run.imageGenerationPreference,
-              run.mentions,
-              run.videoGenerationPreference,
-              canvasSummary,
-            );
-
-            // Build assetId → data URI map for tool-level resolution
-            attachmentDataMap = buildAttachmentDataMap(downloaded);
-
-            userMessage = new HumanMessage({
-              content: [
-                { type: "text" as const, text: enrichedPrompt },
-                ...imageBlocks,
-              ],
-            });
-          } else {
-            const { text: enrichedPrompt } = buildUserMessage(
-              run.prompt,
-              [],
-              run.imageGenerationPreference,
-              run.mentions,
-              run.videoGenerationPreference,
-              canvasSummary,
-            );
-            userMessage = new HumanMessage(enrichedPrompt);
-          }
-
-          rlog.lap("stream_call_start");
-          stream = agent.streamEvents(
-            {
-              messages: [userMessage],
-            },
-            {
-              ...(run.threadId ||
-              run.canvasId ||
-              run.accessToken ||
-              run.userId ||
-              Object.keys(attachmentDataMap).length > 0
-                ? {
-                    configurable: {
-                      ...(run.threadId ? { thread_id: run.threadId } : {}),
-                      ...(run.canvasId ? { canvas_id: run.canvasId } : {}),
-                      ...(run.accessToken
-                        ? { access_token: run.accessToken }
-                        : {}),
-                      ...(run.userId ? { user_id: run.userId } : {}),
-                      ...(Object.keys(attachmentDataMap).length > 0
-                        ? { user_attachment_map: attachmentDataMap }
-                        : {}),
-                    },
-                  }
-                : {}),
-              signal: run.controller.signal,
-              version: "v2",
-            },
-          );
-          rlog.lap("stream_call_returned");
-        } catch (error) {
-          const failedEvent = toFailedEvent(runId, now, error);
-          run.status = "failed";
-          await updatePersistedRunFailure(
-            options.agentRunMetadataService,
-            run,
-            now,
-            error,
-          );
-          yield failedEvent;
-          return;
         }
 
-        try {
-          for await (const event of adaptDeepAgentStream({
-            conversationId: run.conversationId,
-            now,
-            runId,
-            sessionId: run.sessionId,
+        const hasAttachments = run.attachments && run.attachments.length > 0;
+        let userMessage: HumanMessage;
+        let attachmentDataMap: Record<string, string> = {};
+
+        if (hasAttachments) {
+          // Download images and build parallel data structures:
+          // 1. imageBlocks: base64 content parts for LLM vision
+          // 2. downloaded: assetId → base64 mapping for tool resolution
+          const downloaded: Array<{
+            assetId: string;
+            mimeType: string;
+            base64: string;
+          }> = [];
+          const imageBlocks = await Promise.all(
+            run.attachments!.map(async (a) => {
+              try {
+                let b64: string;
+                let mime: string;
+
+                // Handle data URIs directly (canvas-ref images) — no fetch needed
+                const dataUriMatch = a.url.match(/^data:([^;]+);base64,(.+)$/);
+                if (dataUriMatch) {
+                  mime = dataUriMatch[1]!;
+                  b64 = dataUriMatch[2]!;
+                } else {
+                  const res = await fetch(a.url);
+                  const buf = Buffer.from(await res.arrayBuffer());
+                  mime =
+                    a.mimeType ||
+                    res.headers.get("content-type") ||
+                    "image/png";
+                  b64 = buf.toString("base64");
+                }
+
+                downloaded.push({
+                  assetId: a.assetId,
+                  mimeType: mime,
+                  base64: b64,
+                });
+                // Use standard LangChain image_url format — works with both
+                // Google Gemini and OpenAI adapters. The Anthropic-style
+                // { type: "image", source_type: "base64" } format is NOT
+                // recognized by @langchain/google-genai and gets serialized
+                // as raw text, blowing past the token limit.
+                return {
+                  type: "image_url" as const,
+                  image_url: `data:${mime};base64,${b64}`,
+                };
+              } catch {
+                return {
+                  type: "image_url" as const,
+                  image_url: a.url,
+                };
+              }
+            }),
+          );
+
+          // Build XML text tags for LLM to reference by assetId
+          const { text: enrichedPrompt } = buildUserMessage(
+            run.prompt,
+            run.attachments!,
+            run.imageGenerationPreference,
+            run.mentions,
+            run.videoGenerationPreference,
+            canvasSummary,
+          );
+
+          // Build assetId → data URI map for tool-level resolution
+          attachmentDataMap = buildAttachmentDataMap(downloaded);
+
+          userMessage = new HumanMessage({
+            content: [
+              { type: "text" as const, text: enrichedPrompt },
+              ...imageBlocks,
+            ],
+          });
+        } else {
+          const { text: enrichedPrompt } = buildUserMessage(
+            run.prompt,
+            [],
+            run.imageGenerationPreference,
+            run.mentions,
+            run.videoGenerationPreference,
+            canvasSummary,
+          );
+          userMessage = new HumanMessage(enrichedPrompt);
+        }
+
+        rlog.lap("stream_call_start");
+        stream = agent.streamEvents(
+          {
+            messages: [userMessage],
+          },
+          {
+            ...(run.threadId ||
+            run.canvasId ||
+            run.accessToken ||
+            run.userId ||
+            Object.keys(attachmentDataMap).length > 0
+              ? {
+                  configurable: {
+                    ...(run.threadId ? { thread_id: run.threadId } : {}),
+                    ...(run.canvasId ? { canvas_id: run.canvasId } : {}),
+                    ...(run.accessToken
+                      ? { access_token: run.accessToken }
+                      : {}),
+                    ...(run.userId ? { user_id: run.userId } : {}),
+                    ...(Object.keys(attachmentDataMap).length > 0
+                      ? { user_attachment_map: attachmentDataMap }
+                      : {}),
+                  },
+                }
+              : {}),
             signal: run.controller.signal,
-            stream,
-          })) {
-            run.status = mapEventToStatus(event);
+            version: "v2",
+          },
+        );
+        rlog.lap("stream_call_returned");
+      } catch (error) {
+        const failedEvent = toFailedEvent(runId, now, error);
+        run.status = "failed";
+        await updatePersistedRunFailure(
+          options.agentRunMetadataService,
+          run,
+          now,
+          error,
+        );
+        yield failedEvent;
+        return;
+      }
+
+      try {
+        for await (const event of adaptDeepAgentStream({
+          conversationId: run.conversationId,
+          now,
+          runId,
+          sessionId: run.sessionId,
+          signal: run.controller.signal,
+          stream,
+        })) {
+          run.status = mapEventToStatus(event);
+          try {
+            await syncPersistedRunFromEvent(
+              options.agentRunMetadataService,
+              run,
+              event,
+              now,
+            );
+          } catch (error) {
+            const failedEvent = toFailedEvent(runId, now, error);
+            run.status = "failed";
+            yield failedEvent;
+            return;
+          }
+          yield event;
+
+          if (!isTerminalEvent(event) && options.eventDelayMs) {
             try {
-              await syncPersistedRunFromEvent(
-                options.agentRunMetadataService,
-                run,
-                event,
-                now,
-              );
-            } catch (error) {
-              const failedEvent = toFailedEvent(runId, now, error);
-              run.status = "failed";
-              yield failedEvent;
+              await delay(options.eventDelayMs, undefined, {
+                signal: run.controller.signal,
+              });
+            } catch {
+              run.status = "canceled";
+              yield {
+                runId,
+                timestamp: now(),
+                type: "run.canceled",
+              };
               return;
             }
-            yield event;
-
-            if (!isTerminalEvent(event) && options.eventDelayMs) {
-              try {
-                await delay(options.eventDelayMs, undefined, {
-                  signal: run.controller.signal,
-                });
-              } catch {
-                run.status = "canceled";
-                yield {
-                  runId,
-                  timestamp: now(),
-                  type: "run.canceled",
-                };
-                return;
-              }
-            }
           }
-        } catch (streamError) {
-          // Catch DB / checkpoint errors that bubble up from the LangGraph stream
-          // (e.g. Supabase circuit-breaker, connection pool exhaustion).
-          // Instead of crashing the process, yield a clean failure event.
+        }
+      } catch (streamError) {
+        // Catch DB / checkpoint errors that bubble up from the LangGraph stream
+        // (e.g. Supabase circuit-breaker, connection pool exhaustion).
+        // Instead of crashing the process, yield a clean failure event.
+        console.error("[agent-runtime] Stream iteration failed:", streamError);
+        const failedEvent = toFailedEvent(runId, now, streamError);
+        run.status = "failed";
+        await updatePersistedRunFailure(
+          options.agentRunMetadataService,
+          run,
+          now,
+          streamError,
+        ).catch((persistErr) =>
           console.error(
-            "[agent-runtime] Stream iteration failed:",
-            streamError,
-          );
-          const failedEvent = toFailedEvent(runId, now, streamError);
-          run.status = "failed";
-          await updatePersistedRunFailure(
-            options.agentRunMetadataService,
-            run,
-            now,
-            streamError,
-          ).catch((persistErr) =>
-            console.error(
-              "[agent-runtime] Failed to persist run failure:",
-              persistErr,
-            ),
-          );
-          yield failedEvent;
-          return;
-        }
-      } finally {
-        if (backendResult.sandboxDir) {
-          rm(backendResult.sandboxDir, { recursive: true, force: true }).catch(
-            (err) => console.warn("[sandbox] cleanup failed:", err.message),
-          );
-        }
+            "[agent-runtime] Failed to persist run failure:",
+            persistErr,
+          ),
+        );
+        yield failedEvent;
+        return;
       }
     },
   };

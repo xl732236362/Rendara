@@ -31,7 +31,6 @@ import { createUserSupabaseClientFactory } from "./supabase/user.js";
 // Register all image/video providers via shared helper (keeps parity with app.ts)
 import { registerAllProviders } from "./generation/providers/register-all.js";
 
-// 代码执行由 LocalShellBackend 的内置 execute 工具直接处理，不走 PGMQ。
 const QUEUES = ["image_generation_jobs", "video_generation_jobs"] as const;
 
 const VT_BY_QUEUE: Record<string, number> = {

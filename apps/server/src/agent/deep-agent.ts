@@ -16,10 +16,6 @@ import {
 } from "../config/env.js";
 import type { ProviderCatalog } from "../generation/providers/registry.js";
 import type { ConnectionManager } from "../ws/connection-manager.js";
-import {
-  type AgentBackendResult,
-  createAgentBackend,
-} from "./backends/index.js";
 import { LOOMIC_SYSTEM_PROMPT } from "./prompts/loomic-main.js";
 import { createVideoSubAgent } from "./sub-agents.js";
 import type {
@@ -36,7 +32,6 @@ export type LoomicAgent = Pick<
 >;
 
 export type LoomicAgentFactory = (options: {
-  backendResult?: AgentBackendResult;
   applyCanvasOperations?: ApplyCanvasOperations;
   brandKitId?: string | null;
   canvasId?: string;
@@ -60,7 +55,6 @@ export type LoomicAgentFactory = (options: {
 }) => LoomicAgent;
 
 export function createLoomicDeepAgent(options: {
-  backendResult?: AgentBackendResult;
   applyCanvasOperations?: ApplyCanvasOperations;
   brandKitId?: string | null;
   canvasId?: string;
@@ -82,9 +76,6 @@ export function createLoomicDeepAgent(options: {
     canvasId: string;
   }) => Promise<string>;
 }): LoomicAgent {
-  const backendResult =
-    options.backendResult ?? createAgentBackend(options.env, options.canvasId);
-
   applyOpenAICompatEnv(options.env);
 
   const modelSpec = options.model ?? createDefaultModelSpecifier(options.env);
@@ -131,14 +122,13 @@ export function createLoomicDeepAgent(options: {
   }
 
   return createDeepAgent({
-    backend: backendResult.factory,
     ...(options.checkpointer ? { checkpointer: options.checkpointer } : {}),
     model: resolvedModel,
     name: "loomic",
     ...(options.store ? { store: options.store } : {}),
     subagents: [createVideoSubAgent(options.providerRegistry)],
     systemPrompt,
-    tools: createMainAgentTools(backendResult.factory, {
+    tools: createMainAgentTools({
       ...(options.applyCanvasOperations && options.resolveWorkspaceId
         ? {
             applyCanvasOperations: options.applyCanvasOperations,
@@ -152,10 +142,6 @@ export function createLoomicDeepAgent(options: {
         ? { connectionManager: options.connectionManager }
         : {}),
       ...(options.persistImage ? { persistImage: options.persistImage } : {}),
-      ...(backendResult.sandboxDir
-        ? { sandboxDir: backendResult.sandboxDir }
-        : {}),
-
       ...(options.submitImageJob
         ? { submitImageJob: options.submitImageJob }
         : {}),
