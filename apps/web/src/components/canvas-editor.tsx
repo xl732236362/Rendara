@@ -8,6 +8,7 @@ import dynamic from "next/dynamic";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { WebSocketHandle } from "../hooks/use-websocket";
+import { useCanvasImageGeneration } from "../hooks/use-canvas-image-generation";
 import { ApiApplicationError } from "../lib/api-client";
 import { blobToDataURL, isVideoUrl } from "../lib/canvas-elements";
 import {
@@ -61,6 +62,7 @@ type CanvasEditorProps = {
   canvasId: string;
   projectId: string;
   accessToken: string;
+  userId: string;
   initialRevision: number;
   initialContent: {
     elements: Record<string, unknown>[];
@@ -82,6 +84,7 @@ export function CanvasEditor({
   canvasId,
   projectId,
   accessToken,
+  userId,
   initialRevision,
   initialContent,
   onApiReady,
@@ -470,6 +473,15 @@ export function CanvasEditor({
     return () => onPersistenceReady?.(null);
   }, [durableMutation, onPersistenceReady]);
 
+  const { startAttempt: startImageGeneration } = useCanvasImageGeneration({
+    accessToken,
+    userId,
+    projectId,
+    canvasId,
+    excalidrawApi,
+    durableMutation,
+  });
+
   // Register screenshot RPC handler so the server can request canvas captures
   useEffect(() => {
     if (!ws || !excalidrawApi) return;
@@ -723,6 +735,8 @@ export function CanvasEditor({
         {excalidrawApi && (
           <MemoizedCanvasToolMenu
             accessToken={accessToken}
+            projectId={projectId}
+            startImageGeneration={startImageGeneration}
             excalidrawApi={excalidrawApi}
             leftPanelOpen={leftPanelOpen ?? false}
           />

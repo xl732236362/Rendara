@@ -268,7 +268,7 @@ function CanvasPageContent() {
     );
   }
 
-  if (!canvasData || !accessToken) return null;
+  if (!canvasData || !accessToken || !userId) return null;
 
   return (
     <div className="flex h-screen w-screen overflow-hidden">
@@ -302,6 +302,7 @@ function CanvasPageContent() {
           canvasId={canvasData.id}
           projectId={canvasData.projectId}
           accessToken={accessToken}
+          userId={userId}
           initialRevision={canvasData.revision}
           initialContent={canvasData.content}
           onApiReady={handleApiReady}
