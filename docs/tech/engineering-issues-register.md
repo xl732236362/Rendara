@@ -324,9 +324,9 @@
 - 状态：部分解决
 - 证据：用户可从 GitHub、npm tarball 和 marketplace 导入包含 `SKILL.md`、scripts 与 references 的内容，并自动启用到 workspace；Agent 同时拥有不受容器隔离的 execute 能力。导入过程没有签名、固定 commit/integrity、恶意规则扫描或首次执行审批。
 - 影响：仓库所有者更新、依赖劫持、恶意 README/SKILL 指令或 prompt injection 都可能转化为服务端命令执行和数据外传。
-- 建议方向：将 skill 视为可执行供应链制品：记录不可变来源 hash/commit、签名和发布者信任等级；导入后默认禁用，展示权限清单和 diff；脚本执行需要 capability policy/HITL，社区 skill 只运行在真正隔离的 sandbox 中。
-- 阶段 0 结果：外部导入能力已默认关闭；显式开启后导入的 Skill 也默认禁用并要求人工审阅，来源与下载范围受到约束。签名、不可变来源、权限清单和隔离执行仍列入阶段 3，因此本项保持“部分解决”。
-- 阶段 1 进展：新增 transport-neutral `ImportSkill`，固定“能力闸门优先、来源校验后再调用既有安全 importer”的顺序，并在运行时强制 `requiresReview: true`、`enabled: false` 及来源身份一致。HTTP import 仅消费该 canonical 安全结果并单次持久化，不再直调 importer；阶段 3 的签名/权限/隔离仍未完成，本项继续保持“部分解决”。
+- 最终方向：不再接收任何用户或外部 Skill。阶段 3 永久删除创建、导入、市场、安装、启停及相关数据模型，运行时只加载仓库 manifest 显式列出的内置 Skill；模型定向执行仍必须进入真正隔离的 sandbox。
+- 阶段 0 结果：外部导入能力已默认关闭；显式开启后导入的 Skill 也默认禁用并要求人工审阅，来源与下载范围受到约束。当时规划的签名和审批体系已由后续产品决策取消，本项仍保持“部分解决”直至动态 Skill 路径被彻底删除。
+- 阶段 1 进展：新增 transport-neutral `ImportSkill` 并收紧导入边界，作为阶段 3 删除动态 Skill 前的临时保护。阶段 3 将删除该用例、HTTP import、marketplace、workspace installation 和数据库投影，而不是继续演进它们。
 
 ### ENG-031：高成本入口缺少统一限流和配额入口
 

@@ -1,6 +1,6 @@
-# Built-in Skills and Canvas-scoped Agent Design
+# Phase 3 Amendment: Built-in Skills and Canvas-scoped Agent
 
-**Status:** Approved
+**Status:** Approved; authoritative Phase 3 design
 **Date:** 2026-08-18
 **Goal:** Reduce the current governance surface by removing user-extensible Skills and restricting every Agent run to its current canvas and explicitly authorized server capabilities.
 
@@ -8,7 +8,7 @@
 
 Loomic will not support user-created, imported, downloaded, installed, or workspace-configurable Skills. Skills are internal product assets stored in the repository, reviewed with application code, and released with the server. Existing custom Skill data is deleted without migration or recovery support.
 
-This decision supersedes the external Skill revision, review, approval, installation, and compatibility-projection work described in `2026-08-18-phase-3-agent-skill-security-design.md`. That document's deny-by-default execution and capability-enforcement principles remain applicable.
+This document is the authoritative Phase 3 design under the platform governance plan. It supersedes `2026-08-18-phase-3-agent-skill-security-design.md` and its implementation plan in full. The superseded documents are retained only as decision history and must not be used for implementation. Their deny-by-default sandbox and capability-enforcement requirements are restated here where they remain applicable.
 
 ## Scope
 
@@ -27,7 +27,7 @@ The change retains:
 
 ## Built-in Skill Architecture
 
-The repository `skills/` directory is the only Skill source. A server-owned loader scans an explicit manifest or allowlisted directories during application startup. It validates each package before it can enter the runtime:
+The repository `skills/` directory is the only Skill source. A repository-owned manifest explicitly lists every built-in Skill directory that may load. The server reads only manifest entries during application startup; directory discovery never grants a Skill runtime eligibility. It validates each listed package before it can enter the runtime:
 
 - Directory name and manifest identity must match.
 - `SKILL.md` and all referenced files must remain inside the configured Skills root after path resolution.
@@ -52,7 +52,7 @@ interface AgentExecutionContext {
 }
 ```
 
-The server derives this context from authenticated resources and deployment policy. Client input can request an operation but cannot grant a capability or override any context identifier.
+The server derives this context only from authenticated canvas/project/workspace relationships, deployment policy, and configured provider availability. Client input can request an operation but cannot grant a capability or override any context identifier. Prompts, model output, and Skill content are never capability authorities.
 
 Tools are registered from a server-owned allowlist. A tool is absent when its capability is not granted. High-risk application ports also call the shared authorization guard before side effects, so direct invocation cannot bypass the tool layer. Tools that affect canvas or project state receive the bound execution context; they do not accept a caller-selected canvas or workspace identifier.
 
@@ -67,11 +67,17 @@ Initial capability identifiers are deliberately narrow:
 - `project.search`
 - `sandbox.execute`, only when the configured sandbox policy permits it
 
-Capability resolution fails closed. Missing context, failed ownership resolution, unknown capability names, and inconsistent canvas/workspace relationships reject the run or tool call before side effects.
+Capability resolution intersects three server-owned inputs: the deployment allowlist, capabilities supported by configured providers or the isolated sandbox, and capabilities valid for the authorized canvas/project/workspace. A capability is granted only when all required inputs allow it. Capability resolution fails closed. Missing context, failed ownership resolution, unknown capability names, unavailable providers, and inconsistent canvas/workspace relationships reject the run or tool call before side effects.
+
+## Isolated Execution Boundary
+
+Removing external Skills reduces supply-chain risk but does not make model-directed code execution trusted. Production `sandbox.execute` remains disabled unless a provider-neutral sandbox adapter proves the required policy at startup and lease creation: isolated per-run filesystem and identity, non-root execution, read-only root, CPU/memory/PID/disk/time/output limits, network default deny with explicit egress allowlists, no application credentials, and idempotent cleanup. Production never falls back to a local shell. Development-only local execution remains behind an explicit environment gate and is never considered a production capability.
 
 ## Data Removal
 
-A forward-only migration deletes existing custom and system Skill installation data, then drops the dynamic Skill schema in dependency order. The migration includes explicit logging/verification queries suitable for deployment evidence. No archive table, compatibility view, or restore path is created.
+A forward-only migration deletes existing custom and system Skill installation data, then drops the dynamic Skill schema in dependency order. No archive table, compatibility view, or restore path is created. This is an explicit exception to the governance plan's normal independent-rollback requirement because the product has decided permanently to remove user-extensible Skills before production launch.
+
+Deployment is a coordinated forward-only release: first deploy a runtime that depends only on the validated built-in manifest and has no dynamic Skill routes; verify that no runtime database reads remain; then apply the destructive schema migration. Failures after migration use forward fixes, not restoration of the removed feature.
 
 Historical migrations remain unchanged. The new migration moves any upgraded environment to the new model, while fresh environments reach the same final schema after all migrations run.
 
@@ -100,7 +106,7 @@ The implementation is complete when tests demonstrate:
 - Skill management, marketplace, import, install, toggle, and uninstall UI and routes no longer exist.
 - Dynamic Skill contracts, services, configuration, and runtime database reads are absent.
 - The destructive migration removes the dynamic Skill schema and data.
-- Only allowlisted repository Skills load, traversal and duplicate identities fail, and the catalog is immutable after startup.
+- Only manifest-listed repository Skills load, traversal and duplicate identities fail, and the catalog is immutable after startup.
 - Runs without a canvas or without canvas access are rejected.
 - A tool cannot target a canvas or workspace different from the bound execution context.
 - Unauthorized tools are not registered, and direct application-port calls are also denied.
@@ -116,3 +122,12 @@ Verification includes focused unit/integration tests, workspace boundary checks,
 - A user-facing built-in Skill catalog.
 - Restoring deleted custom Skill data.
 - Broad redesign of the Agent, canvas, generation providers, or sandbox provider beyond the authorization boundary required here.
+
+## Governance Alignment
+
+Phase 3 now resolves the two original governance issues through separate controls:
+
+- `ENG-027` remains a production isolation problem and is resolved only by the isolated sandbox acceptance criteria.
+- `ENG-030` is resolved by removing every external/user Skill ingestion and execution path and proving that only manifest-listed repository Skills can load. No supply-chain approval subsystem is built.
+
+Phase 3 verification must update the platform governance design, governance roadmap, engineering issue register, earlier phase forward references, repository documentation, and CODEMAP so they describe this final product boundary.
