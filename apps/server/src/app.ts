@@ -7,7 +7,6 @@ import { createAttachGeneratedAsset } from "./application/canvas/attach-generate
 import { createCancelGeneration } from "./application/generation/cancel-generation.js";
 import { createReferenceAssetAuthorizationPort } from "./application/generation/reference-assets.js";
 import { createSubmitGeneration } from "./application/generation/submit-generation.js";
-import { createImportSkill } from "./application/skills/import-skill.js";
 import type { UseCases } from "./application/use-cases.js";
 import { createDomainEventPublisher } from "./events/domain-event-publisher.js";
 import { startOutboxDispatcher } from "./events/outbox-dispatcher.js";
@@ -79,7 +78,6 @@ import {
   type SettingsService,
   createSettingsService,
 } from "./features/settings/settings-service.js";
-import { createSkillImportApplicationPort } from "./features/skills/skill-import-application-adapter.js";
 import {
   type UploadService,
   createUploadService,
@@ -103,8 +101,6 @@ import { registerPaymentRoutes } from "./http/payments.js";
 import { registerProjectRoutes } from "./http/projects.js";
 import { registerRunRoutes } from "./http/runs.js";
 import { registerSettingsRoutes } from "./http/settings.js";
-import { registerMarketplaceRoutes } from "./http/skills-marketplace.js";
-import { registerSkillRoutes } from "./http/skills.js";
 import { registerUploadRoutes } from "./http/uploads.js";
 import { registerVideoModelRoutes } from "./http/video-models.js";
 import { registerViewerRoutes } from "./http/viewer.js";
@@ -163,14 +159,11 @@ export function getAppUseCases(app: FastifyInstance): Readonly<UseCases> {
 
 function snapshotUseCases(candidate: Readonly<UseCases>): Readonly<UseCases> {
   const canvas = candidate?.canvas;
-  const skills = candidate?.skills;
   const generation = candidate?.generation;
   if (
     !canvas ||
     typeof canvas.applyOperations !== "function" ||
     typeof canvas.attachGeneratedAsset !== "function" ||
-    !skills ||
-    typeof skills.importSkill !== "function" ||
     (generation !== undefined &&
       (typeof generation.cancel !== "function" ||
         typeof generation.submit !== "function"))
@@ -182,7 +175,6 @@ function snapshotUseCases(candidate: Readonly<UseCases>): Readonly<UseCases> {
       applyOperations: canvas.applyOperations,
       attachGeneratedAsset: canvas.attachGeneratedAsset,
     }),
-    skills: Object.freeze({ importSkill: skills.importSkill }),
     ...(generation
       ? {
           generation: Object.freeze({
@@ -237,7 +229,6 @@ export function buildAppFromEnv(
       defaultPerMinute: env.rateLimitDefaultPerMinute,
       generationPerMinute: env.rateLimitGenerationPerMinute,
       imageProxyPerMinute: env.rateLimitImageProxyPerMinute,
-      skillImportPerHour: env.rateLimitSkillImportPerHour,
       uploadsPerMinute: env.rateLimitUploadsPerMinute,
     },
   });
@@ -343,17 +334,6 @@ export function buildAppFromEnv(
             createUserClient,
             getAdminClient,
           }),
-        }),
-      }),
-      skills: Object.freeze({
-        importSkill: createImportSkill({
-          logger,
-          ports: {
-            capability: {
-              externalImportEnabled: () => env.allowExternalSkillImport,
-            },
-            importer: createSkillImportApplicationPort(),
-          },
         }),
       }),
       ...(generationPorts
@@ -678,17 +658,6 @@ export function buildAppFromEnv(
       viewerService,
     });
   }
-  void registerSkillRoutes(app, {
-    auth,
-    createUserClient,
-    importSkill: useCases.skills.importSkill,
-    viewerService,
-  });
-  void registerMarketplaceRoutes(app, {
-    auth,
-    createUserClient,
-    viewerService,
-  });
 
   // Payment routes — only registered when Lemon Squeezy is configured
   if (paymentService) {

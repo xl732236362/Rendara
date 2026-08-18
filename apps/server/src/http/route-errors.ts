@@ -6,8 +6,6 @@ import type { FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import { AppError } from "../errors/app-error.js";
-import { MarketplaceError } from "../features/skills/marketplace-service.js";
-import { SkillImportError } from "../features/skills/skill-import-service.js";
 export { parseRequest } from "../errors/request-validation.js";
 import { parseRequest } from "../errors/request-validation.js";
 import type {
@@ -93,28 +91,6 @@ export async function authenticateOrThrow(
 
 /** Converts only the stable legacy service-error shape into an AppError. */
 export function normalizeLegacyServiceError(error: unknown): AppError | null {
-  if (error instanceof SkillImportError) {
-    return legacyAppError(
-      error.code === "capability_disabled"
-        ? "capability_disabled"
-        : "skill_import_failed",
-      error.code === "capability_disabled" ? 403 : 400,
-      error,
-    );
-  }
-  if (error instanceof MarketplaceError) {
-    const code =
-      error.code === "search_failed"
-        ? "marketplace_search_failed"
-        : error.code === "package_not_found"
-          ? "marketplace_detail_failed"
-          : "marketplace_install_failed";
-    return legacyAppError(
-      code,
-      error.code === "package_not_found" ? 404 : 502,
-      error,
-    );
-  }
   if (!(error instanceof Error)) return null;
   const statusCode = safeRead(error, "statusCode");
   const parsedCode = boundaryErrorCodeSchema.safeParse(safeRead(error, "code"));

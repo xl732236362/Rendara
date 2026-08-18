@@ -37,21 +37,12 @@ describe("validated server environment adapter", () => {
   });
 });
 
-describe("security capability defaults", () => {
-  it("disables external skill imports by default", () => {
-    const env = loadServerEnv({}, {});
-
-    expect(env.allowExternalSkillImport).toBe(false);
-  });
-});
-
 describe("rate limit configuration", () => {
   it("uses conservative defaults", () => {
     const env = loadServerEnv({}, {});
 
     expect(env.rateLimitGenerationPerMinute).toBe(10);
     expect(env.rateLimitImageProxyPerMinute).toBe(60);
-    expect(env.rateLimitSkillImportPerHour).toBe(5);
     expect(env.rateLimitUploadsPerMinute).toBe(20);
   });
 

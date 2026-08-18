@@ -17,7 +17,6 @@ const {
   fetchImageModelsMock,
   fetchModelsMock,
   fetchSessionsMock,
-  fetchWorkspaceSkillsMock,
   saveMessageMock,
   updateSessionTitleMock,
 } = vi.hoisted(() => ({
@@ -27,7 +26,6 @@ const {
   fetchImageModelsMock: vi.fn(),
   fetchModelsMock: vi.fn(),
   fetchSessionsMock: vi.fn(),
-  fetchWorkspaceSkillsMock: vi.fn(),
   saveMessageMock: vi.fn(),
   updateSessionTitleMock: vi.fn(),
 }));
@@ -39,7 +37,6 @@ vi.mock("../src/lib/server-api", () => ({
   fetchImageModels: fetchImageModelsMock,
   fetchModels: fetchModelsMock,
   fetchSessions: fetchSessionsMock,
-  fetchWorkspaceSkills: fetchWorkspaceSkillsMock,
   saveMessage: saveMessageMock,
   updateSessionTitle: updateSessionTitleMock,
 }));
@@ -107,8 +104,6 @@ describe("ChatSidebar", () => {
         },
       ],
     });
-    fetchWorkspaceSkillsMock.mockReset();
-    fetchWorkspaceSkillsMock.mockResolvedValue({ skills: [] });
     saveMessageMock.mockReset();
     saveMessageMock.mockResolvedValue(undefined);
     updateSessionTitleMock.mockReset();

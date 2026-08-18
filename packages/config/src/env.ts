@@ -28,7 +28,6 @@ const descriptor = (
 
 export type ServerEnvironment = {
   agentModel: string;
-  allowExternalSkillImport: boolean;
   googleApiKey?: string;
   googleApplicationCredentials?: string;
   googleServiceAccountJson?: string;
@@ -42,7 +41,6 @@ export type ServerEnvironment = {
   rateLimitDefaultPerMinute: number;
   rateLimitGenerationPerMinute: number;
   rateLimitImageProxyPerMinute: number;
-  rateLimitSkillImportPerHour: number;
   rateLimitUploadsPerMinute: number;
   replicateApiToken?: string;
   supabaseAnonKey?: string;
@@ -146,13 +144,6 @@ export const envDescriptors = [
   descriptor("VOLCES_API_KEY", "volcesApiKey", "secret", ["api", "worker"]),
   descriptor("VOLCES_BASE_URL", "volcesBaseUrl", "private", ["api", "worker"]),
   descriptor(
-    "LOOMIC_ALLOW_EXTERNAL_SKILL_IMPORT",
-    "allowExternalSkillImport",
-    "private",
-    ["api"],
-    { dangerous: true },
-  ),
-  descriptor(
     "LOOMIC_RATE_LIMIT_DEFAULT_PER_MINUTE",
     "rateLimitDefaultPerMinute",
     "private",
@@ -167,12 +158,6 @@ export const envDescriptors = [
   descriptor(
     "LOOMIC_RATE_LIMIT_IMAGE_PROXY_PER_MINUTE",
     "rateLimitImageProxyPerMinute",
-    "private",
-    ["api"],
-  ),
-  descriptor(
-    "LOOMIC_RATE_LIMIT_SKILL_IMPORT_PER_HOUR",
-    "rateLimitSkillImportPerHour",
     "private",
     ["api"],
   ),
@@ -283,12 +268,6 @@ const optionalInteger = (minimum: number, maximum: number) =>
           : value,
     z.number().int().min(minimum).max(maximum).optional(),
   );
-const exactBoolean = z.preprocess((value: unknown) => {
-  if (value === "true") return true;
-  if (value === "false") return false;
-  return value;
-}, z.boolean());
-
 export const serverEnvironmentSchema = z.object({
   LOOMIC_SERVER_PORT: strictInteger(1, 65_535).optional(),
   PORT: strictInteger(1, 65_535).optional(),
@@ -312,7 +291,6 @@ export const serverEnvironmentSchema = z.object({
   REPLICATE_API_TOKEN: optionalString,
   VOLCES_API_KEY: optionalString,
   VOLCES_BASE_URL: optionalUrl,
-  LOOMIC_ALLOW_EXTERNAL_SKILL_IMPORT: exactBoolean.default(false),
   LOOMIC_RATE_LIMIT_DEFAULT_PER_MINUTE: strictInteger(1, 100_000).default(300),
   LOOMIC_RATE_LIMIT_GENERATION_PER_MINUTE: strictInteger(1, 100_000).default(
     10,
@@ -320,7 +298,6 @@ export const serverEnvironmentSchema = z.object({
   LOOMIC_RATE_LIMIT_IMAGE_PROXY_PER_MINUTE: strictInteger(1, 100_000).default(
     60,
   ),
-  LOOMIC_RATE_LIMIT_SKILL_IMPORT_PER_HOUR: strictInteger(1, 100_000).default(5),
   LOOMIC_RATE_LIMIT_UPLOADS_PER_MINUTE: strictInteger(1, 100_000).default(20),
   WORKER_CONCURRENCY: optionalInteger(1, 1_000),
   WORKER_IMAGE_CONCURRENCY: optionalInteger(1, 1_000),

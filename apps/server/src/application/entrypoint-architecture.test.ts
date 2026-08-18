@@ -27,14 +27,6 @@ describe("application entrypoint boundaries", () => {
     },
   );
 
-  it("keeps the existing skill importer behind ImportSkill", async () => {
-    const source = await readFile(
-      new URL("../http/skills.ts", import.meta.url),
-      "utf8",
-    );
-    expect(source).not.toContain("importSkillFromUrl");
-  });
-
   it("keeps canvas persistence behind ApplyCanvasOperations", async () => {
     const source = await readFile(
       new URL("../agent/tools/manipulate-canvas.ts", import.meta.url),

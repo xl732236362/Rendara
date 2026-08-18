@@ -24,7 +24,6 @@ import type {
 } from "./tools/image-generate.js";
 import { createMainAgentTools } from "./tools/index.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
-import type { WorkspaceSkillEntry } from "./workspace-skills.js";
 
 export type LoomicAgent = Pick<
   ReturnType<typeof createDeepAgent>,
@@ -46,7 +45,6 @@ export type LoomicAgentFactory = (options: {
   submitImageJob?: SubmitImageJobFn;
   submitVideoJob?: SubmitVideoJobFn;
   store?: BaseStore;
-  workspaceSkills?: WorkspaceSkillEntry[];
   resolveWorkspaceId?: (context: {
     accessToken: string;
     userId: string;
@@ -69,7 +67,6 @@ export function createLoomicDeepAgent(options: {
   submitImageJob?: SubmitImageJobFn;
   submitVideoJob?: SubmitVideoJobFn;
   store?: BaseStore;
-  workspaceSkills?: WorkspaceSkillEntry[];
   resolveWorkspaceId?: (context: {
     accessToken: string;
     userId: string;
@@ -96,30 +93,6 @@ export function createLoomicDeepAgent(options: {
     ? LOOMIC_SYSTEM_PROMPT +
       "\n\n当前项目已绑定品牌套件。在进行设计相关工作时，请先使用 get_brand_kit 工具查询品牌信息，确保设计符合品牌规范。"
     : LOOMIC_SYSTEM_PROMPT;
-
-  // Inject enabled skills (both system and user-created) into the system prompt.
-  // All skills are loaded from the database via loadWorkspaceSkills() in runtime.ts.
-  const wsSkills = options.workspaceSkills ?? [];
-  if (wsSkills.length > 0) {
-    const skillsList = wsSkills
-      .map((s) => {
-        let line = `- **${s.name}**: ${s.description}\n  → Read \`${s.path}\` for full instructions`;
-        if (s.files.length > 0) {
-          const counts: Record<string, number> = {};
-          for (const f of s.files) {
-            const dir = f.path.split("/")[0] ?? "other";
-            counts[dir] = (counts[dir] ?? 0) + 1;
-          }
-          const summary = Object.entries(counts)
-            .map(([dir, n]) => `${dir}/ (${n})`)
-            .join(", ");
-          line += `\n  → Has: ${summary}`;
-        }
-        return line;
-      })
-      .join("\n");
-    systemPrompt += `\n\n## Skills\n\nThe following skills are enabled in this workspace:\n${skillsList}`;
-  }
 
   return createDeepAgent({
     ...(options.checkpointer ? { checkpointer: options.checkpointer } : {}),

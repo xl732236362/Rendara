@@ -5,7 +5,6 @@ import {
   getAppUseCases,
 } from "./app.js";
 import { loadServerEnv } from "./config/env.js";
-import { AppError } from "./errors/app-error.js";
 import { TierGuardError } from "./features/credits/tier-guard.js";
 import { ProviderRegistry } from "./generation/providers/registry.js";
 
@@ -88,51 +87,39 @@ describe("application environment composition", () => {
     await app.close();
   });
 
-  it("keeps skill and canvas capabilities when queued generation is unavailable", async () => {
+  it("keeps canvas capabilities when queued generation is unavailable", async () => {
     let factoryOptions: Record<string, unknown> | undefined;
-    const app = buildAppFromEnv(
-      loadServerEnv(
-        {
-          allowExternalSkillImport: false,
-        },
-        {},
-      ),
-      {
-        agentFactory: ((options: Record<string, unknown>) => {
-          factoryOptions = options;
-          return { async *streamEvents() {}, async *stream() {} };
-        }) as never,
-        auth: {
-          authenticate: async () => ({
-            accessToken: "token",
-            email: "user@example.com",
-            id: "user-1",
-            userMetadata: {},
-          }),
-        },
+    const app = buildAppFromEnv(loadServerEnv({}, {}), {
+      agentFactory: ((options: Record<string, unknown>) => {
+        factoryOptions = options;
+        return { async *streamEvents() {}, async *stream() {} };
+      }) as never,
+      auth: {
+        authenticate: async () => ({
+          accessToken: "token",
+          email: "user@example.com",
+          id: "user-1",
+          userMetadata: {},
+        }),
       },
-    );
-
-    const skillResponse = await app.inject({
-      method: "POST",
-      url: "/api/skills/import",
-      payload: { url: "https://github.com/acme/skill" },
     });
+
     const videoResponse = await app.inject({
       method: "POST",
       url: "/api/agent/generate-video",
       payload: { idempotency_key: "unavailable-video-1", prompt: "hello" },
     });
-
-    expect(skillResponse.statusCode).toBe(403);
-    expect(skillResponse.json()).toMatchObject({
-      error: { code: "capability_disabled" },
+    const removedSkillApi = await app.inject({
+      method: "POST",
+      url: "/api/skills/import",
+      payload: { url: "https://github.com/acme/skill" },
     });
+
     expect(videoResponse.statusCode).toBe(503);
+    expect(removedSkillApi.statusCode).toBe(404);
     const useCases = getAppUseCases(app);
     expect(useCases.canvas.applyOperations).toBeTypeOf("function");
     expect(useCases.canvas.attachGeneratedAsset).toBeTypeOf("function");
-    expect(useCases.skills.importSkill).toBeTypeOf("function");
     expect(useCases.generation).toBeUndefined();
     expect(factoryOptions).toBeUndefined();
     await app.close();
@@ -169,26 +156,18 @@ describe("application environment composition", () => {
   it("rejects malformed injected use-case groups at build time", () => {
     expect(() =>
       buildAppFromEnv(loadServerEnv({}, {}), {
-        useCases: { canvas: {}, skills: {} } as never,
+        useCases: { canvas: {} } as never,
       }),
     ).toThrow(/Invalid injected useCases/);
   });
 
   it("snapshots and freezes injected use cases against retained mutation", async () => {
-    const originalImport = vi.fn(async () => {
-      throw new AppError({
-        code: "capability_disabled",
-        statusCode: 403,
-        message: "Original import boundary",
-        expose: true,
-      });
-    });
+    const originalApply = vi.fn();
     const injected = {
       canvas: {
-        applyOperations: vi.fn(),
+        applyOperations: originalApply,
         attachGeneratedAsset: vi.fn(),
       },
-      skills: { importSkill: originalImport },
     };
     const app = buildAppFromEnv(loadServerEnv({}, {}), {
       auth: {
@@ -201,22 +180,12 @@ describe("application environment composition", () => {
       },
       useCases: injected as never,
     });
-    injected.skills.importSkill = vi.fn(async () => {
-      throw new Error("mutated");
-    });
+    injected.canvas.applyOperations = vi.fn();
 
     const snapshot = getAppUseCases(app);
     expect(Object.isFrozen(snapshot)).toBe(true);
     expect(Object.isFrozen(snapshot.canvas)).toBe(true);
-    expect(Object.isFrozen(snapshot.skills)).toBe(true);
-    expect(snapshot.skills.importSkill).toBe(originalImport);
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/skills/import",
-      payload: { url: "https://github.com/acme/skill" },
-    });
-    expect(response.statusCode).toBe(403);
-    expect(originalImport).toHaveBeenCalledOnce();
+    expect(snapshot.canvas.applyOperations).toBe(originalApply);
     await app.close();
   });
 

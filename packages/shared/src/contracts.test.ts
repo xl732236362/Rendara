@@ -10,7 +10,6 @@ import {
   runCancelResponseSchema,
   runCreateRequestSchema,
   runCreateResponseSchema,
-  skillDetailResponseSchema,
   streamEventSchema,
 } from "./index.js";
 import * as sharedExports from "./index.js";
@@ -359,10 +358,6 @@ describe("@loomic/shared contracts", () => {
         payload: { prompt: "Missing queue identifiers" },
       }),
     ).toThrow();
-  });
-
-  it("exposes the imported skill review requirement", () => {
-    expect(skillDetailResponseSchema.shape.requiresReview).toBeDefined();
   });
 
   it("shares the health response schema for server and web", () => {

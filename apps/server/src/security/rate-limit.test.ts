@@ -12,7 +12,6 @@ describe("HTTP rate limiting", () => {
         defaultPerMinute: 100,
         generationPerMinute: 1,
         imageProxyPerMinute: 1,
-        skillImportPerHour: 1,
         uploadsPerMinute: 1,
       },
     });
@@ -36,7 +35,6 @@ describe("HTTP rate limiting", () => {
 
   it.each([
     ["GET", "/api/proxy-image"],
-    ["POST", "/api/skills/import"],
     ["POST", "/api/uploads"],
   ] as const)("applies the strict budget for %s %s", async (method, url) => {
     const app = Fastify();
@@ -46,7 +44,6 @@ describe("HTTP rate limiting", () => {
         defaultPerMinute: 100,
         generationPerMinute: 100,
         imageProxyPerMinute: 1,
-        skillImportPerHour: 1,
         uploadsPerMinute: 1,
       },
     });
@@ -65,7 +62,6 @@ describe("HTTP rate limiting", () => {
         defaultPerMinute: 1,
         generationPerMinute: 1,
         imageProxyPerMinute: 1,
-        skillImportPerHour: 1,
         uploadsPerMinute: 1,
       },
     });
@@ -84,7 +80,6 @@ describe("HTTP rate limiting", () => {
         defaultPerMinute: 1,
         generationPerMinute: 1,
         imageProxyPerMinute: 1,
-        skillImportPerHour: 1,
         uploadsPerMinute: 1,
       },
     });

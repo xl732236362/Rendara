@@ -49,17 +49,9 @@ export const brandKitAssetMentionSchema = z.object({
   fileUrl: z.string().url().nullable().optional(),
 });
 
-export const skillMentionSchema = z.object({
-  mentionType: z.literal("skill"),
-  id: z.string().min(1),
-  label: z.string().min(1),
-  slug: z.string().min(1),
-});
-
 export const messageMentionSchema = z.discriminatedUnion("mentionType", [
   imageModelMentionSchema,
   brandKitAssetMentionSchema,
-  skillMentionSchema,
 ]);
 
 export const imageGenerationPreferenceSchema = z.object({
@@ -223,18 +215,9 @@ export const brandKitAssetMentionBlockSchema = z.object({
   fileUrl: z.string().url().nullable().optional(),
 });
 
-export const skillMentionBlockSchema = z.object({
-  type: z.literal("mention"),
-  mentionType: z.literal("skill"),
-  id: z.string().min(1),
-  label: z.string().min(1),
-  slug: z.string().min(1),
-});
-
 export const mentionBlockSchema = z.union([
   imageModelMentionBlockSchema,
   brandKitAssetMentionBlockSchema,
-  skillMentionBlockSchema,
 ]);
 
 export const contentBlockSchema = z.union([

@@ -49,10 +49,6 @@ import { adaptDeepAgentStream } from "./stream-adapter.js";
 import type { SubmitImageJobFn } from "./tools/image-generate.js";
 import { buildCanvasSummaryForContext } from "./tools/inspect-canvas.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
-import {
-  type WorkspaceSkillEntry,
-  loadWorkspaceSkills,
-} from "./workspace-skills.js";
 
 /**
  * Build the text portion of a user message, appending <input_images> XML
@@ -195,23 +191,6 @@ function buildMentionXmlBlocks(mentions: MessageMention[]): string[] {
 
     xmlBlocks.push(
       `<human_brand_kit_mentions count="${mentionedBrandKitAssets.length}">\n  ${assetXml}\n</human_brand_kit_mentions>`,
-    );
-  }
-
-  // Skill mentions — tell the agent to read and follow the mentioned skill
-  const mentionedSkills = mentions.filter(
-    (mention): mention is Extract<MessageMention, { mentionType: "skill" }> =>
-      mention.mentionType === "skill",
-  );
-  if (mentionedSkills.length > 0) {
-    const skillXml = mentionedSkills
-      .map(
-        (mention, i) =>
-          `<skill index="${i + 1}" id="${escapeXmlAttribute(mention.id)}" name="${escapeXmlAttribute(mention.label)}" slug="${escapeXmlAttribute(mention.slug)}">\nThe user explicitly requested this skill. Read \`/workspace-skills/${mention.slug}/SKILL.md\` for full instructions and follow them.\n</skill>`,
-      )
-      .join("\n  ");
-    xmlBlocks.push(
-      `<human_skill_mentions count="${mentionedSkills.length}">\n  ${skillXml}\n</human_skill_mentions>`,
     );
   }
 
@@ -894,25 +873,6 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         };
       }
 
-      // Load workspace skills (user-installed skills from DB).
-      // Done before backend creation so we know whether to add the
-      // /workspace-skills/ Store route.
-      let workspaceSkills: WorkspaceSkillEntry[] = [];
-      if (run.canvasId && run.accessToken && options.createUserClient) {
-        try {
-          const wsClient = options.createUserClient(
-            run.accessToken,
-          ) as UserSupabaseClient;
-          workspaceSkills = await loadWorkspaceSkills(wsClient, run.canvasId);
-          rlog.lap("workspace_skills_loaded", {
-            count: workspaceSkills.length,
-          });
-        } catch (err) {
-          // Non-fatal: agent runs without workspace skills
-          console.warn("[runtime] Failed to load workspace skills:", err);
-        }
-      }
-
       let agent: LoomicAgent;
       try {
         const resolvedModel = run.modelOverride
@@ -1007,47 +967,6 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
 
         rlog.lap("brand_kit_resolved");
 
-        // Pre-write workspace skill SKILL.md files AND associated files
-        // (scripts/, references/, assets/) into the Store so the agent can
-        // read_file them via the /workspace-skills/ route.
-        const store = persistence?.store;
-        if (workspaceSkills.length > 0 && store && run.canvasId) {
-          const storeNamespace = ["projects", run.canvasId, "workspace-skills"];
-          const now_ = new Date().toISOString();
-
-          const writeOps: Promise<void>[] = [];
-          for (const skill of workspaceSkills) {
-            // Write SKILL.md
-            writeOps.push(
-              store.put(storeNamespace, `/${skill.name}/SKILL.md`, {
-                content: skill.content.split("\n"),
-                created_at: now_,
-                modified_at: now_,
-              }),
-            );
-            // Write associated files (scripts/, references/, assets/)
-            for (const file of skill.files) {
-              writeOps.push(
-                store.put(storeNamespace, `/${skill.name}/${file.path}`, {
-                  content: file.content.split("\n"),
-                  created_at: now_,
-                  modified_at: now_,
-                }),
-              );
-            }
-          }
-
-          await Promise.all(writeOps);
-          const totalFiles = workspaceSkills.reduce(
-            (sum, s) => sum + s.files.length,
-            0,
-          );
-          rlog.lap("workspace_skills_stored", {
-            count: workspaceSkills.length,
-            files: totalFiles,
-          });
-        }
-
         agent = resolvedAgentFactory({
           ...(options.applyCanvasOperations && resolveWorkspaceId
             ? {
@@ -1068,7 +987,6 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           ...(submitImageJob ? { submitImageJob } : {}),
           ...(submitVideoJob ? { submitVideoJob } : {}),
           ...(persistence ? { store: persistence.store } : {}),
-          ...(workspaceSkills.length > 0 ? { workspaceSkills } : {}),
         });
         rlog.lap("agent_factory_done");
       } catch (error) {
