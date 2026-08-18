@@ -45,7 +45,7 @@ Each Skill declares prerequisites but cannot grant them. After capability resolu
 
 The first manifest contains `json-image-prompt`, requiring `image.generate`. The current `canvas-design` package is excluded because it requires `execute`, Python, Pillow, and reportlab. It may return only after being redesigned to use fixed authorized Loomic tools with no process execution.
 
-Skill discovery uses catalog-provided name/description summaries. Full instructions and supporting text are available only through a server-owned read-only `read_builtin_skill` tool whose schema restricts `skillName` to the effective set and whose normalized relative path remains within that Skill. Binary resources are not returned to the model. Loomic does not expose a generic host filesystem backend to load Skills.
+Skill discovery uses catalog-provided name/description summaries. Full instructions and supporting text are available only through a server-owned read-only `read_builtin_skill` tool whose schema restricts `skillName` to the effective set and whose normalized relative path remains within that Skill. The tool accepts an optional opaque server-issued cursor bound to the run, Skill, path, and text position; returns at most 32 KiB of UTF-8 text per call; permits at most 16 distinct reads and 256 KiB total returned text per run; and returns `nextCursor` only when more authorized text remains. Retrying the same cursor is idempotent and does not consume the budget twice. Invalid, forged, or cross-run cursors fail closed; exceeding either run budget returns `skill_read_budget_exceeded`. Binary resources are not returned to the model. Loomic does not expose a generic host filesystem backend to load Skills.
 
 ## Agent Execution Context
 
@@ -56,6 +56,7 @@ interface AgentExecutionContext {
   runId: string;
   userId: string;
   workspaceId: string;
+  projectId: string;
   canvasId: string;
   capabilities: readonly AgentCapability[];
   capabilityPolicyVersion: string;
@@ -64,7 +65,9 @@ interface AgentExecutionContext {
 }
 ```
 
-`AcceptAgentRun` authenticates, resolves canonical resources, computes policy, filters Skills, persists the context, and only then publishes the run and acknowledges HTTP/WebSocket callers. Persistence failure creates no executable run. Resume/retry intersects the stored snapshot with current deployment policy and current resource authorization: authority can shrink but never grow implicitly.
+`AcceptAgentRun` authenticates, resolves the canonical project and workspace from the canvas, computes policy, filters Skills, persists the context, and only then publishes the run and acknowledges HTTP/WebSocket callers. Persistence failure creates no executable run. Every project-scoped tool and side effect uses the persisted `projectId` and re-resolves the canvas relationship before access; a moved or inconsistent canvas fails closed rather than silently adopting another project or workspace.
+
+Resume/retry first requires the stored `skillCatalogDigest` to equal the active process catalog digest. A mismatch returns `skill_catalog_changed`; the caller may submit a new run through `AcceptAgentRun`, but the existing run cannot silently adopt new Skill summaries, instructions, or files. After the digest check, resume/retry intersects the stored capability snapshot with current deployment policy and current resource authorization: authority can shrink but never grow implicitly. The reduced effective snapshot is persisted as a new execution attempt before model or tool execution so audit records match the authority actually used.
 
 The capability snapshot and Skill names are sorted, deduplicated, and frozen. `capabilityPolicyVersion` is the SHA-256 digest of the canonical deployment allowlist, provider declarations, resource rules, and complete tool/subagent mapping.
 
@@ -118,7 +121,7 @@ The Skills navigation item and workspace page are removed without replacement. B
 
 Structured logs record catalog identity, run/resource identifiers, effective capabilities/Skills, tool decisions, bound canvas, affected node IDs/counts, result status, and sanitized error code. They never record access tokens, prompts, Skill contents, full canvas content, binary content, or provider secrets.
 
-Uncertainty fails closed. Stable errors include `canvas_context_required`, `canvas_access_denied`, `node_access_denied`, `capability_denied`, `skill_catalog_invalid`, and `tool_not_authorized`.
+Uncertainty fails closed. Stable errors include `canvas_context_required`, `canvas_access_denied`, `node_access_denied`, `capability_denied`, `skill_catalog_invalid`, `skill_catalog_changed`, `skill_read_budget_exceeded`, and `tool_not_authorized`.
 
 ## Completion Evidence
 
@@ -126,9 +129,10 @@ Phase 3 is complete only when evidence proves:
 
 - Dynamic Skill UI, API, contracts, services, flags, rate limits, dependencies, database reads/writes, and schema are absent.
 - `LOOMIC_SKILLS_ROOT`, `allowExternalSkillImport`, `allowLocalAgentExecute`, and equivalent bypass configuration are absent.
-- Only manifest-listed, capability-compatible Skills can be discovered or read; unlisted files, invalid packages, and traversal fail.
+- Only manifest-listed, capability-compatible Skills can be discovered or read; unlisted files, invalid packages, traversal, forged/cross-run cursors, and Skill read-budget overflow fail.
 - `json-image-prompt` works through `image.generate`; `canvas-design` is not loaded and no loaded Skill references `execute`, Shell, Python, or package installation.
-- Run creation requires and persists canonical user/workspace/canvas scope before acknowledgement; stale or cross-canvas access is denied.
+- Run creation requires and persists canonical user/workspace/project/canvas scope before acknowledgement; stale, moved, inconsistent, or cross-canvas access is denied.
+- Resume rejects a changed Skill catalog, persists any capability reduction as a new attempt, and never executes against stale catalog or authority metadata.
 - The effective main-Agent and every subagent tool-name snapshot exactly matches policy.
 - `execute`, process-spawn APIs, `LocalShellBackend`, Sandbox backends, generic network fetch, generic filesystem tools, and sandbox-file persistence are unreachable from Agent construction.
 - Every node/canvas read or mutation is observed as an authorized tool call; architecture tests reject Agent imports or calls into repositories, Supabase, Excalidraw/browser internals, and canvas services outside tool adapters.
