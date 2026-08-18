@@ -17,6 +17,12 @@ export interface AgentAcceptanceResult {
 
 export interface AgentExecutionRepository {
   accept(input: AgentRunAcceptance): Promise<AgentAcceptanceResult>;
+  claimAttempt(input: AttemptClaim): Promise<AttemptLease>;
+  beginEffect(input: AgentEffectRequest): Promise<AgentEffectReservation>;
+  completeEffect(input: AgentEffectRequest & { result: unknown }): Promise<void>;
+  cancelAttempt(input: AttemptFence): Promise<void>;
+  isAttemptActive(input: AttemptFence): Promise<boolean>;
+  resumeAttempt(input: ResumeAttempt): Promise<Readonly<AgentExecutionContext>>;
   getExecutionContext(
     runId: string,
   ): Promise<Readonly<AgentExecutionContext> | null>;
@@ -27,6 +33,43 @@ export interface AgentExecutionRepository {
   reserveSkillRead(
     input: SkillReadReservation,
   ): Promise<SkillReadReservationResult>;
+}
+
+export interface AttemptClaim {
+  readonly attemptId: string;
+  readonly leaseOwner: string;
+  readonly leaseMs: number;
+  readonly now: Date;
+}
+
+export interface AttemptLease {
+  readonly attemptId: string;
+  readonly fencingToken: number;
+  readonly leaseExpiresAt: Date;
+}
+
+export interface AttemptFence {
+  readonly attemptId: string;
+  readonly fencingToken: number;
+}
+
+export interface AgentEffectRequest extends AttemptFence {
+  readonly runId: string;
+  readonly logicalToolCallId: string;
+  readonly inputDigest: string;
+}
+
+export type AgentEffectReservation =
+  | { readonly status: "reserved" }
+  | { readonly status: "completed"; readonly result: unknown };
+
+export interface ResumeAttempt {
+  readonly runId: string;
+  readonly attemptId: string;
+  readonly activeCatalogDigest: string;
+  readonly currentCapabilities: readonly AgentExecutionContext["capabilities"][number][];
+  readonly capabilityPolicyVersion: string;
+  readonly effectiveSkillNames: readonly string[];
 }
 
 export interface SkillCursorBinding {
@@ -51,10 +94,13 @@ export interface SkillReadReservationResult {
 interface StoredAcceptance {
   readonly clientRequestId: string;
   readonly requestDigest: string;
-  readonly context: Readonly<AgentExecutionContext>;
-  readonly attempt: {
+  context: Readonly<AgentExecutionContext>;
+  attempt: {
     readonly attemptId: string;
-    readonly status: "accepted";
+    status: "accepted" | "running" | "cancelled";
+    leaseOwner?: string;
+    leaseExpiresAt?: Date;
+    fencingToken: number;
   };
   readonly outbox: readonly {
     readonly eventType: "agent.run.accepted";
@@ -75,6 +121,10 @@ export class MemoryAgentExecutionRepository
       cursors: Map<string, SkillCursorBinding>;
     }
   >();
+  readonly #effects = new Map<
+    string,
+    { inputDigest: string; completed: boolean; result?: unknown }
+  >();
 
   get size(): number {
     return this.#byRun.size;
@@ -87,7 +137,10 @@ export class MemoryAgentExecutionRepository
   async getExecutionContext(
     runId: string,
   ): Promise<Readonly<AgentExecutionContext> | null> {
-    return this.#byRun.get(runId)?.context ?? null;
+    const stored = this.#byRun.get(runId);
+    return stored && stored.attempt.status !== "cancelled"
+      ? stored.context
+      : null;
   }
 
   async accept(input: AgentRunAcceptance): Promise<AgentAcceptanceResult> {
@@ -100,24 +153,158 @@ export class MemoryAgentExecutionRepository
       return { created: false, runId: existing.context.runId };
     }
 
-    const stored: StoredAcceptance = Object.freeze({
+    const stored: StoredAcceptance = {
       clientRequestId: input.clientRequestId,
       requestDigest: input.requestDigest,
       context: input.context,
-      attempt: Object.freeze({
+      attempt: {
         attemptId: input.context.attemptId,
         status: "accepted" as const,
-      }),
+        fencingToken: 0,
+      },
       outbox: Object.freeze([
         Object.freeze({
           eventType: "agent.run.accepted" as const,
           publishedAt: null,
         }),
       ]),
-    });
+    };
     this.#byRun.set(input.context.runId, stored);
     this.#byIdempotencyKey.set(key, stored);
     return { created: true, runId: input.context.runId };
+  }
+
+  async claimAttempt(input: AttemptClaim): Promise<AttemptLease> {
+    const stored = this.#findByAttempt(input.attemptId);
+    if (!stored || stored.attempt.status === "cancelled") {
+      throw new Error("run_not_active");
+    }
+    const attempt = stored.attempt;
+    if (
+      attempt.status === "running" &&
+      attempt.leaseExpiresAt &&
+      attempt.leaseExpiresAt.getTime() > input.now.getTime() &&
+      attempt.leaseOwner !== input.leaseOwner
+    ) {
+      throw new Error("attempt_lease_unavailable");
+    }
+    const fencingToken = attempt.fencingToken + 1;
+    const leaseExpiresAt = new Date(input.now.getTime() + input.leaseMs);
+    stored.attempt = {
+      attemptId: input.attemptId,
+      status: "running",
+      leaseOwner: input.leaseOwner,
+      leaseExpiresAt,
+      fencingToken,
+    };
+    return { attemptId: input.attemptId, fencingToken, leaseExpiresAt };
+  }
+
+  async beginEffect(input: AgentEffectRequest): Promise<AgentEffectReservation> {
+    this.#assertActiveFence(input);
+    const key = `${input.runId}\0${input.logicalToolCallId}`;
+    const existing = this.#effects.get(key);
+    if (existing) {
+      if (existing.inputDigest !== input.inputDigest) {
+        throw new Error("agent_effect_conflict");
+      }
+      return existing.completed
+        ? { status: "completed", result: existing.result }
+        : { status: "reserved" };
+    }
+    this.#effects.set(key, { inputDigest: input.inputDigest, completed: false });
+    return { status: "reserved" };
+  }
+
+  async completeEffect(
+    input: AgentEffectRequest & { result: unknown },
+  ): Promise<void> {
+    this.#assertActiveFence(input);
+    const key = `${input.runId}\0${input.logicalToolCallId}`;
+    const existing = this.#effects.get(key);
+    if (!existing || existing.inputDigest !== input.inputDigest) {
+      throw new Error("agent_effect_conflict");
+    }
+    this.#effects.set(key, {
+      inputDigest: input.inputDigest,
+      completed: true,
+      result: input.result,
+    });
+  }
+
+  async cancelAttempt(input: AttemptFence): Promise<void> {
+    const stored = this.#findByAttempt(input.attemptId);
+    if (
+      !stored ||
+      stored.attempt.status !== "running" ||
+      stored.attempt.fencingToken !== input.fencingToken
+    ) {
+      throw new Error("run_not_active");
+    }
+    stored.attempt = {
+      attemptId: input.attemptId,
+      status: "cancelled",
+      fencingToken: input.fencingToken + 1,
+    };
+  }
+
+  async isAttemptActive(input: AttemptFence): Promise<boolean> {
+    const stored = this.#findByAttempt(input.attemptId);
+    return Boolean(
+      stored &&
+        stored.attempt.status === "running" &&
+        stored.attempt.fencingToken === input.fencingToken,
+    );
+  }
+
+  async resumeAttempt(input: ResumeAttempt): Promise<Readonly<AgentExecutionContext>> {
+    const stored = this.#byRun.get(input.runId);
+    if (!stored) throw new Error("run_not_found");
+    if (stored.context.skillCatalogDigest !== input.activeCatalogDigest) {
+      throw new Error("skill_catalog_changed");
+    }
+    const allowed = new Set(input.currentCapabilities);
+    const previouslyEffectiveSkills = new Set(
+      stored.context.effectiveSkillNames,
+    );
+    const context = Object.freeze({
+      ...stored.context,
+      attemptId: input.attemptId,
+      capabilities: Object.freeze(
+        stored.context.capabilities.filter((capability) => allowed.has(capability)),
+      ),
+      capabilityPolicyVersion: input.capabilityPolicyVersion,
+      effectiveSkillNames: Object.freeze(
+        input.effectiveSkillNames.filter((skillName) =>
+          previouslyEffectiveSkills.has(skillName),
+        ),
+      ),
+    });
+    stored.context = context;
+    stored.attempt = {
+      attemptId: input.attemptId,
+      status: "accepted",
+      fencingToken: 0,
+    };
+    return context;
+  }
+
+  #findByAttempt(attemptId: string): StoredAcceptance | undefined {
+    return [...this.#byRun.values()].find(
+      (stored) => stored.attempt.attemptId === attemptId,
+    );
+  }
+
+  #assertActiveFence(input: AttemptFence & { runId?: string }): void {
+    const stored = this.#findByAttempt(input.attemptId);
+    if (
+      !stored ||
+      (input.runId !== undefined && stored.context.runId !== input.runId) ||
+      stored.attempt.status !== "running" ||
+      stored.attempt.fencingToken !== input.fencingToken
+    ) {
+      throw new Error("run_not_active");
+    }
   }
 
   async resolveSkillCursor(input: {
@@ -200,6 +387,85 @@ export function createAgentExecutionRepository(options: {
       }
       return { created: row.created, runId: row.run_id };
     },
+    async claimAttempt(input) {
+      const row = await callAgentExecutionRpc(options, "claim_agent_attempt", {
+        p_attempt_id: input.attemptId,
+        p_lease_ms: input.leaseMs,
+        p_lease_owner: input.leaseOwner,
+        p_now: input.now.toISOString(),
+      });
+      if (!isAttemptLeaseRow(row)) {
+        throw new Error("agent_execution_persistence_failed");
+      }
+      return {
+        attemptId: row.attempt_id,
+        fencingToken: row.fencing_token,
+        leaseExpiresAt: new Date(row.lease_expires_at),
+      };
+    },
+    async beginEffect(input) {
+      const row = await callAgentExecutionRpc(options, "begin_agent_effect", {
+        p_attempt_id: input.attemptId,
+        p_fencing_token: input.fencingToken,
+        p_input_digest: input.inputDigest,
+        p_logical_tool_call_id: input.logicalToolCallId,
+        p_run_id: input.runId,
+      });
+      if (!isEffectReservationRow(row)) {
+        throw new Error("agent_execution_persistence_failed");
+      }
+      return row.status === "completed"
+        ? { status: "completed", result: row.result }
+        : { status: "reserved" };
+    },
+    async completeEffect(input) {
+      await callAgentExecutionRpc(options, "complete_agent_effect", {
+        p_attempt_id: input.attemptId,
+        p_fencing_token: input.fencingToken,
+        p_input_digest: input.inputDigest,
+        p_logical_tool_call_id: input.logicalToolCallId,
+        p_result: input.result,
+        p_run_id: input.runId,
+      });
+    },
+    async cancelAttempt(input) {
+      await callAgentExecutionRpc(options, "cancel_agent_attempt", {
+        p_attempt_id: input.attemptId,
+        p_fencing_token: input.fencingToken,
+      });
+    },
+    async isAttemptActive(input) {
+      const row = await callAgentExecutionRpc(options, "is_agent_attempt_active", {
+        p_attempt_id: input.attemptId,
+        p_fencing_token: input.fencingToken,
+      });
+      return row === true;
+    },
+    async resumeAttempt(input) {
+      const row = await callAgentExecutionRpc(options, "resume_agent_attempt", {
+        p_active_catalog_digest: input.activeCatalogDigest,
+        p_attempt_id: input.attemptId,
+        p_capability_policy_version: input.capabilityPolicyVersion,
+        p_current_capabilities: input.currentCapabilities,
+        p_effective_skill_names: input.effectiveSkillNames,
+        p_run_id: input.runId,
+      });
+      if (!isResumeContextRow(row)) {
+        throw new Error("agent_execution_persistence_failed");
+      }
+      return {
+        runId: row.id,
+        attemptId: row.attempt_id,
+        userId: row.user_id,
+        workspaceId: row.workspace_id,
+        projectId: row.project_id,
+        canvasId: row.canvas_id,
+        capabilities: row.capabilities as AgentExecutionContext["capabilities"],
+        capabilityPolicyVersion: row.capability_policy_version,
+        skillCatalogDigest: row.skill_catalog_digest,
+        effectiveSkillNames: row.effective_skill_names as string[],
+      };
+    },
     async getExecutionContext(runId) {
       const client =
         options.getAdminClient() as unknown as AgentContextQueryClient;
@@ -217,19 +483,7 @@ export function createAgentExecutionRepository(options: {
         .limit(1, { referencedTable: "agent_run_attempts" })
         .maybeSingle();
       if (error || !isExecutionContextRow(data)) return null;
-      return {
-        runId: data.id,
-        attemptId: data.agent_run_attempts[0].attempt_id,
-        userId: data.user_id,
-        workspaceId: data.workspace_id,
-        projectId: data.project_id,
-        canvasId: data.canvas_id,
-        capabilities:
-          data.capabilities as AgentExecutionContext["capabilities"],
-        capabilityPolicyVersion: data.capability_policy_version,
-        skillCatalogDigest: data.skill_catalog_digest,
-        effectiveSkillNames: data.effective_skill_names as string[],
-      };
+      return executionContextFromRow(data);
     },
     async resolveSkillCursor(input) {
       const client =
@@ -332,6 +586,113 @@ interface AgentContextQueryClient {
       };
     };
   };
+}
+
+async function callAgentExecutionRpc(
+  options: { getAdminClient: () => AdminSupabaseClient },
+  name: string,
+  args: Record<string, unknown>,
+): Promise<unknown> {
+  const client = options.getAdminClient() as unknown as {
+    rpc(
+      rpcName: string,
+      rpcArgs: Record<string, unknown>,
+    ): Promise<{ data: unknown; error: { message?: string } | null }>;
+  };
+  const { data, error } = await client.rpc(name, args);
+  if (error) {
+    const knownErrors = [
+      "attempt_lease_unavailable",
+      "run_not_active",
+      "agent_effect_conflict",
+      "skill_catalog_changed",
+      "run_not_found",
+    ];
+    const known = knownErrors.find((code) => error.message?.includes(code));
+    throw new Error(known ?? "agent_execution_persistence_failed");
+  }
+  return Array.isArray(data) ? data[0] : data;
+}
+
+function executionContextFromRow(
+  data: Parameters<typeof isExecutionContextRow>[0] & {
+    id: string;
+    user_id: string;
+    workspace_id: string;
+    project_id: string;
+    canvas_id: string;
+    capabilities: unknown;
+    capability_policy_version: string;
+    skill_catalog_digest: string;
+    effective_skill_names: unknown;
+    agent_run_attempts: [{ attempt_id: string }];
+  },
+): Readonly<AgentExecutionContext> {
+  return {
+    runId: data.id,
+    attemptId: data.agent_run_attempts[0].attempt_id,
+    userId: data.user_id,
+    workspaceId: data.workspace_id,
+    projectId: data.project_id,
+    canvasId: data.canvas_id,
+    capabilities: data.capabilities as AgentExecutionContext["capabilities"],
+    capabilityPolicyVersion: data.capability_policy_version,
+    skillCatalogDigest: data.skill_catalog_digest,
+    effectiveSkillNames: data.effective_skill_names as string[],
+  };
+}
+
+function isAttemptLeaseRow(value: unknown): value is {
+  attempt_id: string;
+  fencing_token: number;
+  lease_expires_at: string;
+} {
+  if (typeof value !== "object" || value === null) return false;
+  const row = value as Record<string, unknown>;
+  return (
+    typeof row.attempt_id === "string" &&
+    typeof row.fencing_token === "number" &&
+    typeof row.lease_expires_at === "string"
+  );
+}
+
+function isResumeContextRow(value: unknown): value is {
+  id: string;
+  attempt_id: string;
+  user_id: string;
+  workspace_id: string;
+  project_id: string;
+  canvas_id: string;
+  capabilities: unknown[];
+  capability_policy_version: string;
+  skill_catalog_digest: string;
+  effective_skill_names: unknown[];
+} {
+  if (typeof value !== "object" || value === null) return false;
+  const row = value as Record<string, unknown>;
+  return (
+    [
+      "id",
+      "attempt_id",
+      "user_id",
+      "workspace_id",
+      "project_id",
+      "canvas_id",
+      "capability_policy_version",
+      "skill_catalog_digest",
+    ].every((key) => typeof row[key] === "string") &&
+    Array.isArray(row.capabilities) &&
+    Array.isArray(row.effective_skill_names)
+  );
+}
+
+function isEffectReservationRow(value: unknown): value is {
+  status: "reserved" | "completed";
+  result?: unknown;
+} {
+  if (typeof value !== "object" || value === null) return false;
+  const status = (value as { status?: unknown }).status;
+  return status === "reserved" || status === "completed";
 }
 
 function isExecutionContextRow(value: unknown): value is {

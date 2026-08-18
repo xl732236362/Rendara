@@ -44,6 +44,7 @@ export function createMainAgentTools(deps: {
   executionContext?: AgentExecutionContext;
   builtinSkillCatalog?: BuiltinSkillCatalog;
   agentExecutionRepository?: AgentExecutionRepository;
+  fencingToken?: number;
 }) {
   const tools: StructuredTool[] = [
     createInspectCanvasTool(deps),
@@ -118,6 +119,9 @@ export function createMainAgentTools(deps: {
             context: executionContext,
             repository: agentExecutionRepository,
             registeredTool,
+            ...(deps.fencingToken !== undefined
+              ? { fencingToken: deps.fencingToken }
+              : {}),
           })
         : registeredTool;
     });

@@ -237,6 +237,8 @@ type RuntimeRunRecord = RunCreateRequest & {
   status: RuntimeRunStatus;
   threadId?: string;
   userId?: string;
+  attemptId?: string;
+  fencingToken?: number;
 };
 
 type CreateAgentRuntimeOptions = {
@@ -375,15 +377,24 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
   }
 
   return {
-    cancelRun(runId: string): RunCancelResponse | null {
+    async cancelRun(runId: string): Promise<RunCancelResponse | null> {
       const run = runs.get(runId);
       if (!run) {
         return null;
       }
 
-      if (!run.controller.signal.aborted) {
-        run.controller.abort();
+      if (
+        options.agentExecutionRepository &&
+        run.attemptId &&
+        run.fencingToken !== undefined
+      ) {
+        await options.agentExecutionRepository.cancelAttempt({
+          attemptId: run.attemptId,
+          fencingToken: run.fencingToken,
+        });
       }
+
+      if (!run.controller.signal.aborted) run.controller.abort();
 
       run.status = "canceled";
       return {
@@ -507,6 +518,27 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         return;
       }
 
+      let executionContext = options.agentExecutionRepository
+        ? await options.agentExecutionRepository.getExecutionContext(runId)
+        : null;
+      if (options.agentExecutionRepository && !executionContext) {
+        yield toFailedEvent(runId, now, new Error("run_not_active"));
+        return;
+      }
+      if (executionContext && options.agentExecutionRepository) {
+        const lease = await options.agentExecutionRepository.claimAttempt({
+          attemptId: executionContext.attemptId,
+          leaseOwner: `runtime-${randomUUID()}`,
+          leaseMs: 15 * 60_000,
+          now: new Date(now()),
+        });
+        run.attemptId = lease.attemptId;
+        run.fencingToken = lease.fencingToken;
+        executionContext =
+          (await options.agentExecutionRepository.getExecutionContext(runId)) ??
+          executionContext;
+      }
+
       // Build submitImageJob / submitVideoJob closures for async jobs via PGMQ
       let submitImageJob: SubmitImageJobFn | undefined;
       let submitVideoJob: SubmitVideoJobFn | undefined;
@@ -540,13 +572,26 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
             );
           };
 
+          const effect = await beginRuntimeEffect(
+            options.agentExecutionRepository,
+            run,
+            input.logicalToolCallId,
+            input,
+          );
+          if (effect?.status === "completed") {
+            return effect.result as Awaited<ReturnType<SubmitImageJobFn>>;
+          }
           const workspaceId = await resolveGenerationWorkspaceId();
           let submitted: Awaited<ReturnType<SubmitGeneration>>;
           try {
             submitted = await submitGeneration(
               { userId, workspaceId, accessToken },
               {
-                idempotency_key: agentGenerationKey(runId, "image", input),
+                idempotency_key: agentGenerationKey(
+                  runId,
+                  "image",
+                  input.logicalToolCallId,
+                ),
                 type: "image_generation",
                 prompt: input.prompt,
                 title: input.title,
@@ -659,7 +704,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                 }
               }
 
-              return {
+              const completed = {
                 jobId: job.id,
                 ...(elementId != null ? { elementId } : {}),
                 imageUrl: result.signed_url ?? "",
@@ -667,6 +712,14 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                 height: result.height ?? 1024,
                 mimeType: result.mime_type ?? "image/png",
               };
+              await completeRuntimeEffect(
+                options.agentExecutionRepository,
+                run,
+                input.logicalToolCallId,
+                input,
+                completed,
+              );
+              return completed;
             }
 
             if (
@@ -712,13 +765,26 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
             );
           };
 
+          const effect = await beginRuntimeEffect(
+            options.agentExecutionRepository,
+            run,
+            input.logicalToolCallId,
+            input,
+          );
+          if (effect?.status === "completed") {
+            return effect.result as Awaited<ReturnType<SubmitVideoJobFn>>;
+          }
           const workspaceId = await resolveGenerationWorkspaceId();
           let submitted: Awaited<ReturnType<SubmitGeneration>>;
           try {
             submitted = await submitGeneration(
               { userId, workspaceId, accessToken },
               {
-                idempotency_key: agentGenerationKey(runId, "video", input),
+                idempotency_key: agentGenerationKey(
+                  runId,
+                  "video",
+                  input.logicalToolCallId,
+                ),
                 type: "video_generation",
                 prompt: input.prompt,
                 model: input.model,
@@ -840,7 +906,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                 }
               }
 
-              return {
+              const completed = {
                 jobId: job.id,
                 ...(elementId != null ? { elementId } : {}),
                 videoUrl: result.signed_url ?? "",
@@ -851,6 +917,14 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                   ? { durationSeconds: result.duration_seconds }
                   : {}),
               };
+              await completeRuntimeEffect(
+                options.agentExecutionRepository,
+                run,
+                input.logicalToolCallId,
+                input,
+                completed,
+              );
+              return completed;
             }
 
             if (
@@ -889,12 +963,6 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
 
       let agent: LoomicAgent;
       try {
-        const executionContext = options.agentExecutionRepository
-          ? await options.agentExecutionRepository.getExecutionContext(runId)
-          : null;
-        if (options.agentExecutionRepository && !executionContext) {
-          throw new Error("run_not_active");
-        }
         if (
           executionContext &&
           options.builtinSkillCatalog &&
@@ -1016,6 +1084,9 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           ...(submitVideoJob ? { submitVideoJob } : {}),
           ...(persistence ? { store: persistence.store } : {}),
           ...(executionContext ? { executionContext } : {}),
+          ...(run.fencingToken !== undefined
+            ? { fencingToken: run.fencingToken }
+            : {}),
           ...(options.builtinSkillCatalog
             ? { builtinSkillCatalog: options.builtinSkillCatalog }
             : {}),
@@ -1202,6 +1273,17 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           signal: run.controller.signal,
           stream,
         })) {
+          if (
+            options.agentExecutionRepository &&
+            run.attemptId &&
+            run.fencingToken !== undefined &&
+            !(await options.agentExecutionRepository.isAttemptActive({
+              attemptId: run.attemptId,
+              fencingToken: run.fencingToken,
+            }))
+          ) {
+            throw new Error("run_not_active");
+          }
           run.status = mapEventToStatus(event);
           try {
             await syncPersistedRunFromEvent(
@@ -1262,13 +1344,49 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
 function agentGenerationKey(
   runId: string,
   mediaType: "image" | "video",
-  input: unknown,
+  logicalToolCallId: string,
 ): string {
   const digest = createHash("sha256")
-    .update(stableJson(input))
+    .update(logicalToolCallId)
     .digest("hex")
     .slice(0, 32);
   return `agent:${runId}:${mediaType}:${digest}`.slice(0, 128);
+}
+
+async function beginRuntimeEffect(
+  repository: AgentExecutionRepository | undefined,
+  run: RuntimeRunRecord,
+  logicalToolCallId: string,
+  input: unknown,
+) {
+  if (!repository || !run.attemptId || run.fencingToken === undefined) {
+    return null;
+  }
+  return repository.beginEffect({
+    runId: run.runId,
+    attemptId: run.attemptId,
+    fencingToken: run.fencingToken,
+    logicalToolCallId,
+    inputDigest: createHash("sha256").update(stableJson(input)).digest("hex"),
+  });
+}
+
+async function completeRuntimeEffect(
+  repository: AgentExecutionRepository | undefined,
+  run: RuntimeRunRecord,
+  logicalToolCallId: string,
+  input: unknown,
+  result: unknown,
+): Promise<void> {
+  if (!repository || !run.attemptId || run.fencingToken === undefined) return;
+  await repository.completeEffect({
+    runId: run.runId,
+    attemptId: run.attemptId,
+    fencingToken: run.fencingToken,
+    logicalToolCallId,
+    inputDigest: createHash("sha256").update(stableJson(input)).digest("hex"),
+    result,
+  });
 }
 
 function stableJson(value: unknown): string {

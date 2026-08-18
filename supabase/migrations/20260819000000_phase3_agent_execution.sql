@@ -12,6 +12,10 @@ alter table public.agent_runs
   add column skill_catalog_digest text,
   add column effective_skill_names jsonb;
 
+alter table public.agent_runs drop constraint agent_runs_status_check;
+alter table public.agent_runs add constraint agent_runs_status_check
+  check (status in ('accepted', 'running', 'completed', 'failed', 'canceled'));
+
 alter table public.agent_runs
   add constraint agent_runs_client_request_id_length
     check (client_request_id is null or char_length(client_request_id) between 1 and 128),
@@ -241,3 +245,186 @@ revoke all on function public.reserve_agent_skill_read(
 grant execute on function public.reserve_agent_skill_read(
   uuid, text, integer, text, text, text, integer
 ) to service_role;
+
+create table public.agent_effects (
+  run_id uuid not null references public.agent_runs(id) on delete cascade,
+  logical_tool_call_id text not null,
+  attempt_id uuid not null references public.agent_run_attempts(attempt_id),
+  input_digest text not null,
+  status text not null check (status in ('reserved', 'completed')),
+  result jsonb,
+  created_at timestamptz not null default now(),
+  completed_at timestamptz,
+  primary key (run_id, logical_tool_call_id)
+);
+
+alter table public.agent_effects enable row level security;
+revoke all on table public.agent_effects from anon, authenticated;
+grant select, insert, update, delete on table public.agent_effects to service_role;
+
+create or replace function public.claim_agent_attempt(
+  p_attempt_id uuid,
+  p_lease_owner text,
+  p_lease_ms integer,
+  p_now timestamptz
+) returns table(attempt_id uuid, fencing_token bigint, lease_expires_at timestamptz)
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_attempt public.agent_run_attempts%rowtype;
+begin
+  if p_lease_ms < 1 or p_lease_owner is null or p_lease_owner = '' then
+    raise exception 'attempt_lease_invalid';
+  end if;
+  select * into v_attempt from public.agent_run_attempts
+  where agent_run_attempts.attempt_id = p_attempt_id for update;
+  if not found or v_attempt.status not in ('accepted', 'running') then
+    raise exception 'run_not_active';
+  end if;
+  if v_attempt.status = 'running'
+     and v_attempt.lease_expires_at > p_now
+     and v_attempt.lease_owner <> p_lease_owner then
+    raise exception 'attempt_lease_unavailable';
+  end if;
+  update public.agent_run_attempts
+  set status = 'running', lease_owner = p_lease_owner,
+      lease_expires_at = p_now + make_interval(secs => p_lease_ms::double precision / 1000),
+      fencing_token = agent_run_attempts.fencing_token + 1
+  where agent_run_attempts.attempt_id = p_attempt_id
+  returning agent_run_attempts.attempt_id,
+            agent_run_attempts.fencing_token,
+            agent_run_attempts.lease_expires_at
+  into attempt_id, fencing_token, lease_expires_at;
+  return next;
+end;
+$$;
+
+create or replace function public.begin_agent_effect(
+  p_run_id uuid, p_attempt_id uuid, p_fencing_token bigint,
+  p_logical_tool_call_id text, p_input_digest text
+) returns table(status text, result jsonb)
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_effect public.agent_effects%rowtype;
+begin
+  perform 1 from public.agent_run_attempts a
+  where a.attempt_id = p_attempt_id and a.run_id = p_run_id
+    and a.status = 'running' and a.fencing_token = p_fencing_token
+    and a.lease_expires_at > now() for update;
+  if not found then raise exception 'run_not_active'; end if;
+  select * into v_effect from public.agent_effects e
+  where e.run_id = p_run_id and e.logical_tool_call_id = p_logical_tool_call_id
+  for update;
+  if found then
+    if v_effect.input_digest <> p_input_digest then
+      raise exception 'agent_effect_conflict';
+    end if;
+    status := v_effect.status; result := v_effect.result; return next; return;
+  end if;
+  insert into public.agent_effects(
+    run_id, logical_tool_call_id, attempt_id, input_digest, status
+  ) values (p_run_id, p_logical_tool_call_id, p_attempt_id, p_input_digest, 'reserved');
+  status := 'reserved'; result := null; return next;
+end;
+$$;
+
+create or replace function public.complete_agent_effect(
+  p_run_id uuid, p_attempt_id uuid, p_fencing_token bigint,
+  p_logical_tool_call_id text, p_input_digest text, p_result jsonb
+) returns void
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_effect public.agent_effects%rowtype;
+begin
+  perform 1 from public.agent_run_attempts a
+  where a.attempt_id = p_attempt_id and a.run_id = p_run_id
+    and a.status = 'running' and a.fencing_token = p_fencing_token
+    and a.lease_expires_at > now() for update;
+  if not found then raise exception 'run_not_active'; end if;
+  select * into v_effect from public.agent_effects e
+  where e.run_id = p_run_id and e.logical_tool_call_id = p_logical_tool_call_id
+  for update;
+  if not found or v_effect.input_digest <> p_input_digest then
+    raise exception 'agent_effect_conflict';
+  end if;
+  update public.agent_effects set status = 'completed', result = p_result,
+    completed_at = coalesce(completed_at, now())
+  where agent_effects.run_id = p_run_id
+    and agent_effects.logical_tool_call_id = p_logical_tool_call_id;
+end;
+$$;
+
+create or replace function public.cancel_agent_attempt(
+  p_attempt_id uuid, p_fencing_token bigint
+) returns void language plpgsql security definer set search_path = '' as $$
+begin
+  update public.agent_run_attempts set status = 'canceled',
+    fencing_token = agent_run_attempts.fencing_token + 1,
+    lease_owner = null, lease_expires_at = null, completed_at = now()
+  where agent_run_attempts.attempt_id = p_attempt_id
+    and agent_run_attempts.status = 'running'
+    and agent_run_attempts.fencing_token = p_fencing_token;
+  if not found then raise exception 'run_not_active'; end if;
+end;
+$$;
+
+create or replace function public.is_agent_attempt_active(
+  p_attempt_id uuid, p_fencing_token bigint
+) returns boolean language sql stable security definer set search_path = '' as $$
+  select exists(
+    select 1 from public.agent_run_attempts a
+    where a.attempt_id = p_attempt_id and a.status = 'running'
+      and a.fencing_token = p_fencing_token and a.lease_expires_at > now()
+  );
+$$;
+
+create or replace function public.resume_agent_attempt(
+  p_run_id uuid, p_attempt_id uuid, p_active_catalog_digest text,
+  p_current_capabilities jsonb, p_capability_policy_version text,
+  p_effective_skill_names jsonb
+) returns table(
+  id uuid, user_id uuid, workspace_id uuid, project_id uuid, canvas_id uuid,
+  capabilities jsonb, capability_policy_version text,
+  skill_catalog_digest text, effective_skill_names jsonb, attempt_id uuid
+) language plpgsql security definer set search_path = '' as $$
+declare
+  v_run public.agent_runs%rowtype;
+  v_capabilities jsonb;
+  v_skills jsonb;
+begin
+  select * into v_run from public.agent_runs r where r.id = p_run_id for update;
+  if not found then raise exception 'run_not_found'; end if;
+  if v_run.skill_catalog_digest <> p_active_catalog_digest then
+    raise exception 'skill_catalog_changed';
+  end if;
+  select coalesce(jsonb_agg(value order by value), '[]'::jsonb) into v_capabilities
+  from jsonb_array_elements_text(v_run.capabilities) value
+  where value in (select jsonb_array_elements_text(p_current_capabilities));
+  select coalesce(jsonb_agg(value order by value), '[]'::jsonb) into v_skills
+  from jsonb_array_elements_text(v_run.effective_skill_names) value
+  where value in (select jsonb_array_elements_text(p_effective_skill_names));
+  update public.agent_run_attempts set status = 'failed', completed_at = now(),
+    lease_owner = null, lease_expires_at = null
+  where run_id = p_run_id and status in ('accepted', 'running');
+  update public.agent_runs set capabilities = v_capabilities,
+    capability_policy_version = p_capability_policy_version,
+    effective_skill_names = v_skills where agent_runs.id = p_run_id;
+  insert into public.agent_run_attempts(attempt_id, run_id, status)
+  values (p_attempt_id, p_run_id, 'accepted');
+  return query select p_run_id, v_run.user_id, v_run.workspace_id,
+    v_run.project_id, v_run.canvas_id, v_capabilities,
+    p_capability_policy_version, v_run.skill_catalog_digest, v_skills, p_attempt_id;
+end;
+$$;
+
+revoke all on function public.claim_agent_attempt(uuid,text,integer,timestamptz) from public, anon, authenticated;
+revoke all on function public.begin_agent_effect(uuid,uuid,bigint,text,text) from public, anon, authenticated;
+revoke all on function public.complete_agent_effect(uuid,uuid,bigint,text,text,jsonb) from public, anon, authenticated;
+revoke all on function public.cancel_agent_attempt(uuid,bigint) from public, anon, authenticated;
+revoke all on function public.is_agent_attempt_active(uuid,bigint) from public, anon, authenticated;
+revoke all on function public.resume_agent_attempt(uuid,uuid,text,jsonb,text,jsonb) from public, anon, authenticated;
+grant execute on function public.claim_agent_attempt(uuid,text,integer,timestamptz) to service_role;
+grant execute on function public.begin_agent_effect(uuid,uuid,bigint,text,text) to service_role;
+grant execute on function public.complete_agent_effect(uuid,uuid,bigint,text,text,jsonb) to service_role;
+grant execute on function public.cancel_agent_attempt(uuid,bigint) to service_role;
+grant execute on function public.is_agent_attempt_active(uuid,bigint) to service_role;
+grant execute on function public.resume_agent_attempt(uuid,uuid,text,jsonb,text,jsonb) to service_role;

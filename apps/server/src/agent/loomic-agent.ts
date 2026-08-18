@@ -54,6 +54,7 @@ export type LoomicAgentFactory = (options: {
   executionContext?: AgentExecutionContext;
   builtinSkillCatalog?: BuiltinSkillCatalog;
   agentExecutionRepository?: AgentExecutionRepository;
+  fencingToken?: number;
 }) => LoomicAgent;
 
 export function createLoomicAgent(options: {
@@ -79,6 +80,7 @@ export function createLoomicAgent(options: {
   executionContext?: AgentExecutionContext;
   builtinSkillCatalog?: BuiltinSkillCatalog;
   agentExecutionRepository?: AgentExecutionRepository;
+  fencingToken?: number;
 }): LoomicAgent {
   applyOpenAICompatEnv(options.env);
 
@@ -129,6 +131,9 @@ export function createLoomicAgent(options: {
       : {}),
     ...(options.agentExecutionRepository
       ? { agentExecutionRepository: options.agentExecutionRepository }
+      : {}),
+    ...(options.fencingToken !== undefined
+      ? { fencingToken: options.fencingToken }
       : {}),
   });
   const toolNames = new Set(tools.map((registeredTool) => registeredTool.name));

@@ -3,12 +3,63 @@ import { describe, expect, it, vi } from "vitest";
 import { loadServerEnv } from "../config/env.js";
 import { AppError } from "../errors/app-error.js";
 import { ProviderRegistry } from "../generation/providers/registry.js";
+import { MemoryAgentExecutionRepository } from "../features/agent-runs/agent-execution-repository.js";
 import { createAgentRunService } from "./runtime.js";
 import type { SubmitImageJobFn } from "./tools/image-generate.js";
 import { createMainAgentTools } from "./tools/index.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
 
 describe("Agent runtime application wiring", () => {
+  it("claims the persisted attempt before Agent construction and durably cancels it", async () => {
+    const repository = new MemoryAgentExecutionRepository();
+    await repository.accept({
+      clientRequestId: "request-lease",
+      requestDigest: "digest-lease",
+      context: {
+        runId: "run-lease",
+        attemptId: "attempt-lease",
+        userId: "user-lease",
+        workspaceId: "workspace-lease",
+        projectId: "project-lease",
+        canvasId: "canvas-lease",
+        capabilities: ["image.generate"],
+        capabilityPolicyVersion: "policy-1",
+        skillCatalogDigest: "catalog-1",
+        effectiveSkillNames: [],
+      },
+    });
+    const constructionStates: boolean[] = [];
+    const service = createAgentRunService({
+      agentExecutionRepository: repository,
+      agentFactory: (() => {
+        constructionStates.push(
+          Boolean(repository.get("run-lease")?.attempt.fencingToken),
+        );
+        return { async *streamEvents() {}, async *stream() {} };
+      }) as never,
+      env: loadServerEnv({}, {}),
+      providerRegistry: new ProviderRegistry().seal(),
+    });
+    service.createRun(
+      {
+        canvasId: "canvas-lease",
+        clientRequestId: "request-lease",
+        conversationId: "conversation-lease",
+        prompt: "hello",
+        sessionId: "session-lease",
+      },
+      { runId: "run-lease", userId: "user-lease" },
+    );
+
+    for await (const _event of service.streamRun("run-lease")) {
+    }
+    expect(constructionStates).toEqual([true]);
+    await expect(service.cancelRun("run-lease")).resolves.toMatchObject({
+      status: "canceled",
+    });
+    await expect(repository.getExecutionContext("run-lease")).resolves.toBeNull();
+  });
+
   it("emits billing.error and aborts the run when submission is rejected for billing", async () => {
     let submitImageJob: SubmitImageJobFn | undefined;
     let runtimeSignal: AbortSignal | undefined;
@@ -68,6 +119,7 @@ describe("Agent runtime application wiring", () => {
 
     await expect(
       submitImageJob({
+        logicalToolCallId: "tool-billing-image",
         prompt: "image",
         title: "Image",
         model: "image/model",
@@ -142,6 +194,7 @@ describe("Agent runtime application wiring", () => {
 
     await expect(
       submitImageJob({
+        logicalToolCallId: "tool-failing-image",
         prompt: "image",
         title: "Image",
         model: "image/model",
@@ -276,6 +329,7 @@ describe("Agent runtime application wiring", () => {
 
     await expect(
       submitImageJob({
+        logicalToolCallId: "tool-team-image",
         prompt: "image",
         title: "Image",
         model: "image/model",
@@ -283,7 +337,11 @@ describe("Agent runtime application wiring", () => {
       }),
     ).rejects.toThrow("stop before polling");
     await expect(
-      submitVideoJob({ prompt: "video", model: "video/model" }),
+      submitVideoJob({
+        logicalToolCallId: "tool-team-video",
+        prompt: "video",
+        model: "video/model",
+      }),
     ).rejects.toThrow("stop before polling");
 
     expect(submitGeneration).toHaveBeenCalledTimes(2);
@@ -342,6 +400,7 @@ describe("Agent runtime application wiring", () => {
 
     await expect(
       submitImageJob({
+        logicalToolCallId: "tool-foreign-image",
         prompt: "image",
         title: "Image",
         model: "image/model",
@@ -349,7 +408,11 @@ describe("Agent runtime application wiring", () => {
       }),
     ).rejects.toThrow("Canvas not found or access denied");
     await expect(
-      submitVideoJob({ prompt: "video", model: "video/model" }),
+      submitVideoJob({
+        logicalToolCallId: "tool-foreign-video",
+        prompt: "video",
+        model: "video/model",
+      }),
     ).rejects.toThrow("Canvas not found or access denied");
     expect(submitGeneration).not.toHaveBeenCalled();
   });
@@ -411,6 +474,7 @@ describe("Agent runtime application wiring", () => {
     if (!submitImageJob || !submitVideoJob)
       throw new Error("Generation tools were not wired");
     const imagePromise = submitImageJob({
+      logicalToolCallId: "tool-image-1",
       prompt: "image",
       title: "Image",
       model: "image/model",
@@ -420,6 +484,7 @@ describe("Agent runtime application wiring", () => {
     });
     await imagePromise;
     const videoPromise = submitVideoJob({
+      logicalToolCallId: "tool-video-1",
       prompt: "video",
       model: "video/model",
       duration: 6,

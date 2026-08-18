@@ -26,6 +26,7 @@ export async function guardToolCall<T>(options: {
   capability: AgentCapability;
   context: AgentExecutionContext;
   repository: AgentExecutionRepository;
+  fencingToken?: number;
   input: unknown;
   invoke: () => Promise<T>;
 }): Promise<T> {
@@ -33,6 +34,15 @@ export async function guardToolCall<T>(options: {
   const active = await options.repository.getExecutionContext(
     options.context.runId,
   );
+  if (
+    options.fencingToken !== undefined &&
+    !(await options.repository.isAttemptActive({
+      attemptId: options.context.attemptId,
+      fencingToken: options.fencingToken,
+    }))
+  ) {
+    throw new Error("run_not_active");
+  }
   if (!active || active.attemptId !== options.context.attemptId) {
     throw new Error("run_not_active");
   }
@@ -61,6 +71,7 @@ export function guardStructuredTool(options: {
   context: AgentExecutionContext;
   repository: AgentExecutionRepository;
   registeredTool: StructuredTool;
+  fencingToken?: number;
 }): StructuredTool {
   return new DynamicStructuredTool({
     name: options.registeredTool.name,
@@ -71,6 +82,9 @@ export function guardStructuredTool(options: {
         capability: options.capability,
         context: options.context,
         repository: options.repository,
+        ...(options.fencingToken !== undefined
+          ? { fencingToken: options.fencingToken }
+          : {}),
         input,
         invoke: async () => options.registeredTool.invoke(input, config),
       }),

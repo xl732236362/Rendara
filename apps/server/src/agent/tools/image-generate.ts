@@ -1,7 +1,6 @@
+import type { ToolRuntime } from "@langchain/core/tools";
 import { tool } from "langchain";
 import { z } from "zod";
-
-import { randomUUID } from "node:crypto";
 
 import { generateImage } from "../../generation/image-generation.js";
 import type {
@@ -145,6 +144,7 @@ export type PersistImageFn = (
  * Returns the final result: signed_url on success, error on failure.
  */
 export type SubmitImageJobFn = (input: {
+  logicalToolCallId: string;
   prompt: string;
   title: string;
   model: string;
@@ -167,6 +167,7 @@ export async function runImageGenerate(
   submitImageJob?: SubmitImageJobFn,
   attachmentMap?: Record<string, string>,
   providerRegistry?: ProviderCatalog,
+  logicalToolCallId?: string,
 ): Promise<ImageGenerateResult> {
   const t0 = Date.now();
   const lap = (label: string, extra?: Record<string, unknown>) => {
@@ -215,8 +216,10 @@ export async function runImageGenerate(
   // Job mode: submit to PGMQ and wait for worker to complete
   if (submitImageJob) {
     try {
+      if (!logicalToolCallId) throw new Error("tool_call_id_required");
       lap("job_submit", { model: input.model });
       const jobResult = await submitImageJob({
+        logicalToolCallId,
         prompt: input.prompt,
         title: input.title,
         model: input.model,
@@ -347,8 +350,8 @@ export function createImageGenerateTool(deps?: {
     : "No models available";
 
   return tool(
-    async (input: ImageGenerateInput, config) => {
-      const attachmentMap = (config as any)?.configurable
+    async (input: ImageGenerateInput, runtime: ToolRuntime) => {
+      const attachmentMap = runtime.configurable
         ?.user_attachment_map as Record<string, string> | undefined;
       return await runImageGenerate(
         input,
@@ -356,6 +359,7 @@ export function createImageGenerateTool(deps?: {
         deps?.submitImageJob,
         attachmentMap,
         deps?.providerRegistry,
+        runtime.toolCallId ?? runtime.toolCall?.id,
       );
     },
     {

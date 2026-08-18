@@ -1,3 +1,4 @@
+import type { ToolRuntime } from "@langchain/core/tools";
 import { tool } from "langchain";
 import { z } from "zod";
 
@@ -12,6 +13,7 @@ const DEFAULT_MODEL = "wan-video/wan-2.6";
 // ── Submit function type ───────────────────────────────────────────────────
 
 export type SubmitVideoJobFn = (input: {
+  logicalToolCallId: string;
   prompt: string;
   model: string;
   duration?: number;
@@ -166,6 +168,7 @@ export async function runVideoGenerate(
   input: VideoGenerateInput,
   submitVideoJob?: SubmitVideoJobFn,
   providerRegistry?: ProviderCatalog,
+  logicalToolCallId?: string,
 ): Promise<VideoGenerateResult> {
   const t0 = Date.now();
   const lap = (label: string, extra?: Record<string, unknown>) => {
@@ -192,8 +195,10 @@ export async function runVideoGenerate(
   // Job mode: submit to PGMQ and wait for worker
   if (submitVideoJob) {
     try {
+      if (!logicalToolCallId) throw new Error("tool_call_id_required");
       lap("job_submit", { model: input.model });
       const jobResult = await submitVideoJob({
+        logicalToolCallId,
         prompt: input.prompt,
         model: input.model,
         duration: input.duration,
@@ -321,11 +326,12 @@ export function createVideoGenerateTool(deps?: {
     : "No video models available";
 
   return tool(
-    async (input: VideoGenerateInput) => {
+    async (input: VideoGenerateInput, runtime: ToolRuntime) => {
       return await runVideoGenerate(
         input,
         deps?.submitVideoJob,
         deps?.providerRegistry,
+        runtime.toolCallId ?? runtime.toolCall?.id,
       );
     },
     {

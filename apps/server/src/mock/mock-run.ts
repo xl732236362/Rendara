@@ -34,7 +34,7 @@ export function createMockRunStore(options: CreateMockRunStoreOptions = {}) {
   const runs = new Map<string, MockRunRecord>();
 
   return {
-    cancelRun(runId: string): RunCancelResponse | null {
+    async cancelRun(runId: string): Promise<RunCancelResponse | null> {
       const run = runs.get(runId);
       if (!run) {
         return null;

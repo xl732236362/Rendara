@@ -137,7 +137,7 @@ export async function registerRunRoutes(
 
     const { runId } = parseStringParams(request.params, ["runId"]);
     await options.authorization.requireRunAccess(authenticatedUser, runId);
-    const canceledRun = agentRuns.cancelRun(runId);
+    const canceledRun = await agentRuns.cancelRun(runId);
 
     if (!canceledRun) {
       throwRouteError({

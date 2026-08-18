@@ -242,7 +242,7 @@ export async function bindAuthenticatedSocket(
             userId: authenticatedUser.id,
             runId: msg.payload.runId,
           });
-          const cancelResult = agentRuns.cancelRun(msg.payload.runId);
+          const cancelResult = await agentRuns.cancelRun(msg.payload.runId);
           if (!cancelResult) {
             socket.send(
               JSON.stringify({ type: "error", message: "Run not found" }),

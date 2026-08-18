@@ -1,5 +1,5 @@
 import { tool } from "langchain";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import { MemoryAgentExecutionRepository } from "../../features/agent-runs/agent-execution-repository.js";
@@ -158,5 +158,31 @@ describe("Agent tool boundary", () => {
         inputImages: ["https://example.com/raw.png"],
       }).success,
     ).toBe(false);
+  });
+
+  it("passes the stable LangChain tool-call ID to generation submission", async () => {
+    const submitImageJob = vi.fn(async () => ({ jobId: "job-1" }));
+    const imageTool = createImageGenerateTool({
+      providerRegistry: new ProviderRegistry().seal(),
+      submitImageJob,
+    });
+
+    const args = {
+        title: "Image",
+        prompt: "prompt",
+        model: "model",
+    };
+    await imageTool.invoke(args, {
+      toolCall: {
+        type: "tool_call",
+        id: "tool-call-stable",
+        name: "generate_image",
+        args,
+      },
+    } as never);
+
+    expect(submitImageJob).toHaveBeenCalledWith(
+      expect.objectContaining({ logicalToolCallId: "tool-call-stable" }),
+    );
   });
 });
