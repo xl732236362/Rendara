@@ -150,14 +150,18 @@ Web / HTTP / WebSocket / Agent Tools / Worker
 - 使用一次性容器、microVM 或成熟远端 sandbox provider，不在 API/Worker 容器执行用户代码。
 - 每次 run 使用独立身份和文件系统，非 root、只读根文件系统。
 - 设置 CPU、内存、PID、磁盘、执行时间和输出上限。
-- 网络默认拒绝；必要访问通过代理和域名 allowlist。
+- 阶段 3 Sandbox 完全禁止网络出站；未来确有需求时另行设计域名授权和代理，不在本阶段预留宽松入口。
 - Sandbox 不接收 Supabase service role、Provider key 或应用内部网络权限。
-- 输出通过受控 artifact API 流式上传，服务端验证大小、MIME 和文件名。
+- 输出只通过 Sandbox 文件 port 受限下载，服务端验证路径、大小、MIME/magic bytes 并生成文件名，再经资产应用端口持久化。
+- 每次 run 创建独立 lease；有效策略与 lease 生命周期持久化，`finally` 清理和重启后的 orphan reconciler 均幂等执行。
+- 内置 Skill 脚本从启动时验证的内存 catalog 上传到 Sandbox，不挂载 API 宿主目录；产物只通过 Sandbox 文件 port 下载。
 
 ### 内置 Skill 模型
 
 - 永久移除用户创建、导入、下载、市场安装、工作区安装和启停 Skill 的产品能力及数据模型。
-- Skill 只来自仓库 `skills/`，并且必须由仓库级 manifest 显式列入；目录发现、请求、数据库和用户文件不能授予加载资格。
+- Skill 只来自仓库 `skills/`，并且必须由仓库级 manifest 显式列入并声明所需 capability；目录发现、请求、数据库和用户文件不能授予加载资格。
+- manifest 内容在启动时复制为内存只读 `/skills/` backend，并通过 DeepAgents 官方 `skills` 配置加载；Agent 不直接读取宿主 Skill 目录。
+- 每个 run 只看到其 capability 快照满足全部前置条件的 Skill；Skill 声明只能缩小可见集合，不能反向授予 capability。
 - 内置 Skill 随应用代码审查、测试和发布，不建设外部来源 hash、签名、审批、revision 或兼容迁移体系。
 - 先发布只读取内置 manifest 的运行时，再以前滚 migration 删除动态 Skill 表和历史数据；不提供恢复路径。
 
@@ -167,11 +171,13 @@ Web / HTTP / WebSocket / Agent Tools / Worker
 - Capability 只取服务端部署 allowlist、Provider/Sandbox 可用能力和画布/项目/工作区授权的交集。
 - 客户端请求、prompt、模型输出和 Skill 内容均不能授予 capability。
 - 未授权工具不注册；高风险应用用例在副作用前再次检查同一执行上下文，工具不能改写目标 canvas/workspace。
+- DeepAgents 自动文件工具、`task`、backend 路由和所有 subagent 同样受 capability map 约束，不能成为应用工具之外的旁路。
 
 ### 验收
 
 - 只有 manifest 明确列出的仓库内置 Skill 能进入 Agent，外部或用户内容没有导入和执行路径。
 - Agent 只能操作当前已授权画布，未授权工具不可见且应用端口直接调用同样被拒绝。
+- 同一用户打开多个画布时，浏览器 RPC 仍按绑定 `canvasId` 路由，不能仅按 userId 选择连接。
 - Sandbox 销毁后无法再次读取 run 文件。
 
 ## 阶段 4：画布领域模型与节点扩展体系

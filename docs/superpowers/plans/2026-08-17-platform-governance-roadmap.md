@@ -36,4 +36,4 @@
 
 - 阶段 0：`docs/superpowers/plans/2026-08-17-phase-0-security-quality-baseline.md`
 - 阶段 1-2、4-7：在前置阶段完成后，根据已经落地的接口和文件路径分别生成，避免计划引用尚不存在或已变化的代码。
-- 阶段 3：以 `docs/superpowers/specs/2026-08-18-builtin-skills-and-canvas-scoped-agent-design.md` 为唯一设计来源；旧阶段 3 设计和实施计划仅保留为历史记录，必须重写实施计划后才能执行。
+- 阶段 3：以 `docs/superpowers/specs/2026-08-18-builtin-skills-and-canvas-scoped-agent-design.md` 为唯一设计来源；旧阶段 3 设计和实施计划已删除，必须重写实施计划后才能执行。
