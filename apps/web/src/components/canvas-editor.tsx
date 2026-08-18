@@ -10,9 +10,15 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WebSocketHandle } from "../hooks/use-websocket";
 import { ApiApplicationError } from "../lib/api-client";
 import { blobToDataURL, isVideoUrl } from "../lib/canvas-elements";
+import {
+  createDurableSceneMutation,
+  serializeCanvasFiles,
+  type CanvasContent,
+  type DurableSceneMutation,
+} from "../lib/canvas-persistence";
 import { normalizeCanvasElements } from "../lib/canvas-normalize";
 import { getServerBaseUrl } from "../lib/env";
-import { saveCanvas, uploadThumbnail } from "../lib/server-api";
+import { getAssetUrl, saveCanvas, uploadThumbnail } from "../lib/server-api";
 import { CanvasToolMenu } from "./canvas-tool-menu";
 import { VideoCanvasElement } from "./canvas/video-canvas-element";
 import { ErrorBoundary } from "./error-boundary";
@@ -62,6 +68,7 @@ type CanvasEditorProps = {
     files: Record<string, Record<string, unknown>>;
   };
   onApiReady?: (api: any) => void;
+  onPersistenceReady?: (mutation: DurableSceneMutation | null) => void;
   ws?: WebSocketHandle;
   leftPanelOpen?: boolean;
   onSelectionChange?: (elements: CanvasSelectedElement[]) => void;
@@ -78,6 +85,7 @@ export function CanvasEditor({
   initialRevision,
   initialContent,
   onApiReady,
+  onPersistenceReady,
   ws,
   leftPanelOpen,
   onSelectionChange,
@@ -92,6 +100,7 @@ export function CanvasEditor({
   const revisionRef = useRef(initialRevision);
   const saveChainRef = useRef<Promise<void>>(Promise.resolve());
   const conflictPausedRef = useRef(false);
+  const suppressNextAutosaveRef = useRef(false);
   const [revisionConflict, setRevisionConflict] = useState(false);
   useEffect(() => {
     revisionRef.current = initialRevision;
@@ -114,11 +123,7 @@ export function CanvasEditor({
   );
 
   // Track pending save payload so we can flush on tab close / unmount
-  const pendingSaveRef = useRef<{
-    elements: Record<string, unknown>[];
-    appState: Record<string, unknown>;
-    files: Record<string, Record<string, unknown>>;
-  } | null>(null);
+  const pendingSaveRef = useRef<CanvasContent | null>(null);
 
   // Ref to hold initialContent.files for storageUrl lookup in handleChange
   // without adding the full initialContent to the dependency array.
@@ -126,11 +131,7 @@ export function CanvasEditor({
   initialFilesRef.current = initialContent.files;
 
   const enqueueSave = useCallback(
-    (content: {
-      elements: Record<string, unknown>[];
-      appState: Record<string, unknown>;
-      files: Record<string, Record<string, unknown>>;
-    }) => {
+    (content: CanvasContent) => {
       if (conflictPausedRef.current) return Promise.resolve();
       const operation = saveChainRef.current.then(async () => {
         if (conflictPausedRef.current) return;
@@ -164,11 +165,17 @@ export function CanvasEditor({
     const inline: Record<string, Record<string, unknown>> = {};
     const pending: Array<{
       fileId: string;
-      url: string;
+      url?: string;
+      assetId?: string;
       meta: Record<string, unknown>;
     }> = [];
     for (const [fileId, fileData] of Object.entries(initialContent.files)) {
-      if (typeof fileData.storageUrl === "string" && fileData.storageUrl) {
+      if (typeof fileData.assetId === "string" && fileData.assetId) {
+        pending.push({ fileId, assetId: fileData.assetId, meta: fileData });
+      } else if (
+        typeof fileData.storageUrl === "string" &&
+        fileData.storageUrl
+      ) {
         pending.push({ fileId, url: fileData.storageUrl, meta: fileData });
       } else {
         inline[fileId] = fileData;
@@ -185,9 +192,13 @@ export function CanvasEditor({
     async function resolveFiles() {
       const resolved: Record<string, any> = {};
       await Promise.all(
-        pendingUrls.map(async ({ fileId, url, meta }) => {
+        pendingUrls.map(async ({ fileId, url, assetId, meta }) => {
           try {
-            const resp = await fetch(url);
+            const resolvedUrl = assetId
+              ? (await getAssetUrl(accessTokenRef.current, assetId)).url
+              : url;
+            if (!resolvedUrl) return;
+            const resp = await fetch(resolvedUrl);
             if (!resp.ok) {
               console.warn(
                 `[canvas-editor] Failed to fetch file ${fileId}: ${resp.status}`,
@@ -201,6 +212,7 @@ export function CanvasEditor({
               mimeType: meta.mimeType ?? blob.type,
               created: meta.created ?? Date.now(),
               dataURL,
+              ...(assetId ? { assetId } : {}),
             };
           } catch (err) {
             console.warn(
@@ -254,16 +266,8 @@ export function CanvasEditor({
             captureUpdate: "NONE",
           });
           // Persist normalized elements to DB
-          const files: Record<string, Record<string, unknown>> = {};
           const rawFiles = excalidrawApi.getFiles() as Record<string, any>;
-          for (const [id, file] of Object.entries(rawFiles)) {
-            files[id] = {
-              id: file.id,
-              dataURL: file.dataURL,
-              mimeType: file.mimeType,
-              created: file.created,
-            };
-          }
+          const files = serializeCanvasFiles(rawFiles);
           const appState = excalidrawApi.getAppState();
           enqueueSave({
             elements: mutableElements.filter((el: any) => !el.isDeleted),
@@ -297,26 +301,22 @@ export function CanvasEditor({
       if (!hydratedRef.current) return;
 
       // --- 1. Debounced save ---
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+      if (suppressNextAutosaveRef.current) {
+        suppressNextAutosaveRef.current = false;
+      } else {
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
 
       // Mark that a save is pending. The full payload is built lazily inside
       // the timeout to avoid constructing the files map on every drag frame.
       pendingSaveRef.current = { elements: [] as any, appState: {}, files: {} };
 
-      saveTimerRef.current = setTimeout(() => {
+        saveTimerRef.current = setTimeout(() => {
         // Build the full payload only when the debounce fires
-        const files: Record<string, Record<string, unknown>> = {};
-        if (excalidrawApi) {
-          const rawFiles = excalidrawApi.getFiles() as Record<string, any>;
-          for (const [id, file] of Object.entries(rawFiles)) {
-            files[id] = {
-              id: file.id,
-              dataURL: file.dataURL,
-              mimeType: file.mimeType,
-              created: file.created,
-            };
-          }
-        }
+        const files = excalidrawApi
+          ? serializeCanvasFiles(
+              excalidrawApi.getFiles() as Record<string, Record<string, any>>,
+            )
+          : {};
         const content = {
           elements: elements.filter((el: any) => !el.isDeleted) as Record<
             string,
@@ -337,7 +337,8 @@ export function CanvasEditor({
             }
           })
           .catch((err) => console.error("[canvas-editor] save failed:", err));
-      }, SAVE_DEBOUNCE_MS);
+        }, SAVE_DEBOUNCE_MS);
+      }
 
       // --- 2. Debounced thumbnail (runs much less frequently than save) ---
       if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current);
@@ -432,6 +433,42 @@ export function CanvasEditor({
     },
     [canvasId, projectId, excalidrawApi, enqueueSave],
   );
+
+  const durableMutation = useMemo(() => {
+    if (!excalidrawApi) return null;
+    return createDurableSceneMutation({
+      cancelPendingSave() {
+        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+        pendingSaveRef.current = null;
+      },
+      getSceneElements: () => excalidrawApi.getSceneElements(),
+      updateScene(elements) {
+        suppressNextAutosaveRef.current = true;
+        excalidrawApi.updateScene({
+          elements,
+          captureUpdate: "IMMEDIATELY",
+        });
+      },
+      buildContent(elements) {
+        const appState = excalidrawApi.getAppState();
+        return {
+          elements: elements.filter((element: any) => !element.isDeleted),
+          appState: {
+            viewBackgroundColor: appState.viewBackgroundColor,
+            gridModeEnabled: appState.gridModeEnabled,
+          },
+          files: serializeCanvasFiles(excalidrawApi.getFiles()),
+        };
+      },
+      enqueueSave,
+    });
+  }, [enqueueSave, excalidrawApi]);
+
+  useEffect(() => {
+    onPersistenceReady?.(durableMutation);
+    return () => onPersistenceReady?.(null);
+  }, [durableMutation, onPersistenceReady]);
 
   // Register screenshot RPC handler so the server can request canvas captures
   useEffect(() => {
@@ -540,15 +577,7 @@ export function CanvasEditor({
         );
         return null;
       }
-      const files: Record<string, Record<string, unknown>> = {};
-      for (const [id, file] of Object.entries(rawFiles)) {
-        files[id] = {
-          id: file.id,
-          dataURL: file.dataURL,
-          mimeType: file.mimeType,
-          created: file.created,
-        };
-      }
+      const files = serializeCanvasFiles(rawFiles);
       return {
         elements: sceneElements.filter((el: any) => !el.isDeleted),
         appState: {
