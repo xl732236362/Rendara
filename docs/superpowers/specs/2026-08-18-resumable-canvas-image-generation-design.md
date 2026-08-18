@@ -63,8 +63,9 @@ type ImageGeneratorData = {
 ```
 
 `idempotencyKey` identifies one user-visible generation attempt. It is created
-once before submission and is retained across request retries, remounts, and
-project reloads. `jobId` is attached after the server accepts the submission.
+with `crypto.randomUUID()` once before submission and is retained across
+request retries, remounts, and project reloads. `jobId` is attached after the
+server accepts the submission.
 
 The prompt, model, aspect ratio, quality, and reference asset IDs stored on the
 element form the replayable submission payload. Raw files, data URLs, signed
@@ -89,6 +90,13 @@ attempt with a new idempotency key. Transport retries and recovery of the same
 attempt reuse the existing key. This distinction prevents duplicate charging
 while still allowing the user to request another image.
 
+Prompt, model, ratio, quality, and reference asset IDs are immutable while an
+attempt is `generating`. The panel renders them read-only and all mutation
+helpers enforce the same rule. Movement, resize, rotation, grouping, and
+deletion remain allowed because they change placement rather than the request
+fingerprint. Editing generation inputs becomes available again only after a
+terminal error and creates a new attempt key on the next Generate action.
+
 `completed` is transitional compatibility data only: successful reconciliation
 replaces the generator rectangle with an Excalidraw image, so no completed
 generator placeholder remains in the normal scene.
@@ -97,13 +105,24 @@ generator placeholder remains in the normal scene.
 
 When the user selects Generate:
 
-1. Validate the current generator settings.
-2. Create a new idempotency key for this attempt.
-3. Apply the element as `generating` with that key and no stale `jobId` or
+1. Acquire a synchronous per-element submission guard before the first await.
+2. Validate the current generator settings.
+3. Create a new idempotency key for this attempt.
+4. Apply the element as `generating` with that key and no stale `jobId` or
    error, then await an immediate durable canvas save.
-4. Submit the image job with the same key plus project and canvas identifiers.
-5. Persist the returned `jobId` on the same live element.
-6. Register the job with the canvas reconciler.
+5. Submit the image job with the same key plus project and canvas identifiers.
+6. Register the returned `jobId` with the canvas reconciler immediately.
+7. Persist that `jobId` on the same live element.
+
+The submission guard is owned by the canvas-level reconciler in a ref-backed
+operation registry, not React render state or the selected-node panel. A second
+click in the same render frame cannot create another key, and closing the panel
+does not release an active operation. Once the durable generating state exists,
+the element's stored key is authoritative and remounts reuse it. The reconciler
+uses the same
+`elementId + idempotencyKey` operation identity to deduplicate concurrent
+recovery submissions triggered by scene changes. Server idempotency remains
+the final financial boundary if requests still overlap.
 
 The canvas editor exposes a focused durable mutation operation for generation
 attempts. It updates the live Excalidraw scene, cancels any pending debounced
@@ -118,11 +137,24 @@ update so that a delayed snapshot cannot overwrite the acknowledged revision.
 All later user edits remain serialized after the durable mutation and are
 saved normally.
 
-If the immediate save fails or encounters a revision conflict, no job is
-submitted. The element is restored to an editable error state in memory and
-the user is told that the attempt could not be saved. Resolving a revision
-conflict follows the editor's existing reload/conflict workflow; generation is
-not allowed to bypass it.
+An explicit revision conflict or validated 4xx save rejection proves that the
+initial attempt was not committed: no job is submitted, the element is restored
+to an editable error state in memory, and the existing reload/conflict workflow
+is shown. Generation is not allowed to bypass that workflow.
+
+A timeout, connection loss, or 5xx response is an ambiguous save outcome. The
+client keeps the same attempt key in a non-editable submitting state and reads
+the authoritative canvas revision before deciding what to do:
+
+- if the server canvas contains the matching generating element and key,
+  submission proceeds with that key;
+- if a successful read proves the key is absent, the local attempt is rolled
+  back and the user may retry; or
+- if confirmation is still unavailable, no job is submitted and no new-key
+  action is exposed; confirmation retries with backoff or resumes on reload.
+
+This rule prevents the UI from claiming that an attempt failed when its save
+may actually have committed and later triggered recovery.
 
 This acknowledged save closes the first handoff gap. If the browser disappears
 after the server accepts the request but before the `jobId` is saved, the next
@@ -130,9 +162,13 @@ canvas load finds a durably stored generating element with an idempotency key
 but no job ID and resubmits the identical payload with the same key. The server
 returns the original job rather than creating or charging for a duplicate.
 
-Writing the returned `jobId` also uses the durable mutation operation. That
-save may fail without compromising recovery: the already-durable attempt key
-is sufficient to replay submission and recover the original job ID later.
+Writing the returned `jobId` also uses the durable mutation operation. Polling
+does not wait for this second save: the reconciler keeps an in-memory
+`elementId + idempotencyKey + jobId` association and begins with an immediate
+status fetch. If job-ID persistence fails, it retries that save with bounded
+backoff while continuing to reconcile the known job. The already-durable
+attempt key remains sufficient to replay submission and recover the original
+job ID after a reload.
 
 Submission failures are classified as follows:
 
@@ -163,22 +199,57 @@ updates.
 For each element:
 
 - `jobId` present: fetch the job immediately, then poll while it is queued,
-  running, or cancel-requested;
+  running, failed-but-retryable, or cancel-requested;
 - `jobId` absent and `idempotencyKey` present: replay submission with the same
   payload and attach the returned job ID; or
 - neither identifier present: mark the legacy element as a retryable error.
 
-Polling uses a bounded interval with transient-error backoff and does not turn
-a temporary network failure into a job failure. Polls stop when the element is
-deleted, the job reaches a terminal state, the canvas changes, authentication
-is lost, or the editor unmounts. Unmounting only stops browser polling; it does
-not cancel server work.
+Every fetched job is treated as untrusted relative to client-authored canvas
+data. Before consuming its status or result, the reconciler requires
+`job.id === jobId`, `job.job_type === "image_generation"`, and exact matches
+for the current `project_id`, `canvas_id`, and authenticated `created_by` user.
+A mismatch stops reconciliation for that node and durably records a generic
+integrity error; it never attaches the foreign result. The existing
+creator-scoped job RLS remains defense in depth but does not replace these
+context checks, because one user may own jobs on multiple canvases.
 
-The maximum duration of one mounted polling session is a resource guard, not a
-terminal job judgment. If reached, the element remains `generating`; a later
-scene change or project reload may reconcile it again. Logs include shortened
-canvas, element, job, status, and attempt identifiers without logging prompts,
-tokens, or reference-image contents.
+Polling uses exponential backoff capped at a fixed maximum interval and does
+not turn a temporary network failure into a job failure. A `failed` job is not
+terminal in the existing worker state machine: it remains generating and keeps
+polling because the queued message may be retried. Only `succeeded`,
+`dead_letter`, and `canceled` are terminal for reconciliation.
+
+There is no mounted-session time limit that silently abandons a generating
+node. Polls stop when the element is deleted, the job reaches a terminal state,
+the canvas changes, authentication is lost, or the editor unmounts. Unmounting
+only stops browser polling; it does not cancel server work. Logs include
+shortened canvas, element, job, status, and attempt identifiers without logging
+prompts, tokens, or reference-image contents.
+
+Polling and recovery errors have explicit meanings:
+
+- network failures, timeouts, rate limits, and server 5xx responses keep the
+  attempt generating and retry with backoff;
+- 401 pauses reconciliation without changing node state, and restoration of
+  authenticated context triggers a full generating-node rescan;
+- 403 with otherwise valid authentication becomes a durable authorization
+  integrity error and never exposes the foreign result;
+- a 404 for a stored job ID triggers one deduplicated submission replay with
+  the same immutable payload and attempt key, then replaces the job ID only if
+  the attempt compare-and-set still matches;
+- `idempotency_conflict` and job-context mismatches are durable integrity
+  errors and never trigger an automatic new key; and
+- parsing or result-contract failures become the terminal reconciliation
+  errors defined below.
+
+Deleting a generating placeholder is a critical canvas mutation. Detection of
+the live-to-deleted transition immediately persists the deletion through the
+same revision-aware save coordinator rather than waiting for the normal
+debounce. Result application checks the live deletion before and after asset
+download and cannot replace the node while its deletion save is pending. Once
+the deletion revision is acknowledged, later reconciliation cannot recreate
+the element. A save conflict uses the existing visible canvas-conflict flow;
+the client does not claim that an unacknowledged deletion is durable.
 
 ## Successful Completion
 
@@ -186,9 +257,11 @@ For a `succeeded` job, the reconciler validates that the result contains a
 usable `asset_id`, MIME type, and image dimensions. It resolves a currently
 authorized asset URL through the asset API instead of treating a worker URL as
 permanently valid. A succeeded job with missing or invalid result data, an
-inaccessible asset, or a non-image MIME type is a terminal reconciliation error:
-the matching generator becomes `error`, polling stops, and structured logs
-retain the job and validation context.
+authenticated asset 404/403, or a non-image MIME type is a terminal
+reconciliation error: the matching generator becomes `error`, polling stops,
+and structured logs retain the job and validation context. Network errors,
+timeouts, rate limits, and asset API 5xx responses remain transient and retry
+with the polling backoff.
 
 Immediately before replacement, it looks up the placeholder again in
 `getSceneElements()`:
@@ -230,11 +303,12 @@ placeholder was deleted; recovery must not recreate deleted canvas content.
 
 ## Failure And Retry
 
-The terminal statuses `failed`, `dead_letter`, and `canceled` stop polling and
-change the matching live placeholder to `error`. The element keeps its prompt
-and settings, exposes the existing retry action, and stores a concise
-user-facing message. Raw provider and server details are logged with job
-context but are not shown directly to the user.
+The terminal statuses `dead_letter` and `canceled` stop polling and durably
+change the matching live placeholder to `error`. A `failed` status remains in
+the generating state because the worker may retry it. The element keeps its
+prompt and settings, exposes the existing retry action only after a terminal
+status, and stores a concise user-facing message. Raw provider and server
+details are logged with job context but are not shown directly to the user.
 
 Retry starts a new attempt only in response to an explicit user action. It
 creates a new idempotency key, clears the old job ID and error, durably persists
@@ -258,11 +332,26 @@ in the request fingerprint so replaying one key with different references
 returns `idempotency_conflict`. The worker resolves and authorizes those assets
 before adapting them to the provider's existing `input_images` input.
 
+Reference assets are authorized against the submitting workspace and project
+before atomic job creation and credit deduction, then checked again by the
+worker in case an asset was removed while queued. The generated `asset_objects`
+row is written with the job's `project_id` and `generation_job_id`, so output
+authorization and project lifecycle match the canvas that requested it.
+
 The server's idempotency guarantee remains authoritative. A repeated request
 with the same workspace, creator, job type, and idempotency key must return the
 original job and must not reserve or deduct credits again. Client-side poll and
 click guards improve interaction quality but are not treated as the financial
 correctness boundary.
+
+The generation submission adapter must preserve the database's replay
+semantics. A newly created submission is valid only when its job is `queued`;
+an outcome marked `replayed` may return the original job in any valid current
+status, including `queued`, `running`, `failed`, `cancel_requested`,
+`succeeded`, `dead_letter`, or `canceled`. The image-job route returns the
+current `JobResponse`, and the client immediately reconciles that status. It
+must not coerce a replayed job to `queued` or reject it merely because work
+advanced while the browser was away.
 
 Legacy generator nodes without attempt metadata remain editable. Idle and
 error nodes can start a new protected attempt. A legacy node marked generating
@@ -275,40 +364,60 @@ Focused tests cover:
 
 - Generate persists an attempt key, submits one background job, attaches its
   job ID, and does not invoke the synchronous generation API.
-- A generation job is not submitted until the attempt save is acknowledged;
-  save failure and revision conflict submit no job.
+- A generation job is not submitted until the attempt save is acknowledged or
+  authoritatively confirmed; explicit rejection and revision conflict submit
+  no job.
+- An ambiguous initial-save timeout confirms the authoritative canvas before
+  either submitting or exposing a new attempt; it cannot cause a surprise or
+  duplicate charge.
 - Reload recovery works when job-ID persistence fails after successful
   submission.
+- The current mounted canvas continues polling a submitted job when job-ID
+  persistence fails; it does not require a reload to finish.
 - Reference images upload once; only asset IDs enter the canvas and job
   request, and unauthorized or missing assets are rejected.
 - Repeated submission of one attempt uses one idempotency key; an explicit
   retry creates a different key.
+- Same-frame double clicks and concurrent recovery scans cannot create two
+  attempt keys or two charged jobs.
 - A reload with `jobId` immediately resumes status reconciliation without
   selecting the node.
 - A reload between submission and job-ID persistence replays with the same key
   and attaches the original job.
-- Queued and running states continue polling through transient fetch failures.
+- Same-key recovery returns the original job when it has already advanced to
+  queued, running, retryable failed, cancel-requested, succeeded, dead-letter,
+  or canceled state.
+- Queued, running, cancel-requested, and retryable failed states continue
+  polling through transient fetch failures; only real terminal states stop.
+- Authentication loss pauses without exposing retry, authentication recovery
+  resumes automatically, and job 404 recovery replays only the same key.
 - Success replaces the placeholder once and preserves its latest geometry and
   rotation.
 - A deleted placeholder is not recreated after success.
 - A job result for an obsolete job ID cannot replace a newer attempt.
+- A same-user job from another canvas, project, or media type fails context
+  validation and cannot be attached.
 - A late submission response cannot attach its job ID after the element starts
   a newer attempt.
-- Failed, dead-letter, and canceled jobs become retryable error nodes.
+- Retryable failed jobs do not expose a new-generation action; dead-letter and
+  canceled jobs become retryable error nodes.
 - Succeeded jobs with invalid or inaccessible results become terminal,
   diagnosable error nodes rather than polling forever.
 - Generated images persist asset IDs without embedding binary data or signed
   URLs, and reload resolves fresh authorized URLs.
 - A failed result-replacement save retains the original successful job link
   and cannot expose an action that submits and charges for another job.
+- Deleting a generating placeholder is saved immediately, races safely with
+  completion, and an acknowledged deletion is never recreated.
 - Unmount stops browser timers without canceling the server job.
 - The same expected failure is not logged twice.
 
 Shared contract tests verify `input_asset_ids`, required idempotency keys, and
 response parsing. Server integration tests verify asset ownership, request
-fingerprinting, same-key submission returning the original job, and no
-duplicate credit accounting. Canvas persistence tests cover immediate save
-ordering, revision conflicts, asset metadata round trips, and failure recovery.
+fingerprinting, same-key submission returning the original job in every valid
+status, and no duplicate credit accounting. Canvas persistence tests cover
+immediate save ordering, revision conflicts, asset metadata round trips, and
+failure recovery.
 Existing canvas generation tests, web type checking, affected server tests, and
 production build verification remain required.
 
