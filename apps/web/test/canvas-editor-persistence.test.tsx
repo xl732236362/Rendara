@@ -41,9 +41,7 @@ describe("canvas durable persistence", () => {
   });
 
   it("cancels debounce, snapshots the mutation, and waits for acknowledgement", async () => {
-    let elements: Record<string, unknown>[] = [
-      { id: "generator-1", value: 1 },
-    ];
+    let elements: Record<string, unknown>[] = [{ id: "generator-1", value: 1 }];
     const cancelPendingSave = vi.fn();
     let acknowledge!: () => void;
     const enqueueSave = vi.fn(

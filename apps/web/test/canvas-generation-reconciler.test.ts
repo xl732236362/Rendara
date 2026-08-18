@@ -82,10 +82,12 @@ describe("canvas generation reconciliation rules", () => {
       { created_by: "55555555-5555-4555-8555-555555555555" },
       { job_type: "video_generation" },
     ]) {
-      expect(validateImageJobContext({ ...job, ...mismatch }, context)).toEqual({
-        ok: false,
-        code: "job_context_mismatch",
-      });
+      expect(validateImageJobContext({ ...job, ...mismatch }, context)).toEqual(
+        {
+          ok: false,
+          code: "job_context_mismatch",
+        },
+      );
     }
   });
 

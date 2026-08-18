@@ -53,30 +53,36 @@ describe("reference asset authorization", () => {
 
   it.each([
     [[]],
-    [[
-      {
-        id: assetId,
-        workspace_id: "55555555-5555-4555-8555-555555555555",
-        project_id: projectId,
-        mime_type: "image/png",
-      },
-    ]],
-    [[
-      {
-        id: assetId,
-        workspace_id: principal.workspaceId,
-        project_id: "55555555-5555-4555-8555-555555555555",
-        mime_type: "image/png",
-      },
-    ]],
-    [[
-      {
-        id: assetId,
-        workspace_id: principal.workspaceId,
-        project_id: projectId,
-        mime_type: "video/mp4",
-      },
-    ]],
+    [
+      [
+        {
+          id: assetId,
+          workspace_id: "55555555-5555-4555-8555-555555555555",
+          project_id: projectId,
+          mime_type: "image/png",
+        },
+      ],
+    ],
+    [
+      [
+        {
+          id: assetId,
+          workspace_id: principal.workspaceId,
+          project_id: "55555555-5555-4555-8555-555555555555",
+          mime_type: "image/png",
+        },
+      ],
+    ],
+    [
+      [
+        {
+          id: assetId,
+          workspace_id: principal.workspaceId,
+          project_id: projectId,
+          mime_type: "video/mp4",
+        },
+      ],
+    ],
   ])("rejects unavailable or invalid reference rows %#", async (rows) => {
     const { port } = setup(rows);
 

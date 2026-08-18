@@ -4,8 +4,8 @@ import { ImageUp, Lock, Zap } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { useGenerationErrorHandler } from "../../hooks/use-generation-error-handler";
 import type { StartImageGenerationAttempt } from "../../hooks/use-canvas-image-generation";
+import { useGenerationErrorHandler } from "../../hooks/use-generation-error-handler";
 import {
   type ImageGeneratorData,
   resizeImageGeneratorElement,
@@ -13,7 +13,11 @@ import {
 } from "../../lib/canvas-image-generator";
 import { panelAnchor } from "../../lib/canvas-overlay-geometry";
 import type { ImageModelInfo } from "../../lib/server-api";
-import { fetchImageModels, getAssetUrl, uploadFile } from "../../lib/server-api";
+import {
+  fetchImageModels,
+  getAssetUrl,
+  uploadFile,
+} from "../../lib/server-api";
 
 type ImageGeneratorPanelProps = {
   elementId: string;
@@ -134,6 +138,10 @@ export function ImageGeneratorPanel({
       cancelled = true;
     };
   }, [refImages]);
+
+  useEffect(() => {
+    setError(data.errorMessage ?? null);
+  }, [data.errorMessage]);
 
   // Close dropdowns when clicking outside the panel
   useEffect(() => {
@@ -277,6 +285,7 @@ export function ImageGeneratorPanel({
           <div className="relative">
             <button
               type="button"
+              disabled={loading}
               onClick={() => setShowModelDropdown((v) => !v)}
               className="flex h-8 items-center gap-1 rounded-lg px-2 text-xs text-muted-foreground transition-colors hover:bg-muted"
             >
@@ -439,6 +448,7 @@ export function ImageGeneratorPanel({
           <div className="relative">
             <button
               type="button"
+              disabled={loading}
               onClick={() => setShowQualityDropdown((v) => !v)}
               className="flex h-8 items-center gap-0.5 rounded-lg px-2 text-xs text-muted-foreground transition-colors hover:bg-muted"
             >
@@ -473,6 +483,7 @@ export function ImageGeneratorPanel({
           <div className="relative">
             <button
               type="button"
+              disabled={loading}
               onClick={() => setShowRatioDropdown((v) => !v)}
               className="flex h-8 items-center gap-0.5 rounded-lg px-2 text-xs text-muted-foreground transition-colors hover:bg-muted"
             >

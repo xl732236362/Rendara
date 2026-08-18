@@ -7,17 +7,17 @@ import { useTheme } from "next-themes";
 import dynamic from "next/dynamic";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { WebSocketHandle } from "../hooks/use-websocket";
 import { useCanvasImageGeneration } from "../hooks/use-canvas-image-generation";
+import type { WebSocketHandle } from "../hooks/use-websocket";
 import { ApiApplicationError } from "../lib/api-client";
 import { blobToDataURL, isVideoUrl } from "../lib/canvas-elements";
+import { normalizeCanvasElements } from "../lib/canvas-normalize";
 import {
-  createDurableSceneMutation,
-  serializeCanvasFiles,
   type CanvasContent,
   type DurableSceneMutation,
+  createDurableSceneMutation,
+  serializeCanvasFiles,
 } from "../lib/canvas-persistence";
-import { normalizeCanvasElements } from "../lib/canvas-normalize";
 import { getServerBaseUrl } from "../lib/env";
 import { getAssetUrl, saveCanvas, uploadThumbnail } from "../lib/server-api";
 import { CanvasToolMenu } from "./canvas-tool-menu";
@@ -133,35 +133,32 @@ export function CanvasEditor({
   const initialFilesRef = useRef(initialContent.files);
   initialFilesRef.current = initialContent.files;
 
-  const enqueueSave = useCallback(
-    (content: CanvasContent) => {
-      if (conflictPausedRef.current) return Promise.resolve();
-      const operation = saveChainRef.current.then(async () => {
-        if (conflictPausedRef.current) return;
-        try {
-          const saved = await saveCanvas(
-            accessTokenRef.current,
-            canvasIdRef.current,
-            revisionRef.current,
-            content,
-          );
-          revisionRef.current = saved.revision;
-        } catch (error) {
-          if (
-            error instanceof ApiApplicationError &&
-            error.code === "canvas_revision_conflict"
-          ) {
-            conflictPausedRef.current = true;
-            setRevisionConflict(true);
-          }
-          throw error;
+  const enqueueSave = useCallback((content: CanvasContent) => {
+    if (conflictPausedRef.current) return Promise.resolve();
+    const operation = saveChainRef.current.then(async () => {
+      if (conflictPausedRef.current) return;
+      try {
+        const saved = await saveCanvas(
+          accessTokenRef.current,
+          canvasIdRef.current,
+          revisionRef.current,
+          content,
+        );
+        revisionRef.current = saved.revision;
+      } catch (error) {
+        if (
+          error instanceof ApiApplicationError &&
+          error.code === "canvas_revision_conflict"
+        ) {
+          conflictPausedRef.current = true;
+          setRevisionConflict(true);
         }
-      });
-      saveChainRef.current = operation.catch(() => undefined);
-      return operation;
-    },
-    [],
-  );
+        throw error;
+      }
+    });
+    saveChainRef.current = operation.catch(() => undefined);
+    return operation;
+  }, []);
 
   // Separate inline files (ready) from storage URLs (need async fetch)
   const { inlineFiles, pendingUrls } = useMemo(() => {
@@ -309,37 +306,41 @@ export function CanvasEditor({
       } else {
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
 
-      // Mark that a save is pending. The full payload is built lazily inside
-      // the timeout to avoid constructing the files map on every drag frame.
-      pendingSaveRef.current = { elements: [] as any, appState: {}, files: {} };
+        // Mark that a save is pending. The full payload is built lazily inside
+        // the timeout to avoid constructing the files map on every drag frame.
+        pendingSaveRef.current = {
+          elements: [] as any,
+          appState: {},
+          files: {},
+        };
 
         saveTimerRef.current = setTimeout(() => {
-        // Build the full payload only when the debounce fires
-        const files = excalidrawApi
-          ? serializeCanvasFiles(
-              excalidrawApi.getFiles() as Record<string, Record<string, any>>,
-            )
-          : {};
-        const content = {
-          elements: elements.filter((el: any) => !el.isDeleted) as Record<
-            string,
-            unknown
-          >[],
-          appState: {
-            viewBackgroundColor: appState.viewBackgroundColor,
-            gridModeEnabled: appState.gridModeEnabled,
-          },
-          files,
-        };
-        pendingSaveRef.current = content;
+          // Build the full payload only when the debounce fires
+          const files = excalidrawApi
+            ? serializeCanvasFiles(
+                excalidrawApi.getFiles() as Record<string, Record<string, any>>,
+              )
+            : {};
+          const content = {
+            elements: elements.filter((el: any) => !el.isDeleted) as Record<
+              string,
+              unknown
+            >[],
+            appState: {
+              viewBackgroundColor: appState.viewBackgroundColor,
+              gridModeEnabled: appState.gridModeEnabled,
+            },
+            files,
+          };
+          pendingSaveRef.current = content;
 
-        enqueueSave(content)
-          .then(() => {
-            if (pendingSaveRef.current === content) {
-              pendingSaveRef.current = null;
-            }
-          })
-          .catch((err) => console.error("[canvas-editor] save failed:", err));
+          enqueueSave(content)
+            .then(() => {
+              if (pendingSaveRef.current === content) {
+                pendingSaveRef.current = null;
+              }
+            })
+            .catch((err) => console.error("[canvas-editor] save failed:", err));
         }, SAVE_DEBOUNCE_MS);
       }
 

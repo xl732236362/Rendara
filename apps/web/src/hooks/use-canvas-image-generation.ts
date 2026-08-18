@@ -14,10 +14,10 @@ import {
   validateImageJobContext,
 } from "../lib/canvas-generation-reconciler";
 import {
+  type ImageGeneratorData,
   getImageGeneratorData,
   isImageGeneratorElement,
   updateImageGeneratorAttempt,
-  type ImageGeneratorData,
 } from "../lib/canvas-image-generator";
 import type { DurableSceneMutation } from "../lib/canvas-persistence";
 import {
@@ -30,14 +30,15 @@ import {
 type CanvasApi = {
   getSceneElements(): readonly any[];
   addFiles(files: any[]): void;
-  onChange?(listener: () => void): (() => void) | void;
+  updateScene(scene: { elements: any[]; captureUpdate?: string }): void;
+  onChange?(listener: () => void): (() => void) | undefined;
 };
 
 export type StartImageGenerationAttempt = (
   elementId: string,
   fields: Pick<
-  ImageGeneratorData,
-  "prompt" | "model" | "aspectRatio" | "quality" | "referenceAssetIds"
+    ImageGeneratorData,
+    "prompt" | "model" | "aspectRatio" | "quality" | "referenceAssetIds"
   >,
 ) => Promise<void>;
 
@@ -55,11 +56,14 @@ export function useCanvasImageGeneration(options: {
   durableMutation: DurableSceneMutation | null;
 }) {
   const operationKeysRef = useRef(new Set<string>());
-  const pollTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const pollTimersRef = useRef(
+    new Map<string, ReturnType<typeof setTimeout>>(),
+  );
   const recoveryTimersRef = useRef(
     new Map<string, ReturnType<typeof setTimeout>>(),
   );
   const trackedAttemptsRef = useRef(new Map<string, string>());
+  const pendingInitialAttemptsRef = useRef(new Set<string>());
   const mountedRef = useRef(true);
   const optionsRef = useRef(options);
   optionsRef.current = options;
@@ -101,10 +105,11 @@ export function useCanvasImageGeneration(options: {
 
   const markTerminalError = useCallback(
     async (elementId: string, attemptKey: string, message: string) => {
-      await mutateAttempt(elementId, attemptKey, {
+      const result = await mutateAttempt(elementId, attemptKey, {
         status: "error",
         errorMessage: message,
       });
+      return result;
     },
     [mutateAttempt],
   );
@@ -116,13 +121,12 @@ export function useCanvasImageGeneration(options: {
         !current ||
         (current.customData.jobId && current.customData.jobId !== job.id)
       )
-        return true;
+        return { kind: "committed" as const };
       let result;
       try {
         result = parseImageJobResult(job.result);
       } catch {
-        await markTerminalError(elementId, attemptKey, "生成结果无效，请重试");
-        return;
+        return markTerminalError(elementId, attemptKey, "生成结果无效，请重试");
       }
       const { url } = await getAssetUrl(
         optionsRef.current.accessToken,
@@ -131,7 +135,7 @@ export function useCanvasImageGeneration(options: {
       const dataURL = await fetchAsDataURL(url, optionsRef.current.accessToken);
       const live = findAttempt(elementId, attemptKey);
       if (!live || (live.customData.jobId && live.customData.jobId !== job.id))
-        return true;
+        return { kind: "committed" as const };
 
       const fileId = `generated-${result.assetId}`;
       optionsRef.current.excalidrawApi?.addFiles([
@@ -158,31 +162,42 @@ export function useCanvasImageGeneration(options: {
         frameId: live.frameId ?? null,
         index: live.index ?? null,
       };
-      const saveResult = await optionsRef.current.durableMutation?.((elements) => {
-        const latest = elements.find((element: any) => element.id === elementId);
-        if (
-          !latest ||
-          (latest as any).isDeleted ||
-          !isImageGeneratorElement(latest) ||
-          latest.customData.idempotencyKey !== attemptKey ||
-          (latest.customData.jobId && latest.customData.jobId !== job.id)
-        ) {
-          return [...elements];
-        }
-        return [
-          ...elements.map((element: any) =>
-            element.id === elementId ? { ...element, isDeleted: true } : element,
-          ),
-          image,
-        ];
-      });
-      return saveResult?.kind === "committed";
+      const saveResult = await optionsRef.current.durableMutation?.(
+        (elements) => {
+          const latest = elements.find(
+            (element: any) => element.id === elementId,
+          );
+          if (
+            !latest ||
+            (latest as any).isDeleted ||
+            !isImageGeneratorElement(latest) ||
+            latest.customData.idempotencyKey !== attemptKey ||
+            (latest.customData.jobId && latest.customData.jobId !== job.id)
+          ) {
+            return [...elements];
+          }
+          return [
+            ...elements.map((element: any) =>
+              element.id === elementId
+                ? { ...element, isDeleted: true }
+                : element,
+            ),
+            image,
+          ];
+        },
+      );
+      return saveResult ?? { kind: "rejected" as const };
     },
     [findAttempt, markTerminalError],
   );
 
   const pollJobRef = useRef<
-    (elementId: string, attemptKey: string, jobId: string, delay?: number) => void
+    (
+      elementId: string,
+      attemptKey: string,
+      jobId: string,
+      delay?: number,
+    ) => void
   >(() => undefined);
   pollJobRef.current = (elementId, attemptKey, jobId, delay = 0) => {
     if (!mountedRef.current || pollTimersRef.current.has(jobId)) return;
@@ -203,23 +218,33 @@ export function useCanvasImageGeneration(options: {
           userId: optionsRef.current.userId,
         });
         if (!validation.ok) {
-          await markTerminalError(elementId, attemptKey, "任务上下文校验失败");
+          const saveResult = await markTerminalError(
+            elementId,
+            attemptKey,
+            "任务上下文校验失败",
+          );
+          if (saveResult.kind === "ambiguous") {
+            pollJobRef.current(elementId, attemptKey, jobId, INITIAL_POLL_MS);
+          }
           return;
         }
         const disposition = classifyImageJob(job);
         if (disposition === "success") {
-          const committed = await applySuccess(elementId, attemptKey, job);
-          if (!committed) {
+          const saveResult = await applySuccess(elementId, attemptKey, job);
+          if (saveResult.kind === "ambiguous") {
             pollJobRef.current(elementId, attemptKey, jobId, INITIAL_POLL_MS);
           }
           return;
         }
         if (disposition === "terminal-error") {
-          await markTerminalError(
+          const saveResult = await markTerminalError(
             elementId,
             attemptKey,
             job.error_message ?? "图片生成失败，请重试",
           );
+          if (saveResult.kind === "ambiguous") {
+            pollJobRef.current(elementId, attemptKey, jobId, INITIAL_POLL_MS);
+          }
           return;
         }
         pollJobRef.current(
@@ -231,27 +256,41 @@ export function useCanvasImageGeneration(options: {
       } catch (error) {
         if (error instanceof ApiAuthError) return;
         if (error instanceof ApiApplicationError && error.status === 404) {
-          const cleared = await optionsRef.current.durableMutation?.((elements) =>
-            elements.map((candidate: any) => {
-              if (
-                candidate.id !== elementId ||
-                !isImageGeneratorElement(candidate) ||
-                candidate.customData.idempotencyKey !== attemptKey
-              ) {
-                return candidate;
-              }
-              const { jobId: _staleJobId, ...customData } = candidate.customData;
-              return { ...candidate, customData };
-            }),
+          const replayOperation = `${elementId}:${attemptKey}`;
+          pendingInitialAttemptsRef.current.add(replayOperation);
+          const cleared = await optionsRef.current.durableMutation?.(
+            (elements) =>
+              elements.map((candidate: any) => {
+                if (
+                  candidate.id !== elementId ||
+                  !isImageGeneratorElement(candidate) ||
+                  candidate.customData.idempotencyKey !== attemptKey
+                ) {
+                  return candidate;
+                }
+                const { jobId: _staleJobId, ...customData } =
+                  candidate.customData;
+                return { ...candidate, customData };
+              }),
           );
+          pendingInitialAttemptsRef.current.delete(replayOperation);
           if (cleared?.kind === "committed") {
             const replayable = findAttempt(elementId, attemptKey);
             if (replayable) void recoverElementRef.current(replayable);
+          } else if (cleared?.kind === "ambiguous") {
+            pollJobRef.current(elementId, attemptKey, jobId, INITIAL_POLL_MS);
           }
           return;
         }
         if (error instanceof ApiApplicationError && error.status === 403) {
-          await markTerminalError(elementId, attemptKey, "任务访问校验失败");
+          const saveResult = await markTerminalError(
+            elementId,
+            attemptKey,
+            "任务访问校验失败",
+          );
+          if (saveResult.kind === "ambiguous") {
+            pollJobRef.current(elementId, attemptKey, jobId, INITIAL_POLL_MS);
+          }
           return;
         }
         pollJobRef.current(
@@ -265,7 +304,9 @@ export function useCanvasImageGeneration(options: {
     pollTimersRef.current.set(jobId, timer);
   };
 
-  const recoverElementRef = useRef<(element: any) => Promise<void>>(async () => undefined);
+  const recoverElementRef = useRef<(element: any) => Promise<void>>(
+    async () => undefined,
+  );
   recoverElementRef.current = async (element) => {
     const data = getImageGeneratorData(element);
     if (!data || data.status !== "generating") return;
@@ -301,7 +342,10 @@ export function useCanvasImageGeneration(options: {
         projectId: optionsRef.current.projectId,
         canvasId: optionsRef.current.canvasId,
       });
-      const { job } = await submitImageJob(optionsRef.current.accessToken, body);
+      const { job } = await submitImageJob(
+        optionsRef.current.accessToken,
+        body,
+      );
       if (!findAttempt(element.id, data.idempotencyKey)) return;
       pollJobRef.current(element.id, data.idempotencyKey, job.id);
       void mutateAttempt(element.id, data.idempotencyKey, { jobId: job.id });
@@ -310,9 +354,26 @@ export function useCanvasImageGeneration(options: {
         error instanceof ApiApplicationError &&
         error.status >= 400 &&
         error.status < 500 &&
+        error.status !== 408 &&
+        error.status !== 429 &&
         !(error instanceof ApiAuthError)
       ) {
-        await markTerminalError(element.id, data.idempotencyKey, "提交失败，请重试");
+        const saveResult = await markTerminalError(
+          element.id,
+          data.idempotencyKey,
+          "提交失败，请重试",
+        );
+        if (
+          saveResult.kind === "ambiguous" &&
+          !recoveryTimersRef.current.has(operationKey)
+        ) {
+          const timer = setTimeout(() => {
+            recoveryTimersRef.current.delete(operationKey);
+            const current = findAttempt(element.id, data.idempotencyKey!);
+            if (current) void recoverElementRef.current(current);
+          }, INITIAL_POLL_MS);
+          recoveryTimersRef.current.set(operationKey, timer);
+        }
       } else if (!recoveryTimersRef.current.has(operationKey)) {
         const timer = setTimeout(() => {
           recoveryTimersRef.current.delete(operationKey);
@@ -348,6 +409,8 @@ export function useCanvasImageGeneration(options: {
         isImageGeneratorElement(element) &&
         element.customData.status === "generating"
       ) {
+        const attemptOperation = `${element.id}:${element.customData.idempotencyKey ?? "legacy"}`;
+        if (pendingInitialAttemptsRef.current.has(attemptOperation)) continue;
         if (
           typeof element.id === "string" &&
           element.customData.idempotencyKey
@@ -371,12 +434,18 @@ export function useCanvasImageGeneration(options: {
       unsubscribe?.();
       for (const timer of pollTimersRef.current.values()) clearTimeout(timer);
       pollTimersRef.current.clear();
-      for (const timer of recoveryTimersRef.current.values()) clearTimeout(timer);
+      for (const timer of recoveryTimersRef.current.values())
+        clearTimeout(timer);
       recoveryTimersRef.current.clear();
       trackedAttemptsRef.current.clear();
+      pendingInitialAttemptsRef.current.clear();
       operationKeysRef.current.clear();
     };
-  }, [options.excalidrawApi, options.accessToken, options.canvasId, scan]);
+  }, [options.excalidrawApi, options.canvasId, scan]);
+
+  useEffect(() => {
+    scan();
+  }, [options.accessToken, scan]);
 
   const startAttempt = useCallback(
     async (elementId: string, fields: StartAttemptFields) => {
@@ -387,36 +456,79 @@ export function useCanvasImageGeneration(options: {
         const current = optionsRef.current.excalidrawApi
           ?.getSceneElements()
           .find((element: any) => element.id === elementId);
-        if (!current || current.isDeleted || !isImageGeneratorElement(current)) return;
+        if (!current || current.isDeleted || !isImageGeneratorElement(current))
+          return;
         if (current.customData.status === "generating") return;
         const attemptKey = crypto.randomUUID();
+        const attemptOperation = `${elementId}:${attemptKey}`;
+        const attemptedElement = {
+          ...current,
+          customData: {
+            ...current.customData,
+            ...fields,
+            status: "generating",
+            idempotencyKey: attemptKey,
+            jobId: undefined,
+            errorMessage: undefined,
+          },
+        };
+        pendingInitialAttemptsRef.current.add(attemptOperation);
         const result = await optionsRef.current.durableMutation?.((elements) =>
           elements.map((element: any) =>
             element.id === elementId && isImageGeneratorElement(element)
-              ? {
-                  ...element,
-                  customData: {
-                    ...element.customData,
-                    ...fields,
-                    status: "generating",
-                    idempotencyKey: attemptKey,
-                    jobId: undefined,
-                    errorMessage: undefined,
-                  },
-                }
+              ? attemptedElement
               : element,
           ),
         );
-        if (result?.kind === "committed") scan();
+        if (result?.kind === "committed") {
+          pendingInitialAttemptsRef.current.delete(attemptOperation);
+          scan();
+        }
+        if (!result || result.kind === "rejected") {
+          pendingInitialAttemptsRef.current.delete(attemptOperation);
+        }
         if (result?.kind === "ambiguous") {
-          const { canvas } = await fetchCanvas(
-            optionsRef.current.accessToken,
-            optionsRef.current.canvasId,
-          );
-          const authoritative = (canvas.content as any).elements?.find(
-            (element: any) => element.id === elementId,
-          );
-          if (authoritative?.customData?.idempotencyKey === attemptKey) scan();
+          optionsRef.current.excalidrawApi?.updateScene({
+            elements: optionsRef.current.excalidrawApi
+              .getSceneElements()
+              .map((element: any) =>
+                element.id === elementId ? attemptedElement : element,
+              ),
+            captureUpdate: "NONE",
+          });
+          const confirm = async (): Promise<void> => {
+            try {
+              const { canvas } = await fetchCanvas(
+                optionsRef.current.accessToken,
+                optionsRef.current.canvasId,
+              );
+              const authoritative = (canvas.content as any).elements?.find(
+                (element: any) => element.id === elementId,
+              );
+              pendingInitialAttemptsRef.current.delete(attemptOperation);
+              if (authoritative?.customData?.idempotencyKey === attemptKey) {
+                scan();
+                return;
+              }
+              optionsRef.current.excalidrawApi?.updateScene({
+                elements: optionsRef.current.excalidrawApi
+                  .getSceneElements()
+                  .map((element: any) =>
+                    element.id === elementId ? current : element,
+                  ),
+                captureUpdate: "NONE",
+              });
+            } catch {
+              if (!mountedRef.current) return;
+              const timerKey = `confirm:${attemptOperation}`;
+              const timer = setTimeout(() => {
+                recoveryTimersRef.current.delete(timerKey);
+                void confirm();
+              }, INITIAL_POLL_MS);
+              recoveryTimersRef.current.set(timerKey, timer);
+            }
+          };
+          await confirm();
         }
       } finally {
         operationKeysRef.current.delete(guard);

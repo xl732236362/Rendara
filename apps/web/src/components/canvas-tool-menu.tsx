@@ -16,6 +16,7 @@ import {
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
+import type { StartImageGenerationAttempt } from "../hooks/use-canvas-image-generation";
 import { isVideoUrl } from "../lib/canvas-elements";
 import {
   type ImageGeneratorData,
@@ -34,7 +35,6 @@ import {
   isVideoGeneratorElement,
 } from "../lib/canvas-video-generator";
 import { ImageGeneratorPanel } from "./canvas/image-generator-panel";
-import type { StartImageGenerationAttempt } from "../hooks/use-canvas-image-generation";
 import { VideoGeneratorPanel } from "./canvas/video-generator-panel";
 import { VideoPlayerPanel } from "./canvas/video-player-panel";
 

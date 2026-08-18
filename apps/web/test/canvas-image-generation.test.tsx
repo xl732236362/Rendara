@@ -2,6 +2,7 @@
 
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiTimeoutError } from "../src/lib/api-client";
 
 const apiMocks = vi.hoisted(() => ({
   fetchCanvas: vi.fn(),
@@ -30,7 +31,7 @@ const ids = {
   user: "11111111-1111-4111-8111-111111111111",
 };
 
-function createHarness() {
+function createHarness(status: "idle" | "generating" = "generating") {
   let elements: Record<string, any>[] = [
     {
       id: "generator-1",
@@ -45,7 +46,7 @@ function createHarness() {
       isDeleted: false,
       customData: {
         type: "image-generator",
-        status: "generating",
+        status,
         prompt: "draw",
         model: "image/model",
         aspectRatio: "1:1",
@@ -119,7 +120,130 @@ function succeededJob() {
 
 describe("useCanvasImageGeneration", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
+  });
+
+  it("retries an ambiguous submission with the same idempotency key", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness();
+    apiMocks.submitImageJob
+      .mockRejectedValueOnce(new ApiTimeoutError())
+      .mockResolvedValueOnce({
+        job: { ...succeededJob().job, status: "queued" },
+      });
+    apiMocks.fetchJob.mockReturnValue(new Promise(() => undefined));
+    const { unmount } = renderHook(() =>
+      useCanvasImageGeneration({
+        accessToken: "token",
+        userId: ids.user,
+        projectId: ids.project,
+        canvasId: ids.canvas,
+        excalidrawApi: harness.excalidrawApi,
+        durableMutation: harness.durableMutation,
+      }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(apiMocks.submitImageJob).toHaveBeenCalledOnce();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(apiMocks.submitImageJob).toHaveBeenCalledTimes(2);
+    expect(
+      new Set(
+        apiMocks.submitImageJob.mock.calls.map(
+          (call) => call[1].idempotency_key,
+        ),
+      ),
+    ).toEqual(new Set(["attempt-1"]));
+    unmount();
+  });
+
+  it("does not submit until the initial attempt save is acknowledged", async () => {
+    const harness = createHarness("idle");
+    let acknowledge!: () => void;
+    const durableMutation = vi.fn(async (mutate) => {
+      harness.excalidrawApi.updateScene({
+        elements: mutate(harness.getElements()),
+      });
+      return new Promise<{ kind: "committed" }>((resolve) => {
+        acknowledge = () => resolve({ kind: "committed" });
+      });
+    });
+    const { result } = renderHook(() =>
+      useCanvasImageGeneration({
+        accessToken: "token",
+        userId: ids.user,
+        projectId: ids.project,
+        canvasId: ids.canvas,
+        excalidrawApi: harness.excalidrawApi,
+        durableMutation,
+      }),
+    );
+    let start!: Promise<void>;
+    act(() => {
+      start = result.current.startAttempt("generator-1", {
+        prompt: "draw",
+        model: "image/model",
+        aspectRatio: "1:1",
+        quality: "hd",
+        referenceAssetIds: [],
+      });
+    });
+    await Promise.resolve();
+    expect(apiMocks.submitImageJob).not.toHaveBeenCalled();
+
+    await act(async () => {
+      acknowledge();
+      await start;
+    });
+    await waitFor(() => expect(apiMocks.submitImageJob).toHaveBeenCalledOnce());
+  });
+
+  it("keeps one non-editable attempt key while an ambiguous save is unconfirmed", async () => {
+    const harness = createHarness("idle");
+    const durableMutation = vi.fn(async (mutate) => {
+      const previous = harness.getElements();
+      harness.excalidrawApi.updateScene({ elements: mutate(previous) });
+      harness.excalidrawApi.updateScene({ elements: previous });
+      return { kind: "ambiguous" as const };
+    });
+    apiMocks.fetchCanvas.mockRejectedValue(new Error("offline"));
+    const { result, unmount } = renderHook(() =>
+      useCanvasImageGeneration({
+        accessToken: "token",
+        userId: ids.user,
+        projectId: ids.project,
+        canvasId: ids.canvas,
+        excalidrawApi: harness.excalidrawApi,
+        durableMutation,
+      }),
+    );
+    const fields = {
+      prompt: "draw",
+      model: "image/model",
+      aspectRatio: "1:1",
+      quality: "hd",
+      referenceAssetIds: [],
+    };
+
+    await act(async () => {
+      await result.current.startAttempt("generator-1", fields);
+      await result.current.startAttempt("generator-1", fields);
+    });
+
+    const attemptKeys = harness
+      .getElements()
+      .map((element) => element.customData?.idempotencyKey)
+      .filter(Boolean);
+    expect(new Set(attemptKeys).size).toBe(1);
+    expect(harness.getElements()[0]?.customData.status).toBe("generating");
+    expect(durableMutation).toHaveBeenCalledOnce();
+    expect(apiMocks.submitImageJob).not.toHaveBeenCalled();
+    unmount();
   });
 
   it("replays a persisted attempt and replaces it from an unselected canvas scan", async () => {
@@ -142,7 +266,9 @@ describe("useCanvasImageGeneration", () => {
       }),
     );
 
-    await waitFor(() => expect(apiMocks.fetchJob).toHaveBeenCalledWith("token", ids.job));
+    await waitFor(() =>
+      expect(apiMocks.fetchJob).toHaveBeenCalledWith("token", ids.job),
+    );
     expect(apiMocks.submitImageJob).toHaveBeenCalledWith(
       "token",
       expect.objectContaining({
@@ -152,9 +278,13 @@ describe("useCanvasImageGeneration", () => {
       }),
     );
     await waitFor(() => {
-      expect(harness.getElements().some((element) => element.type === "image")).toBe(true);
+      expect(
+        harness.getElements().some((element) => element.type === "image"),
+      ).toBe(true);
     });
-    const image = harness.getElements().find((element) => element.type === "image");
+    const image = harness
+      .getElements()
+      .find((element) => element.type === "image");
     expect(image).toMatchObject({
       x: 10,
       y: 20,
@@ -200,7 +330,9 @@ describe("useCanvasImageGeneration", () => {
     });
     await Promise.resolve();
 
-    expect(harness.getElements().some((element) => element.type === "image")).toBe(false);
+    expect(
+      harness.getElements().some((element) => element.type === "image"),
+    ).toBe(false);
     unmount();
   });
 });

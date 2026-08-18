@@ -97,7 +97,9 @@ export function createImageGenerationExecutor(
         };
         const rows = (referenceRows ?? []) as ReferenceAssetRow[];
         const rowsById = new Map(rows.map((row) => [row.id, row]));
-        const orderedRows = payload.input_asset_ids.map((id) => rowsById.get(id));
+        const orderedRows = payload.input_asset_ids.map((id) =>
+          rowsById.get(id),
+        );
         if (
           rows.length !== payload.input_asset_ids.length ||
           orderedRows.some(
@@ -108,7 +110,9 @@ export function createImageGenerationExecutor(
               !row.mime_type.startsWith("image/"),
           )
         ) {
-          throw new Error("Reference assets no longer match the generation job");
+          throw new Error(
+            "Reference assets no longer match the generation job",
+          );
         }
 
         inputImages = await Promise.all(
