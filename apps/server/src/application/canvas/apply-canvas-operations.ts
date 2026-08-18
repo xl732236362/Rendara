@@ -11,9 +11,18 @@ import type { StructuredLogger } from "../generation/ports.js";
 const applyCanvasOperationsRequestSchema = z.object({
   canvasId: z.string().trim().min(1),
   operations: z.array(strictCanvasOperationSchema).min(1).max(100),
+  agentEffect: z
+    .object({
+      runId: z.string().min(1),
+      attemptId: z.string().min(1),
+      fencingToken: z.number().int().nonnegative(),
+      logicalToolCallId: z.string().min(1),
+      inputDigest: z.string().min(1),
+    })
+    .optional(),
 });
 
-const canvasOperationOutcomeSchema = z.object({
+export const canvasOperationOutcomeSchema = z.object({
   canvasId: z.string().min(1),
   applied: z.number().int().nonnegative(),
   descriptions: z.array(z.string()).optional(),
@@ -46,6 +55,9 @@ export type CanvasOperationPorts = {
       principal: CanvasOperationPrincipal;
       canvasId: string;
       operations: CurrentCanvasOperation[];
+      agentEffect?: z.infer<
+        typeof applyCanvasOperationsRequestSchema
+      >["agentEffect"];
     }): Promise<unknown>;
   };
 };
@@ -79,6 +91,7 @@ export function createApplyCanvasOperations(options: {
           principal,
           canvasId: request.canvasId,
           operations: request.operations,
+          ...(request.agentEffect ? { agentEffect: request.agentEffect } : {}),
         }),
       );
       if (outcome.canvasId !== request.canvasId) {

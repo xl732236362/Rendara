@@ -16,37 +16,67 @@ export type Database = {
     Tables: {
       agent_runs: {
         Row: {
+          canvas_id: string | null;
+          capabilities: Json | null;
+          capability_policy_version: string | null;
+          client_request_id: string | null;
           completed_at: string | null;
           created_at: string;
           error_code: string | null;
           error_message: string | null;
           id: string;
           model: string | null;
+          effective_skill_names: Json | null;
+          project_id: string | null;
+          request_digest: string | null;
           session_id: string;
+          skill_catalog_digest: string | null;
           status: string;
           thread_id: string;
+          user_id: string | null;
+          workspace_id: string | null;
         };
         Insert: {
+          canvas_id?: string | null;
+          capabilities?: Json | null;
+          capability_policy_version?: string | null;
+          client_request_id?: string | null;
           completed_at?: string | null;
           created_at?: string;
           error_code?: string | null;
           error_message?: string | null;
           id?: string;
           model?: string | null;
+          effective_skill_names?: Json | null;
+          project_id?: string | null;
+          request_digest?: string | null;
           session_id: string;
           status: string;
           thread_id: string;
+          skill_catalog_digest?: string | null;
+          user_id?: string | null;
+          workspace_id?: string | null;
         };
         Update: {
+          canvas_id?: string | null;
+          capabilities?: Json | null;
+          capability_policy_version?: string | null;
+          client_request_id?: string | null;
           completed_at?: string | null;
           created_at?: string;
           error_code?: string | null;
           error_message?: string | null;
           id?: string;
           model?: string | null;
+          effective_skill_names?: Json | null;
+          project_id?: string | null;
+          request_digest?: string | null;
           session_id?: string;
           status?: string;
           thread_id?: string;
+          skill_catalog_digest?: string | null;
+          user_id?: string | null;
+          workspace_id?: string | null;
         };
         Relationships: [
           {

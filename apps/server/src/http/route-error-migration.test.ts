@@ -89,8 +89,6 @@ describe("route error migration", () => {
       "projects.ts",
       "runs.ts",
       "settings.ts",
-      "skills-marketplace.ts",
-      "skills.ts",
       "uploads.ts",
       "video-models.ts",
       "viewer.ts",
@@ -120,8 +118,6 @@ describe("route error migration", () => {
       "payments.ts",
       "projects.ts",
       "settings.ts",
-      "skills.ts",
-      "skills-marketplace.ts",
       "uploads.ts",
     ]) {
       const source = await readFile(join(httpDirectory, file), "utf8");

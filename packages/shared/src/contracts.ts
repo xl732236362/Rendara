@@ -15,6 +15,7 @@ export const userIdSchema = identifierSchema;
 export const workspaceIdSchema = identifierSchema;
 export const projectIdSchema = identifierSchema;
 export const canvasIdSchema = identifierSchema;
+export const clientRequestIdSchema = z.string().min(1).max(128);
 export const canvasRevisionSchema = z.number().int().nonnegative().safe();
 
 export const workspaceTypeSchema = z.enum(["personal", "team"]);
@@ -49,17 +50,9 @@ export const brandKitAssetMentionSchema = z.object({
   fileUrl: z.string().url().nullable().optional(),
 });
 
-export const skillMentionSchema = z.object({
-  mentionType: z.literal("skill"),
-  id: z.string().min(1),
-  label: z.string().min(1),
-  slug: z.string().min(1),
-});
-
 export const messageMentionSchema = z.discriminatedUnion("mentionType", [
   imageModelMentionSchema,
   brandKitAssetMentionSchema,
-  skillMentionSchema,
 ]);
 
 export const imageGenerationPreferenceSchema = z.object({
@@ -76,7 +69,8 @@ export const runCreateRequestSchema = z.object({
   sessionId: sessionIdSchema,
   conversationId: conversationIdSchema,
   prompt: z.string(),
-  canvasId: canvasIdSchema.optional(),
+  canvasId: canvasIdSchema,
+  clientRequestId: clientRequestIdSchema,
   attachments: z.array(imageAttachmentSchema).optional(),
   imageGenerationPreference: imageGenerationPreferenceSchema.optional(),
   videoGenerationPreference: videoGenerationPreferenceSchema.optional(),
@@ -223,18 +217,9 @@ export const brandKitAssetMentionBlockSchema = z.object({
   fileUrl: z.string().url().nullable().optional(),
 });
 
-export const skillMentionBlockSchema = z.object({
-  type: z.literal("mention"),
-  mentionType: z.literal("skill"),
-  id: z.string().min(1),
-  label: z.string().min(1),
-  slug: z.string().min(1),
-});
-
 export const mentionBlockSchema = z.union([
   imageModelMentionBlockSchema,
   brandKitAssetMentionBlockSchema,
-  skillMentionBlockSchema,
 ]);
 
 export const contentBlockSchema = z.union([

@@ -29,21 +29,18 @@ export async function requireRunResourceAccess(
   user: AuthenticatedUser,
   resource: {
     sessionId: string;
-    conversationId: string;
-    canvasId?: string | undefined;
+    canvasId: string;
   },
 ): Promise<string> {
   const { canvasId } = await authorization.requireSessionAccess(
     user,
     resource.sessionId,
   );
-  const requestedCanvasId = resource.canvasId ?? resource.conversationId;
-
-  if (requestedCanvasId !== canvasId) {
+  if (resource.canvasId !== canvasId) {
     throw new ResourceAuthorizationError();
   }
 
-  return canvasId;
+  return resource.canvasId;
 }
 
 export function createResourceAuthorization(options: {

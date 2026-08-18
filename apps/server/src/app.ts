@@ -7,22 +7,37 @@ import { createAttachGeneratedAsset } from "./application/canvas/attach-generate
 import { createCancelGeneration } from "./application/generation/cancel-generation.js";
 import { createReferenceAssetAuthorizationPort } from "./application/generation/reference-assets.js";
 import { createSubmitGeneration } from "./application/generation/submit-generation.js";
-import { createImportSkill } from "./application/skills/import-skill.js";
 import type { UseCases } from "./application/use-cases.js";
 import { createDomainEventPublisher } from "./events/domain-event-publisher.js";
 import { startOutboxDispatcher } from "./events/outbox-dispatcher.js";
 
-import type { LoomicAgentFactory } from "./agent/deep-agent.js";
+import {
+  type BuiltinSkillCatalog,
+  loadRepositoryBuiltinSkillCatalog,
+} from "./agent/builtin-skills/catalog.js";
+import {
+  PRODUCTION_AGENT_CAPABILITIES,
+  createAgentAuthority,
+} from "./agent/capabilities.js";
+import type { LoomicAgentFactory } from "./agent/loomic-agent.js";
 import {
   type AgentPersistenceService,
   createAgentPersistenceService,
 } from "./agent/persistence/index.js";
 import { createAgentRunService } from "./agent/runtime.js";
 import {
+  type AcceptAgentRun,
+  createAcceptAgentRun,
+} from "./application/agent/accept-agent-run.js";
+import {
   type ServerEnv,
   loadServerEnv,
   resolveDefaultAgentModel,
 } from "./config/env.js";
+import {
+  type AgentExecutionRepository,
+  createAgentExecutionRepository,
+} from "./features/agent-runs/agent-execution-repository.js";
 import {
   type AgentRunMetadataService,
   createAgentRunMetadataService,
@@ -79,7 +94,6 @@ import {
   type SettingsService,
   createSettingsService,
 } from "./features/settings/settings-service.js";
-import { createSkillImportApplicationPort } from "./features/skills/skill-import-application-adapter.js";
 import {
   type UploadService,
   createUploadService,
@@ -103,8 +117,6 @@ import { registerPaymentRoutes } from "./http/payments.js";
 import { registerProjectRoutes } from "./http/projects.js";
 import { registerRunRoutes } from "./http/runs.js";
 import { registerSettingsRoutes } from "./http/settings.js";
-import { registerMarketplaceRoutes } from "./http/skills-marketplace.js";
-import { registerSkillRoutes } from "./http/skills.js";
 import { registerUploadRoutes } from "./http/uploads.js";
 import { registerVideoModelRoutes } from "./http/video-models.js";
 import { registerViewerRoutes } from "./http/viewer.js";
@@ -126,10 +138,13 @@ import { CanvasEventBuffer } from "./ws/event-buffer.js";
 import { registerWsRoute } from "./ws/handler.js";
 
 export type BuildAppOptions = {
+  acceptAgentRun?: AcceptAgentRun;
+  agentExecutionRepository?: AgentExecutionRepository;
   agentFactory?: LoomicAgentFactory;
   agentModel?: BaseLanguageModel | string;
   agentPersistenceService?: AgentPersistenceService;
   agentRunMetadataService?: AgentRunMetadataService;
+  builtinSkillCatalogLoader?: () => Promise<BuiltinSkillCatalog>;
   auth?: RequestAuthenticator;
   brandKitService?: BrandKitService;
   canvasService?: CanvasService;
@@ -153,6 +168,10 @@ export type BuildAppOptions = {
 };
 
 const appUseCases = new WeakMap<FastifyInstance, Readonly<UseCases>>();
+const appBuiltinSkillCatalogs = new WeakMap<
+  FastifyInstance,
+  BuiltinSkillCatalog
+>();
 
 /** Read-only composition diagnostics for tests and process-level integrations. */
 export function getAppUseCases(app: FastifyInstance): Readonly<UseCases> {
@@ -161,16 +180,19 @@ export function getAppUseCases(app: FastifyInstance): Readonly<UseCases> {
   return useCases;
 }
 
+export function getAppBuiltinSkillCatalog(app: FastifyInstance) {
+  const catalog = appBuiltinSkillCatalogs.get(app);
+  if (!catalog) throw new Error("Built-in Skill catalog is not loaded.");
+  return catalog;
+}
+
 function snapshotUseCases(candidate: Readonly<UseCases>): Readonly<UseCases> {
   const canvas = candidate?.canvas;
-  const skills = candidate?.skills;
   const generation = candidate?.generation;
   if (
     !canvas ||
     typeof canvas.applyOperations !== "function" ||
     typeof canvas.attachGeneratedAsset !== "function" ||
-    !skills ||
-    typeof skills.importSkill !== "function" ||
     (generation !== undefined &&
       (typeof generation.cancel !== "function" ||
         typeof generation.submit !== "function"))
@@ -182,7 +204,6 @@ function snapshotUseCases(candidate: Readonly<UseCases>): Readonly<UseCases> {
       applyOperations: canvas.applyOperations,
       attachGeneratedAsset: canvas.attachGeneratedAsset,
     }),
-    skills: Object.freeze({ importSkill: skills.importSkill }),
     ...(generation
       ? {
           generation: Object.freeze({
@@ -211,6 +232,20 @@ export function buildAppFromEnv(
   const app = Fastify({
     logger: { level: "info" },
   });
+  const loadCatalog =
+    options.builtinSkillCatalogLoader ?? loadRepositoryBuiltinSkillCatalog;
+  app.addHook("onReady", async () => {
+    const catalog = await loadCatalog();
+    appBuiltinSkillCatalogs.set(app, catalog);
+    app.log.info(
+      {
+        event: "builtin_skill_catalog_loaded",
+        digest: catalog.digest,
+        skillNames: catalog.list().map((skill) => skill.name),
+      },
+      "Built-in Skill catalog loaded",
+    );
+  });
   registerErrorHandler(app);
   void app.register(multipart, {
     limits: { fileSize: 10 * 1024 * 1024 },
@@ -218,6 +253,7 @@ export function buildAppFromEnv(
   void app.register(async (instance) => {
     await instance.register(websocket);
     await registerWsRoute(instance, {
+      acceptAgentRun,
       agentRuns,
       agentRunMetadataService,
       auth,
@@ -237,7 +273,6 @@ export function buildAppFromEnv(
       defaultPerMinute: env.rateLimitDefaultPerMinute,
       generationPerMinute: env.rateLimitGenerationPerMinute,
       imageProxyPerMinute: env.rateLimitImageProxyPerMinute,
-      skillImportPerHour: env.rateLimitSkillImportPerHour,
       uploadsPerMinute: env.rateLimitUploadsPerMinute,
     },
   });
@@ -258,6 +293,69 @@ export function buildAppFromEnv(
           .eq("id", runId)
           .single();
         return error || !data ? null : data.session_id;
+      },
+    });
+  const agentExecutionRepository =
+    options.agentExecutionRepository ??
+    createAgentExecutionRepository({ getAdminClient });
+  const resolveAgentCanvasScope = async (
+    principal: { userId: string; accessToken?: string },
+    canvasId: string,
+  ) => {
+    if (!principal.accessToken) throw new Error("canvas_access_denied");
+    const client = createUserClient(principal.accessToken);
+    const { data, error } = await client
+      .from("canvases")
+      .select("id, project_id, projects!inner(workspace_id)")
+      .eq("id", canvasId)
+      .maybeSingle();
+    const row = data as unknown as {
+      id?: string;
+      project_id?: string;
+      projects?: { workspace_id?: string };
+    } | null;
+    if (
+      error ||
+      row?.id !== canvasId ||
+      !row.project_id ||
+      !row.projects?.workspace_id
+    ) {
+      throw new Error("canvas_access_denied");
+    }
+    return {
+      canvasId,
+      projectId: row.project_id,
+      workspaceId: row.projects.workspace_id,
+    };
+  };
+  const acceptAgentRun =
+    options.acceptAgentRun ??
+    createAcceptAgentRun({
+      catalog: {
+        get digest() {
+          return getAppBuiltinSkillCatalog(app).digest;
+        },
+        list: () => getAppBuiltinSkillCatalog(app).list(),
+      },
+      repository: agentExecutionRepository,
+      onAccepted: (event) =>
+        app.log.info(
+          { event: "agent_run_accepted", ...event },
+          "Agent run acceptance persisted",
+        ),
+      resolveAuthority: () =>
+        createAgentAuthority(PRODUCTION_AGENT_CAPABILITIES),
+      resolveScope: resolveAgentCanvasScope,
+      requireSessionScope: async (principal, sessionId) => {
+        if (!principal.accessToken) throw new Error("canvas_access_denied");
+        const client = createUserClient(principal.accessToken);
+        const { data, error } = await client
+          .from("chat_sessions")
+          .select("canvas_id")
+          .eq("id", sessionId)
+          .maybeSingle();
+        if (error || !data?.canvas_id) throw new Error("canvas_access_denied");
+        return resolveAgentCanvasScope(principal, data.canvas_id);
       },
     });
   const viewerService =
@@ -343,17 +441,6 @@ export function buildAppFromEnv(
             createUserClient,
             getAdminClient,
           }),
-        }),
-      }),
-      skills: Object.freeze({
-        importSkill: createImportSkill({
-          logger,
-          ports: {
-            capability: {
-              externalImportEnabled: () => env.allowExternalSkillImport,
-            },
-            importer: createSkillImportApplicationPort(),
-          },
         }),
       }),
       ...(generationPorts
@@ -522,6 +609,7 @@ export function buildAppFromEnv(
     connectionManager.dispose();
   });
   const agentRuns = createAgentRunService({
+    agentExecutionRepository,
     applyCanvasOperations: useCases.canvas.applyOperations,
     attachGeneratedAsset: useCases.canvas.attachGeneratedAsset,
     agentPersistenceService,
@@ -535,6 +623,13 @@ export function buildAppFromEnv(
       : { eventDelayMs: options.mockEventDelayMs }),
     env,
     providerRegistry,
+    builtinSkillCatalog: {
+      get digest() {
+        return getAppBuiltinSkillCatalog(app).digest;
+      },
+      list: () => getAppBuiltinSkillCatalog(app).list(),
+      get: (name) => getAppBuiltinSkillCatalog(app).get(name),
+    },
     ...(jobService ? { jobService } : {}),
     creditService,
     tierGuard,
@@ -600,6 +695,7 @@ export function buildAppFromEnv(
       }),
   });
   void registerRunRoutes(app, agentRuns, {
+    acceptAgentRun,
     agentRunMetadataService,
     auth,
     authorization: resourceAuthorization,
@@ -678,17 +774,6 @@ export function buildAppFromEnv(
       viewerService,
     });
   }
-  void registerSkillRoutes(app, {
-    auth,
-    createUserClient,
-    importSkill: useCases.skills.importSkill,
-    viewerService,
-  });
-  void registerMarketplaceRoutes(app, {
-    auth,
-    createUserClient,
-    viewerService,
-  });
 
   // Payment routes — only registered when Lemon Squeezy is configured
   if (paymentService) {

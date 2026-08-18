@@ -1,6 +1,5 @@
 // @credits-system — Agent tool runtime with credit checks before image/video generation
 import { createHash, randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { BaseLanguageModel } from "@langchain/core/language_models/base";
@@ -26,6 +25,7 @@ import type { AttachGeneratedAsset } from "../application/canvas/attach-generate
 import type { SubmitGeneration } from "../application/generation/submit-generation.js";
 import type { ServerEnv } from "../config/env.js";
 import { AppError } from "../errors/app-error.js";
+import type { AgentExecutionRepository } from "../features/agent-runs/agent-execution-repository.js";
 import type { AgentRunMetadataService } from "../features/agent-runs/agent-run-service.js";
 import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
 import type { CreditService } from "../features/credits/credit-service.js";
@@ -39,24 +39,22 @@ import type { UserSupabaseClient } from "../supabase/user.js";
 import { sanitizeErrorForClient } from "../utils/error-sanitizer.js";
 import type { ConnectionManager } from "../ws/connection-manager.js";
 import { createPipelineLogger } from "../ws/logger.js";
-import { createAgentBackend } from "./backends/index.js";
+import type { BuiltinSkillCatalog } from "./builtin-skills/catalog.js";
+import {
+  type AgentCapability,
+  PRODUCTION_AGENT_CAPABILITIES,
+  createAgentAuthority,
+} from "./capabilities.js";
 import {
   type LoomicAgent,
   type LoomicAgentFactory,
   createDefaultModelSpecifier,
-  createLoomicDeepAgent,
-} from "./deep-agent.js";
+  createLoomicAgent,
+} from "./loomic-agent.js";
 import type { AgentPersistenceService } from "./persistence/index.js";
 import { adaptDeepAgentStream } from "./stream-adapter.js";
-// execute 工具由 deepagents 内置提供（LocalShellBackend 作为 sandbox backend）
-// 不需要自定义代码执行工具
 import type { SubmitImageJobFn } from "./tools/image-generate.js";
-import { buildCanvasSummaryForContext } from "./tools/inspect-canvas.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
-import {
-  type WorkspaceSkillEntry,
-  loadWorkspaceSkills,
-} from "./workspace-skills.js";
 
 /**
  * Build the text portion of a user message, appending <input_images> XML
@@ -68,14 +66,8 @@ export function buildUserMessage(
   imageGenerationPreference?: ImageGenerationPreference,
   mentions: MessageMention[] = [],
   videoGenerationPreference?: VideoGenerationPreference,
-  canvasSummary?: string | null,
 ): { text: string } {
   const xmlBlocks: string[] = [];
-
-  // Canvas state context (auto-injected, not user-provided)
-  if (canvasSummary) {
-    xmlBlocks.push(`<canvas_state>\n${canvasSummary}\n</canvas_state>`);
-  }
 
   const inputImagesXml = buildInputImagesXml(attachments);
   if (inputImagesXml) xmlBlocks.push(inputImagesXml);
@@ -202,23 +194,6 @@ function buildMentionXmlBlocks(mentions: MessageMention[]): string[] {
     );
   }
 
-  // Skill mentions — tell the agent to read and follow the mentioned skill
-  const mentionedSkills = mentions.filter(
-    (mention): mention is Extract<MessageMention, { mentionType: "skill" }> =>
-      mention.mentionType === "skill",
-  );
-  if (mentionedSkills.length > 0) {
-    const skillXml = mentionedSkills
-      .map(
-        (mention, i) =>
-          `<skill index="${i + 1}" id="${escapeXmlAttribute(mention.id)}" name="${escapeXmlAttribute(mention.label)}" slug="${escapeXmlAttribute(mention.slug)}">\nThe user explicitly requested this skill. Read \`/workspace-skills/${mention.slug}/SKILL.md\` for full instructions and follow them.\n</skill>`,
-      )
-      .join("\n  ");
-    xmlBlocks.push(
-      `<human_skill_mentions count="${mentionedSkills.length}">\n  ${skillXml}\n</human_skill_mentions>`,
-    );
-  }
-
   return xmlBlocks;
 }
 
@@ -260,9 +235,13 @@ type RuntimeRunRecord = RunCreateRequest & {
   status: RuntimeRunStatus;
   threadId?: string;
   userId?: string;
+  attemptId?: string;
+  fencingToken?: number;
 };
 
 type CreateAgentRuntimeOptions = {
+  agentExecutionRepository?: AgentExecutionRepository;
+  builtinSkillCatalog?: BuiltinSkillCatalog;
   agentPersistenceService?: AgentPersistenceService;
   applyCanvasOperations?: ApplyCanvasOperations;
   attachGeneratedAsset?: AttachGeneratedAsset;
@@ -290,37 +269,49 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
   const runs = new Map<string, RuntimeRunRecord>();
   const runIdFactory = options.runIdFactory ?? (() => randomUUID());
   const createUserClientForCanvas = options.createUserClient;
+  const resolveCanvasScope = createUserClientForCanvas
+    ? async (context: { accessToken: string; canvasId: string }) => {
+        const client = createUserClientForCanvas(
+          context.accessToken,
+        ) as UserSupabaseClient;
+        const { data, error } = await client
+          .from("canvases")
+          .select("id, project_id, projects!inner(workspace_id)")
+          .eq("id", context.canvasId)
+          .maybeSingle();
+        const canvas = data as unknown as {
+          id?: string;
+          project_id?: string;
+          projects?: { workspace_id?: string };
+        } | null;
+        const workspaceId = canvas?.projects?.workspace_id;
+        if (
+          error ||
+          canvas?.id !== context.canvasId ||
+          !canvas.project_id ||
+          !workspaceId
+        ) {
+          throw new Error("Canvas not found or access denied");
+        }
+        return { projectId: canvas.project_id, workspaceId };
+      }
+    : undefined;
   const resolveWorkspaceId =
-    options.applyCanvasOperations && createUserClientForCanvas
+    options.applyCanvasOperations && resolveCanvasScope
       ? async (context: {
           accessToken: string;
           userId: string;
           canvasId: string;
         }) => {
-          const client = createUserClientForCanvas(
-            context.accessToken,
-          ) as UserSupabaseClient;
-          const { data, error } = await client
-            .from("canvases")
-            .select("id, project_id, projects!inner(workspace_id)")
-            .eq("id", context.canvasId)
-            .maybeSingle();
-          const canvas = data as unknown as {
-            id?: string;
-            projects?: { workspace_id?: string };
-          } | null;
-          const workspaceId = canvas?.projects?.workspace_id;
-          if (error || canvas?.id !== context.canvasId || !workspaceId) {
-            throw new Error("Canvas not found or access denied");
-          }
-          return workspaceId;
+          const scope = await resolveCanvasScope(context);
+          return scope.workspaceId;
         }
       : undefined;
 
   const resolvedAgentFactory: LoomicAgentFactory =
     options.agentFactory ??
     ((agentOptions) =>
-      createLoomicDeepAgent({
+      createLoomicAgent({
         ...agentOptions,
         providerRegistry: options.providerRegistry,
         ...(options.createUserClient
@@ -396,15 +387,24 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
   }
 
   return {
-    cancelRun(runId: string): RunCancelResponse | null {
+    async cancelRun(runId: string): Promise<RunCancelResponse | null> {
       const run = runs.get(runId);
       if (!run) {
         return null;
       }
 
-      if (!run.controller.signal.aborted) {
-        run.controller.abort();
+      if (
+        options.agentExecutionRepository &&
+        run.attemptId &&
+        run.fencingToken !== undefined
+      ) {
+        await options.agentExecutionRepository.cancelAttempt({
+          attemptId: run.attemptId,
+          fencingToken: run.fencingToken,
+        });
       }
+
+      if (!run.controller.signal.aborted) run.controller.abort();
 
       run.status = "canceled";
       return {
@@ -418,11 +418,21 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
       runOptions?: {
         accessToken?: string;
         model?: string;
+        runId?: string;
         threadId?: string;
         userId?: string;
       },
     ): RunCreateResponse {
-      const runId = runIdFactory();
+      const runId = runOptions?.runId ?? runIdFactory();
+      const existing = runs.get(runId);
+      if (existing) {
+        return {
+          conversationId: existing.conversationId,
+          runId,
+          sessionId: existing.sessionId,
+          status: "accepted",
+        };
+      }
       const { accessToken: _ignoredAccessToken, ...runInput } = input;
 
       runs.set(runId, {
@@ -518,6 +528,63 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         return;
       }
 
+      let executionContext = options.agentExecutionRepository
+        ? await options.agentExecutionRepository.getExecutionContext(runId)
+        : null;
+      if (options.agentExecutionRepository && !executionContext) {
+        yield toFailedEvent(runId, now, new Error("run_not_active"));
+        return;
+      }
+      if (executionContext && options.agentExecutionRepository) {
+        const attemptState =
+          await options.agentExecutionRepository.getAttemptState(runId);
+        const currentTime = new Date(now());
+        if (
+          attemptState?.status === "running" &&
+          attemptState.leaseExpiresAt &&
+          attemptState.leaseExpiresAt.getTime() <= currentTime.getTime()
+        ) {
+          if (!options.builtinSkillCatalog) {
+            throw new Error("builtin_skill_catalog_required");
+          }
+          const authority = createAgentAuthority(PRODUCTION_AGENT_CAPABILITIES);
+          const currentCapabilities = new Set<AgentCapability>(
+            PRODUCTION_AGENT_CAPABILITIES,
+          );
+          const eligibleSkills = options.builtinSkillCatalog
+            .list()
+            .filter((skill) =>
+              skill.requiredCapabilities.every((capability) =>
+                currentCapabilities.has(capability),
+              ),
+            )
+            .map((skill) => skill.name);
+          executionContext =
+            await options.agentExecutionRepository.resumeAttempt({
+              runId,
+              attemptId: randomUUID(),
+              activeCatalogDigest: options.builtinSkillCatalog.digest,
+              currentCapabilities: PRODUCTION_AGENT_CAPABILITIES,
+              capabilityPolicyVersion: authority.policyVersion,
+              effectiveSkillNames: eligibleSkills,
+            });
+        }
+        const lease = await options.agentExecutionRepository.claimAttempt({
+          attemptId: executionContext.attemptId,
+          leaseOwner: `runtime-${randomUUID()}`,
+          leaseMs: 15 * 60_000,
+          now: new Date(now()),
+        });
+        run.attemptId = lease.attemptId;
+        run.fencingToken = lease.fencingToken;
+        executionContext =
+          (await options.agentExecutionRepository.getExecutionContext(runId)) ??
+          executionContext;
+      }
+      const canMutateCanvas =
+        executionContext?.capabilities.includes("canvas.mutate") === true &&
+        PRODUCTION_AGENT_CAPABILITIES.includes("canvas.mutate");
+
       // Build submitImageJob / submitVideoJob closures for async jobs via PGMQ
       let submitImageJob: SubmitImageJobFn | undefined;
       let submitVideoJob: SubmitVideoJobFn | undefined;
@@ -551,13 +618,26 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
             );
           };
 
+          const effect = await beginRuntimeEffect(
+            options.agentExecutionRepository,
+            run,
+            input.logicalToolCallId,
+            input,
+          );
+          if (effect?.status === "completed") {
+            return effect.result as Awaited<ReturnType<SubmitImageJobFn>>;
+          }
           const workspaceId = await resolveGenerationWorkspaceId();
           let submitted: Awaited<ReturnType<SubmitGeneration>>;
           try {
             submitted = await submitGeneration(
               { userId, workspaceId, accessToken },
               {
-                idempotency_key: agentGenerationKey(runId, "image", input),
+                idempotency_key: agentGenerationKey(
+                  runId,
+                  "image",
+                  input.logicalToolCallId,
+                ),
                 type: "image_generation",
                 prompt: input.prompt,
                 title: input.title,
@@ -614,6 +694,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               if (
                 canvasId &&
                 result.object_path &&
+                canMutateCanvas &&
                 options.attachGeneratedAsset
               ) {
                 try {
@@ -639,6 +720,27 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                       canvasId,
                       jobId: job.id,
                       effectKey: "generated_asset_attached",
+                      ...(run.attemptId && run.fencingToken !== undefined
+                        ? {
+                            agentEffect: {
+                              runId,
+                              attemptId: run.attemptId,
+                              fencingToken: run.fencingToken,
+                              logicalToolCallId: input.logicalToolCallId,
+                              inputDigest: createHash("sha256")
+                                .update(stableJson(input))
+                                .digest("hex"),
+                              result: {
+                                jobId: job.id,
+                                elementId: job.id,
+                                imageUrl: result.signed_url ?? "",
+                                width: result.width ?? 1024,
+                                height: result.height ?? 1024,
+                                mimeType: result.mime_type ?? "image/png",
+                              },
+                            },
+                          }
+                        : {}),
                       asset: {
                         type: "image",
                         objectPath: result.object_path,
@@ -670,7 +772,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                 }
               }
 
-              return {
+              const completed = {
                 jobId: job.id,
                 ...(elementId != null ? { elementId } : {}),
                 imageUrl: result.signed_url ?? "",
@@ -678,6 +780,14 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                 height: result.height ?? 1024,
                 mimeType: result.mime_type ?? "image/png",
               };
+              await completeRuntimeEffect(
+                options.agentExecutionRepository,
+                run,
+                input.logicalToolCallId,
+                input,
+                completed,
+              );
+              return completed;
             }
 
             if (
@@ -723,13 +833,26 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
             );
           };
 
+          const effect = await beginRuntimeEffect(
+            options.agentExecutionRepository,
+            run,
+            input.logicalToolCallId,
+            input,
+          );
+          if (effect?.status === "completed") {
+            return effect.result as Awaited<ReturnType<SubmitVideoJobFn>>;
+          }
           const workspaceId = await resolveGenerationWorkspaceId();
           let submitted: Awaited<ReturnType<SubmitGeneration>>;
           try {
             submitted = await submitGeneration(
               { userId, workspaceId, accessToken },
               {
-                idempotency_key: agentGenerationKey(runId, "video", input),
+                idempotency_key: agentGenerationKey(
+                  runId,
+                  "video",
+                  input.logicalToolCallId,
+                ),
                 type: "video_generation",
                 prompt: input.prompt,
                 model: input.model,
@@ -793,6 +916,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               if (
                 canvasId &&
                 result.signed_url &&
+                canMutateCanvas &&
                 options.attachGeneratedAsset
               ) {
                 try {
@@ -818,6 +942,32 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                       canvasId,
                       jobId: job.id,
                       effectKey: "generated_asset_attached",
+                      ...(run.attemptId && run.fencingToken !== undefined
+                        ? {
+                            agentEffect: {
+                              runId,
+                              attemptId: run.attemptId,
+                              fencingToken: run.fencingToken,
+                              logicalToolCallId: input.logicalToolCallId,
+                              inputDigest: createHash("sha256")
+                                .update(stableJson(input))
+                                .digest("hex"),
+                              result: {
+                                jobId: job.id,
+                                elementId: job.id,
+                                videoUrl: result.signed_url ?? "",
+                                width: result.width ?? 1280,
+                                height: result.height ?? 720,
+                                mimeType: result.mime_type ?? "video/mp4",
+                                ...(result.duration_seconds != null
+                                  ? {
+                                      durationSeconds: result.duration_seconds,
+                                    }
+                                  : {}),
+                              },
+                            },
+                          }
+                        : {}),
                       asset: {
                         type: "video",
                         signedUrl: result.signed_url,
@@ -851,7 +1001,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                 }
               }
 
-              return {
+              const completed = {
                 jobId: job.id,
                 ...(elementId != null ? { elementId } : {}),
                 videoUrl: result.signed_url ?? "",
@@ -862,6 +1012,14 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                   ? { durationSeconds: result.duration_seconds }
                   : {}),
               };
+              await completeRuntimeEffect(
+                options.agentExecutionRepository,
+                run,
+                input.logicalToolCallId,
+                input,
+                completed,
+              );
+              return completed;
             }
 
             if (
@@ -898,437 +1056,325 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         };
       }
 
-      // Load workspace skills (user-installed skills from DB).
-      // Done before backend creation so we know whether to add the
-      // /workspace-skills/ Store route.
-      let workspaceSkills: WorkspaceSkillEntry[] = [];
-      if (run.canvasId && run.accessToken && options.createUserClient) {
-        try {
-          const wsClient = options.createUserClient(
-            run.accessToken,
-          ) as UserSupabaseClient;
-          workspaceSkills = await loadWorkspaceSkills(wsClient, run.canvasId);
-          rlog.lap("workspace_skills_loaded", {
-            count: workspaceSkills.length,
-          });
-        } catch (err) {
-          // Non-fatal: agent runs without workspace skills
-          console.warn("[runtime] Failed to load workspace skills:", err);
-        }
-      }
-
-      // Create backend — production uses StateBackend (no local shell).
-      const backendResult = createAgentBackend(options.env, run.canvasId, {
-        hasWorkspaceSkills: workspaceSkills.length > 0,
-      });
-
+      let agent: LoomicAgent;
       try {
-        let agent: LoomicAgent;
-        try {
-          const resolvedModel = run.modelOverride
-            ? run.modelOverride.includes(":")
-              ? run.modelOverride
-              : createDefaultModelSpecifier({ agentModel: run.modelOverride })
-            : options.model;
+        if (
+          executionContext &&
+          options.builtinSkillCatalog &&
+          executionContext.skillCatalogDigest !==
+            options.builtinSkillCatalog.digest
+        ) {
+          throw new Error("skill_catalog_changed");
+        }
+        const resolvedModel = run.modelOverride
+          ? run.modelOverride.includes(":")
+            ? run.modelOverride
+            : createDefaultModelSpecifier({ agentModel: run.modelOverride })
+          : options.model;
 
-          // Build persistImage closure using the user's Supabase client.
-          // Client creation is deferred into the closure so it only runs
-          // when an image is actually generated (avoids throwing in tests
-          // that don't configure Supabase env vars).
-          let persistImage:
-            | ((url: string, mime: string, prompt: string) => Promise<string>)
-            | undefined;
-          if (options.createUserClient && run.accessToken) {
-            const createClient = options.createUserClient;
-            const accessToken = run.accessToken;
-            persistImage = async (sourceUrl, mimeType, prompt) => {
-              const client = createClient(accessToken) as UserSupabaseClient;
-              const response = await fetch(sourceUrl);
-              if (!response.ok)
-                throw new Error(`Download failed: ${response.status}`);
-              const buffer = Buffer.from(await response.arrayBuffer());
-              const ext = mimeType === "image/webp" ? "webp" : "png";
-              const slug = prompt
-                .slice(0, 40)
-                .replace(/[^a-zA-Z0-9]+/g, "-")
-                .replace(/^-|-$/g, "");
-              const fileName = `gen-${slug}-${Date.now()}.${ext}`;
-
-              const { data: ws } = await client
-                .from("workspaces")
-                .select("id")
-                .eq("type", "personal")
-                .limit(1)
-                .single();
-              const workspaceId = ws?.id ?? "default";
-              const objectPath = `${workspaceId}/${Date.now()}-${fileName}`;
-
-              const { error: uploadError } = await client.storage
-                .from("project-assets")
-                .upload(objectPath, buffer, {
-                  contentType: mimeType,
-                  upsert: false,
-                });
-              if (uploadError)
-                throw new Error(`Upload failed: ${uploadError.message}`);
-
-              const { data: urlData } = client.storage
-                .from("project-assets")
-                .getPublicUrl(objectPath);
-
-              return urlData.publicUrl;
-            };
-          }
-
-          // Resolve brand kit ID from canvas → project in a single joined query
-          let brandKitId: string | null = null;
-          if (run.canvasId && run.accessToken && options.createUserClient) {
+        // Resolve brand kit ID from canvas → project in a single joined query
+        let brandKitId: string | null = null;
+        if (run.canvasId && run.accessToken && options.createUserClient) {
+          try {
+            const client = options.createUserClient(run.accessToken) as any;
+            const { data: canvas } = await client
+              .from("canvases")
+              .select("project_id, projects!inner(brand_kit_id)")
+              .eq("id", run.canvasId)
+              .maybeSingle();
+            brandKitId = canvas?.projects?.brand_kit_id ?? null;
+          } catch (err) {
+            // Fallback: joined query may fail if FK isn't exposed via PostgREST
+            // In that case, try the two-step approach
             try {
               const client = options.createUserClient(run.accessToken) as any;
-              const { data: canvas } = await client
+              const { data: c } = await client
                 .from("canvases")
-                .select("project_id, projects!inner(brand_kit_id)")
+                .select("project_id")
                 .eq("id", run.canvasId)
                 .maybeSingle();
-              brandKitId = canvas?.projects?.brand_kit_id ?? null;
-            } catch (err) {
-              // Fallback: joined query may fail if FK isn't exposed via PostgREST
-              // In that case, try the two-step approach
-              try {
-                const client = options.createUserClient(run.accessToken) as any;
-                const { data: c } = await client
-                  .from("canvases")
-                  .select("project_id")
-                  .eq("id", run.canvasId)
+              if (c?.project_id) {
+                const { data: p } = await client
+                  .from("projects")
+                  .select("brand_kit_id")
+                  .eq("id", c.project_id)
                   .maybeSingle();
-                if (c?.project_id) {
-                  const { data: p } = await client
-                    .from("projects")
-                    .select("brand_kit_id")
-                    .eq("id", c.project_id)
-                    .maybeSingle();
-                  brandKitId = p?.brand_kit_id ?? null;
-                }
-              } catch (err2) {
-                console.warn("Failed to resolve brand kit ID:", err2);
+                brandKitId = p?.brand_kit_id ?? null;
               }
+            } catch (err2) {
+              console.warn("Failed to resolve brand kit ID:", err2);
             }
           }
-
-          rlog.lap("brand_kit_resolved");
-
-          // Pre-write workspace skill SKILL.md files AND associated files
-          // (scripts/, references/, assets/) into the Store so the agent can
-          // read_file them via the /workspace-skills/ route.
-          const store = persistence?.store;
-          if (workspaceSkills.length > 0 && store && run.canvasId) {
-            const storeNamespace = [
-              "projects",
-              run.canvasId,
-              "workspace-skills",
-            ];
-            const now_ = new Date().toISOString();
-
-            const writeOps: Promise<void>[] = [];
-            for (const skill of workspaceSkills) {
-              // Write SKILL.md
-              writeOps.push(
-                store.put(storeNamespace, `/${skill.name}/SKILL.md`, {
-                  content: skill.content.split("\n"),
-                  created_at: now_,
-                  modified_at: now_,
-                }),
-              );
-              // Write associated files (scripts/, references/, assets/)
-              for (const file of skill.files) {
-                writeOps.push(
-                  store.put(storeNamespace, `/${skill.name}/${file.path}`, {
-                    content: file.content.split("\n"),
-                    created_at: now_,
-                    modified_at: now_,
-                  }),
-                );
-              }
-            }
-
-            await Promise.all(writeOps);
-            const totalFiles = workspaceSkills.reduce(
-              (sum, s) => sum + s.files.length,
-              0,
-            );
-            rlog.lap("workspace_skills_stored", {
-              count: workspaceSkills.length,
-              files: totalFiles,
-            });
-          }
-
-          agent = resolvedAgentFactory({
-            ...(options.applyCanvasOperations && resolveWorkspaceId
-              ? {
-                  applyCanvasOperations: options.applyCanvasOperations,
-                  resolveWorkspaceId,
-                }
-              : {}),
-            backendResult,
-            ...(brandKitId ? { brandKitId } : {}),
-            ...(run.canvasId ? { canvasId: run.canvasId } : {}),
-            ...(persistence ? { checkpointer: persistence.checkpointer } : {}),
-            ...(options.connectionManager
-              ? { connectionManager: options.connectionManager }
-              : {}),
-            env: options.env,
-            providerRegistry: options.providerRegistry,
-            ...(resolvedModel ? { model: resolvedModel } : {}),
-            ...(persistImage ? { persistImage } : {}),
-            // execute 工具由 LocalShellBackend 自动提供，无需手动传递
-            ...(submitImageJob ? { submitImageJob } : {}),
-            ...(submitVideoJob ? { submitVideoJob } : {}),
-            ...(persistence ? { store: persistence.store } : {}),
-            ...(workspaceSkills.length > 0 ? { workspaceSkills } : {}),
-          });
-          rlog.lap("agent_factory_done");
-        } catch (error) {
-          const failedEvent = toFailedEvent(runId, now, error);
-          run.status = "failed";
-          await updatePersistedRunFailure(
-            options.agentRunMetadataService,
-            run,
-            now,
-            error,
-          );
-          yield failedEvent;
-          return;
         }
 
-        let stream: AsyncIterable<unknown>;
-        try {
-          // Auto-inject canvas state summary so the agent has immediate awareness
-          // of what's on the canvas without needing to call inspect_canvas first.
-          let canvasSummary: string | null = null;
-          if (run.canvasId && run.accessToken && options.createUserClient) {
-            try {
-              const canvasClient = options.createUserClient(
-                run.accessToken,
-              ) as any;
-              const { data: canvasData } = await canvasClient
-                .from("canvases")
-                .select("content")
-                .eq("id", run.canvasId)
-                .single();
-              if (canvasData?.content?.elements) {
-                canvasSummary = buildCanvasSummaryForContext(
-                  canvasData.content.elements as Array<Record<string, unknown>>,
-                );
-              }
-            } catch {
-              // Non-critical — agent can still call inspect_canvas manually
-            }
-          }
+        rlog.lap("brand_kit_resolved");
 
-          const hasAttachments = run.attachments && run.attachments.length > 0;
-          let userMessage: HumanMessage;
-          let attachmentDataMap: Record<string, string> = {};
-
-          if (hasAttachments) {
-            // Download images and build parallel data structures:
-            // 1. imageBlocks: base64 content parts for LLM vision
-            // 2. downloaded: assetId → base64 mapping for tool resolution
-            const downloaded: Array<{
-              assetId: string;
-              mimeType: string;
-              base64: string;
-            }> = [];
-            const imageBlocks = await Promise.all(
-              run.attachments!.map(async (a) => {
-                try {
-                  let b64: string;
-                  let mime: string;
-
-                  // Handle data URIs directly (canvas-ref images) — no fetch needed
-                  const dataUriMatch = a.url.match(
-                    /^data:([^;]+);base64,(.+)$/,
-                  );
-                  if (dataUriMatch) {
-                    mime = dataUriMatch[1]!;
-                    b64 = dataUriMatch[2]!;
-                  } else {
-                    const res = await fetch(a.url);
-                    const buf = Buffer.from(await res.arrayBuffer());
-                    mime =
-                      a.mimeType ||
-                      res.headers.get("content-type") ||
-                      "image/png";
-                    b64 = buf.toString("base64");
-                  }
-
-                  downloaded.push({
-                    assetId: a.assetId,
-                    mimeType: mime,
-                    base64: b64,
+        agent = resolvedAgentFactory({
+          ...(executionContext &&
+          resolveCanvasScope &&
+          run.accessToken &&
+          run.userId
+            ? {
+                authorizeExecutionContext: async () => {
+                  const scope = await resolveCanvasScope({
+                    accessToken: run.accessToken!,
+                    canvasId: executionContext.canvasId,
                   });
-                  // Use standard LangChain image_url format — works with both
-                  // Google Gemini and OpenAI adapters. The Anthropic-style
-                  // { type: "image", source_type: "base64" } format is NOT
-                  // recognized by @langchain/google-genai and gets serialized
-                  // as raw text, blowing past the token limit.
-                  return {
-                    type: "image_url" as const,
-                    image_url: `data:${mime};base64,${b64}`,
-                  };
-                } catch {
-                  return {
-                    type: "image_url" as const,
-                    image_url: a.url,
-                  };
-                }
-              }),
-            );
-
-            // Build XML text tags for LLM to reference by assetId
-            const { text: enrichedPrompt } = buildUserMessage(
-              run.prompt,
-              run.attachments!,
-              run.imageGenerationPreference,
-              run.mentions,
-              run.videoGenerationPreference,
-              canvasSummary,
-            );
-
-            // Build assetId → data URI map for tool-level resolution
-            attachmentDataMap = buildAttachmentDataMap(downloaded);
-
-            userMessage = new HumanMessage({
-              content: [
-                { type: "text" as const, text: enrichedPrompt },
-                ...imageBlocks,
-              ],
-            });
-          } else {
-            const { text: enrichedPrompt } = buildUserMessage(
-              run.prompt,
-              [],
-              run.imageGenerationPreference,
-              run.mentions,
-              run.videoGenerationPreference,
-              canvasSummary,
-            );
-            userMessage = new HumanMessage(enrichedPrompt);
-          }
-
-          rlog.lap("stream_call_start");
-          stream = agent.streamEvents(
-            {
-              messages: [userMessage],
-            },
-            {
-              ...(run.threadId ||
-              run.canvasId ||
-              run.accessToken ||
-              run.userId ||
-              Object.keys(attachmentDataMap).length > 0
-                ? {
-                    configurable: {
-                      ...(run.threadId ? { thread_id: run.threadId } : {}),
-                      ...(run.canvasId ? { canvas_id: run.canvasId } : {}),
-                      ...(run.accessToken
-                        ? { access_token: run.accessToken }
-                        : {}),
-                      ...(run.userId ? { user_id: run.userId } : {}),
-                      ...(Object.keys(attachmentDataMap).length > 0
-                        ? { user_attachment_map: attachmentDataMap }
-                        : {}),
-                    },
+                  if (
+                    scope.workspaceId !== executionContext.workspaceId ||
+                    scope.projectId !== executionContext.projectId
+                  ) {
+                    throw new Error("canvas_access_denied");
                   }
-                : {}),
-              signal: run.controller.signal,
-              version: "v2",
-            },
+                },
+              }
+            : {}),
+          ...(options.applyCanvasOperations && resolveWorkspaceId
+            ? {
+                applyCanvasOperations: options.applyCanvasOperations,
+                resolveWorkspaceId,
+              }
+            : {}),
+          ...(brandKitId ? { brandKitId } : {}),
+          ...(run.canvasId ? { canvasId: run.canvasId } : {}),
+          ...(persistence ? { checkpointer: persistence.checkpointer } : {}),
+          ...(options.connectionManager
+            ? { connectionManager: options.connectionManager }
+            : {}),
+          env: options.env,
+          providerRegistry: options.providerRegistry,
+          ...(resolvedModel ? { model: resolvedModel } : {}),
+          ...(submitImageJob ? { submitImageJob } : {}),
+          ...(submitVideoJob ? { submitVideoJob } : {}),
+          ...(persistence ? { store: persistence.store } : {}),
+          ...(executionContext ? { executionContext } : {}),
+          ...(run.fencingToken !== undefined
+            ? { fencingToken: run.fencingToken }
+            : {}),
+          ...(options.builtinSkillCatalog
+            ? { builtinSkillCatalog: options.builtinSkillCatalog }
+            : {}),
+          ...(options.agentExecutionRepository
+            ? { agentExecutionRepository: options.agentExecutionRepository }
+            : {}),
+        });
+        rlog.lap("agent_factory_done");
+      } catch (error) {
+        const failedEvent = toFailedEvent(runId, now, error);
+        run.status = "failed";
+        await updatePersistedRunFailure(
+          options.agentRunMetadataService,
+          run,
+          now,
+          error,
+        );
+        yield failedEvent;
+        return;
+      }
+
+      let stream: AsyncIterable<unknown>;
+      try {
+        const hasAttachments = run.attachments && run.attachments.length > 0;
+        let userMessage: HumanMessage;
+        let attachmentDataMap: Record<string, string> = {};
+
+        if (hasAttachments) {
+          // Download images and build parallel data structures:
+          // 1. imageBlocks: base64 content parts for LLM vision
+          // 2. downloaded: assetId → base64 mapping for tool resolution
+          const downloaded: Array<{
+            assetId: string;
+            mimeType: string;
+            base64: string;
+          }> = [];
+          const imageBlocks = await Promise.all(
+            run.attachments!.map(async (a) => {
+              try {
+                let b64: string;
+                let mime: string;
+
+                // Handle data URIs directly (canvas-ref images) — no fetch needed
+                const dataUriMatch = a.url.match(/^data:([^;]+);base64,(.+)$/);
+                if (dataUriMatch) {
+                  mime = dataUriMatch[1]!;
+                  b64 = dataUriMatch[2]!;
+                } else {
+                  const res = await fetch(a.url);
+                  const buf = Buffer.from(await res.arrayBuffer());
+                  mime =
+                    a.mimeType ||
+                    res.headers.get("content-type") ||
+                    "image/png";
+                  b64 = buf.toString("base64");
+                }
+
+                downloaded.push({
+                  assetId: a.assetId,
+                  mimeType: mime,
+                  base64: b64,
+                });
+                // Use standard LangChain image_url format — works with both
+                // Google Gemini and OpenAI adapters. The Anthropic-style
+                // { type: "image", source_type: "base64" } format is NOT
+                // recognized by @langchain/google-genai and gets serialized
+                // as raw text, blowing past the token limit.
+                return {
+                  type: "image_url" as const,
+                  image_url: `data:${mime};base64,${b64}`,
+                };
+              } catch {
+                return {
+                  type: "image_url" as const,
+                  image_url: a.url,
+                };
+              }
+            }),
           );
-          rlog.lap("stream_call_returned");
-        } catch (error) {
-          const failedEvent = toFailedEvent(runId, now, error);
-          run.status = "failed";
-          await updatePersistedRunFailure(
-            options.agentRunMetadataService,
-            run,
-            now,
-            error,
+
+          // Build XML text tags for LLM to reference by assetId
+          const { text: enrichedPrompt } = buildUserMessage(
+            run.prompt,
+            run.attachments!,
+            run.imageGenerationPreference,
+            run.mentions,
+            run.videoGenerationPreference,
           );
-          yield failedEvent;
-          return;
+
+          // Build assetId → data URI map for tool-level resolution
+          attachmentDataMap = buildAttachmentDataMap(downloaded);
+
+          userMessage = new HumanMessage({
+            content: [
+              { type: "text" as const, text: enrichedPrompt },
+              ...imageBlocks,
+            ],
+          });
+        } else {
+          const { text: enrichedPrompt } = buildUserMessage(
+            run.prompt,
+            [],
+            run.imageGenerationPreference,
+            run.mentions,
+            run.videoGenerationPreference,
+          );
+          userMessage = new HumanMessage(enrichedPrompt);
         }
 
-        try {
-          for await (const event of adaptDeepAgentStream({
-            conversationId: run.conversationId,
-            now,
-            runId,
-            sessionId: run.sessionId,
+        rlog.lap("stream_call_start");
+        stream = agent.streamEvents(
+          {
+            messages: [userMessage],
+          },
+          {
+            ...(run.threadId ||
+            run.canvasId ||
+            run.accessToken ||
+            run.userId ||
+            Object.keys(attachmentDataMap).length > 0
+              ? {
+                  configurable: {
+                    ...(run.threadId ? { thread_id: run.threadId } : {}),
+                    ...(run.canvasId ? { canvas_id: run.canvasId } : {}),
+                    ...(run.accessToken
+                      ? { access_token: run.accessToken }
+                      : {}),
+                    ...(run.userId ? { user_id: run.userId } : {}),
+                    ...(Object.keys(attachmentDataMap).length > 0
+                      ? { user_attachment_map: attachmentDataMap }
+                      : {}),
+                  },
+                }
+              : {}),
             signal: run.controller.signal,
-            stream,
-          })) {
-            run.status = mapEventToStatus(event);
+            version: "v2",
+          },
+        );
+        rlog.lap("stream_call_returned");
+      } catch (error) {
+        const failedEvent = toFailedEvent(runId, now, error);
+        run.status = "failed";
+        await updatePersistedRunFailure(
+          options.agentRunMetadataService,
+          run,
+          now,
+          error,
+        );
+        yield failedEvent;
+        return;
+      }
+
+      try {
+        for await (const event of adaptDeepAgentStream({
+          conversationId: run.conversationId,
+          now,
+          runId,
+          sessionId: run.sessionId,
+          signal: run.controller.signal,
+          stream,
+        })) {
+          if (
+            options.agentExecutionRepository &&
+            run.attemptId &&
+            run.fencingToken !== undefined &&
+            !(await options.agentExecutionRepository.isAttemptActive({
+              attemptId: run.attemptId,
+              fencingToken: run.fencingToken,
+            }))
+          ) {
+            throw new Error("run_not_active");
+          }
+          run.status = mapEventToStatus(event);
+          try {
+            await syncPersistedRunFromEvent(
+              options.agentRunMetadataService,
+              run,
+              event,
+              now,
+            );
+          } catch (error) {
+            const failedEvent = toFailedEvent(runId, now, error);
+            run.status = "failed";
+            yield failedEvent;
+            return;
+          }
+          yield event;
+
+          if (!isTerminalEvent(event) && options.eventDelayMs) {
             try {
-              await syncPersistedRunFromEvent(
-                options.agentRunMetadataService,
-                run,
-                event,
-                now,
-              );
-            } catch (error) {
-              const failedEvent = toFailedEvent(runId, now, error);
-              run.status = "failed";
-              yield failedEvent;
+              await delay(options.eventDelayMs, undefined, {
+                signal: run.controller.signal,
+              });
+            } catch {
+              run.status = "canceled";
+              yield {
+                runId,
+                timestamp: now(),
+                type: "run.canceled",
+              };
               return;
             }
-            yield event;
-
-            if (!isTerminalEvent(event) && options.eventDelayMs) {
-              try {
-                await delay(options.eventDelayMs, undefined, {
-                  signal: run.controller.signal,
-                });
-              } catch {
-                run.status = "canceled";
-                yield {
-                  runId,
-                  timestamp: now(),
-                  type: "run.canceled",
-                };
-                return;
-              }
-            }
           }
-        } catch (streamError) {
-          // Catch DB / checkpoint errors that bubble up from the LangGraph stream
-          // (e.g. Supabase circuit-breaker, connection pool exhaustion).
-          // Instead of crashing the process, yield a clean failure event.
+        }
+      } catch (streamError) {
+        // Catch DB / checkpoint errors that bubble up from the LangGraph stream
+        // (e.g. Supabase circuit-breaker, connection pool exhaustion).
+        // Instead of crashing the process, yield a clean failure event.
+        console.error("[agent-runtime] Stream iteration failed:", streamError);
+        const failedEvent = toFailedEvent(runId, now, streamError);
+        run.status = "failed";
+        await updatePersistedRunFailure(
+          options.agentRunMetadataService,
+          run,
+          now,
+          streamError,
+        ).catch((persistErr) =>
           console.error(
-            "[agent-runtime] Stream iteration failed:",
-            streamError,
-          );
-          const failedEvent = toFailedEvent(runId, now, streamError);
-          run.status = "failed";
-          await updatePersistedRunFailure(
-            options.agentRunMetadataService,
-            run,
-            now,
-            streamError,
-          ).catch((persistErr) =>
-            console.error(
-              "[agent-runtime] Failed to persist run failure:",
-              persistErr,
-            ),
-          );
-          yield failedEvent;
-          return;
-        }
-      } finally {
-        if (backendResult.sandboxDir) {
-          rm(backendResult.sandboxDir, { recursive: true, force: true }).catch(
-            (err) => console.warn("[sandbox] cleanup failed:", err.message),
-          );
-        }
+            "[agent-runtime] Failed to persist run failure:",
+            persistErr,
+          ),
+        );
+        yield failedEvent;
+        return;
       }
     },
   };
@@ -1337,13 +1383,49 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
 function agentGenerationKey(
   runId: string,
   mediaType: "image" | "video",
-  input: unknown,
+  logicalToolCallId: string,
 ): string {
   const digest = createHash("sha256")
-    .update(stableJson(input))
+    .update(logicalToolCallId)
     .digest("hex")
     .slice(0, 32);
   return `agent:${runId}:${mediaType}:${digest}`.slice(0, 128);
+}
+
+async function beginRuntimeEffect(
+  repository: AgentExecutionRepository | undefined,
+  run: RuntimeRunRecord,
+  logicalToolCallId: string,
+  input: unknown,
+) {
+  if (!repository || !run.attemptId || run.fencingToken === undefined) {
+    return null;
+  }
+  return repository.beginEffect({
+    runId: run.runId,
+    attemptId: run.attemptId,
+    fencingToken: run.fencingToken,
+    logicalToolCallId,
+    inputDigest: createHash("sha256").update(stableJson(input)).digest("hex"),
+  });
+}
+
+async function completeRuntimeEffect(
+  repository: AgentExecutionRepository | undefined,
+  run: RuntimeRunRecord,
+  logicalToolCallId: string,
+  input: unknown,
+  result: unknown,
+): Promise<void> {
+  if (!repository || !run.attemptId || run.fencingToken === undefined) return;
+  await repository.completeEffect({
+    runId: run.runId,
+    attemptId: run.attemptId,
+    fencingToken: run.fencingToken,
+    logicalToolCallId,
+    inputDigest: createHash("sha256").update(stableJson(input)).digest("hex"),
+    result,
+  });
 }
 
 function stableJson(value: unknown): string {

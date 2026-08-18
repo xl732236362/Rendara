@@ -30,19 +30,10 @@ export type ImageModelMentionItem = {
   iconUrl?: string;
 };
 
-export type SkillMentionItem = {
-  kind: "skill";
-  id: string;
-  label: string;
-  slug: string;
-  description?: string;
-};
-
 export type MessageMentionPickerItem =
   | CanvasImageItem
   | BrandKitMentionItem
-  | ImageModelMentionItem
-  | SkillMentionItem;
+  | ImageModelMentionItem;
 
 type MessageMentionPickerProps = {
   items: MessageMentionPickerItem[];
@@ -58,15 +49,12 @@ function itemLabel(item: MessageMentionPickerItem): string {
 function itemKeywords(item: MessageMentionPickerItem): string[] {
   if (item.kind === "canvas-image") return [item.name];
   if (item.kind === "image-model") return [item.label, item.description ?? ""];
-  if (item.kind === "skill")
-    return [item.label, item.slug, item.description ?? ""];
   return [item.label, item.assetType, item.textContent ?? ""];
 }
 
 function groupTitle(kind: MessageMentionPickerItem["kind"]): string {
   if (kind === "canvas-image") return "This Project";
   if (kind === "brand-kit-asset") return "Brand Kit";
-  if (kind === "skill") return "Skills";
   return "Model";
 }
 
@@ -97,7 +85,6 @@ export function MessageMentionPicker({
       "canvas-image": [],
       "brand-kit-asset": [],
       "image-model": [],
-      skill: [],
     },
   );
 
@@ -145,53 +132,48 @@ export function MessageMentionPicker({
       className="absolute bottom-full left-2 mb-2 max-h-64 w-64 overflow-y-auto rounded-xl border border-border bg-popover shadow-lg"
     >
       <div className="p-2">
-        {(
-          ["canvas-image", "brand-kit-asset", "image-model", "skill"] as const
-        ).map((kind) => {
-          const sectionItems = groupedItems[kind];
-          if (!sectionItems.length) return null;
-          return (
-            <div key={kind} className="mb-2 last:mb-0">
-              <div className="mb-1.5 px-1 text-[11px] font-medium text-muted-foreground">
-                {groupTitle(kind)}
-              </div>
-              {sectionItems.map((item) => (
-                <button
-                  key={`${item.kind}:${item.id}`}
-                  type="button"
-                  onClick={() => {
-                    onSelect(item);
-                    onClose();
-                  }}
-                  className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-muted"
-                >
-                  <PickerLeadingVisual item={item} />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm text-foreground">
-                      {itemLabel(item)}
+        {(["canvas-image", "brand-kit-asset", "image-model"] as const).map(
+          (kind) => {
+            const sectionItems = groupedItems[kind];
+            if (!sectionItems.length) return null;
+            return (
+              <div key={kind} className="mb-2 last:mb-0">
+                <div className="mb-1.5 px-1 text-[11px] font-medium text-muted-foreground">
+                  {groupTitle(kind)}
+                </div>
+                {sectionItems.map((item) => (
+                  <button
+                    key={`${item.kind}:${item.id}`}
+                    type="button"
+                    onClick={() => {
+                      onSelect(item);
+                      onClose();
+                    }}
+                    className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-muted"
+                  >
+                    <PickerLeadingVisual item={item} />
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm text-foreground">
+                        {itemLabel(item)}
+                      </div>
+                      {item.kind === "brand-kit-asset" && (
+                        <div className="truncate text-[11px] text-muted-foreground">
+                          {item.assetType}
+                          {item.textContent ? ` · ${item.textContent}` : ""}
+                        </div>
+                      )}
+                      {item.kind === "image-model" && item.description && (
+                        <div className="truncate text-[11px] text-muted-foreground">
+                          {item.description}
+                        </div>
+                      )}
                     </div>
-                    {item.kind === "brand-kit-asset" && (
-                      <div className="truncate text-[11px] text-muted-foreground">
-                        {item.assetType}
-                        {item.textContent ? ` · ${item.textContent}` : ""}
-                      </div>
-                    )}
-                    {item.kind === "image-model" && item.description && (
-                      <div className="truncate text-[11px] text-muted-foreground">
-                        {item.description}
-                      </div>
-                    )}
-                    {item.kind === "skill" && item.description && (
-                      <div className="truncate text-[11px] text-muted-foreground">
-                        {item.description}
-                      </div>
-                    )}
-                  </div>
-                </button>
-              ))}
-            </div>
-          );
-        })}
+                  </button>
+                ))}
+              </div>
+            );
+          },
+        )}
       </div>
     </div>
   );
@@ -230,11 +212,7 @@ function PickerLeadingVisual({ item }: { item: MessageMentionPickerItem }) {
 
   return (
     <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded border border-border bg-muted text-[10px] font-medium uppercase text-muted-foreground">
-      {item.kind === "brand-kit-asset"
-        ? item.assetType.slice(0, 2)
-        : item.kind === "skill"
-          ? "SK"
-          : "AI"}
+      {item.kind === "brand-kit-asset" ? item.assetType.slice(0, 2) : "AI"}
     </div>
   );
 }

@@ -7,7 +7,6 @@ export type RateLimitBudgets = {
   defaultPerMinute: number;
   generationPerMinute: number;
   imageProxyPerMinute: number;
-  skillImportPerHour: number;
   uploadsPerMinute: number;
 };
 
@@ -48,9 +47,6 @@ function resolveBudget(request: FastifyRequest, budgets: RateLimitBudgets) {
   if (group === "image-proxy") {
     return { max: budgets.imageProxyPerMinute, timeWindowMs: 60_000 };
   }
-  if (group === "skill-import") {
-    return { max: budgets.skillImportPerHour, timeWindowMs: 60 * 60_000 };
-  }
   if (group === "uploads") {
     return { max: budgets.uploadsPerMinute, timeWindowMs: 60_000 };
   }
@@ -61,7 +57,6 @@ function routeGroup(request: FastifyRequest) {
   const route = request.routeOptions.url ?? request.url.split("?", 1)[0] ?? "";
   if (route.startsWith("/api/health")) return "health";
   if (route === "/api/proxy-image") return "image-proxy";
-  if (route === "/api/skills/import") return "skill-import";
   if (route.startsWith("/api/uploads")) return "uploads";
   if (
     route.startsWith("/api/generate") ||

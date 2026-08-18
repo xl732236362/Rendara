@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import test from "node:test";
@@ -22,6 +22,13 @@ async function readJson(relativePath) {
 async function readText(relativePath) {
   const filePath = path.join(rootDir, relativePath);
   return readFile(filePath, "utf8");
+}
+
+async function pathExists(relativePath) {
+  return access(path.join(rootDir, relativePath)).then(
+    () => true,
+    () => false,
+  );
 }
 
 async function workspacePackageManifests() {
@@ -94,6 +101,96 @@ test("workspace includes apps and packages globs", async () => {
   assert.match(workspace, /packages\/\*/);
 });
 
+test("dynamic Skill product and execution paths are removed", async () => {
+  const forbiddenPaths = [
+    "apps/server/src/application/skills",
+    "apps/server/src/features/skills",
+    "apps/server/src/http/skills.ts",
+    "apps/server/src/http/skills-marketplace.ts",
+    "apps/web/src/app/(workspace)/skills",
+    "apps/web/src/components/skills",
+    "packages/shared/src/skill-contracts.ts",
+  ];
+  const existingPaths = [];
+  for (const relativePath of forbiddenPaths) {
+    if (await pathExists(relativePath)) existingPaths.push(relativePath);
+  }
+
+  const sources = await Promise.all(
+    [
+      "apps/server/src/app.ts",
+      "apps/server/src/application/use-cases.ts",
+      "apps/web/src/components/app-sidebar.tsx",
+      "apps/web/src/components/chat-sidebar.tsx",
+      "apps/web/src/lib/server-api.ts",
+      "packages/shared/src/contracts.ts",
+      "packages/shared/src/index.ts",
+    ].map(async (relativePath) => ({
+      relativePath,
+      source: await readText(relativePath),
+    })),
+  );
+  const forbiddenSource =
+    /(?:application|features)\/skills|register(?:Skill|Marketplace)Routes|["']\/api\/(?:workspaces\/)?skills|["']\/skills["']|mentionType\s*:\s*z\.literal\(["']skill["']\)|skill-contracts/;
+  const sourceViolations = sources
+    .filter(({ source }) => forbiddenSource.test(source))
+    .map(({ relativePath }) => relativePath);
+
+  assert.deepEqual(
+    { existingPaths, sourceViolations },
+    { existingPaths: [], sourceViolations: [] },
+  );
+});
+
+test("phase 3 keeps Agent authority manifest-only, tool-only, and canvas-scoped", async () => {
+  const manifest = await readJson("skills/builtin-skills.manifest.json");
+  const runtime = await readText("apps/server/src/agent/runtime.ts");
+  const loomicAgent = await readText("apps/server/src/agent/loomic-agent.ts");
+  const authority = await readText("apps/server/src/agent/capabilities.ts");
+  const serverManifest = await readJson("apps/server/package.json");
+  const removalMigration = await readText(
+    "supabase/migrations/20260819000001_phase3_remove_dynamic_skills.sql",
+  );
+
+  assert.deepEqual(manifest, {
+    schemaVersion: 1,
+    skills: [
+      {
+        name: "json-image-prompt",
+        path: "json-image-prompt",
+        requiredCapabilities: ["image.generate"],
+      },
+    ],
+  });
+  assert.doesNotMatch(
+    JSON.stringify(manifest),
+    /canvas-design|execute|python/i,
+  );
+  assert.doesNotMatch(runtime, /<canvas_state>|buildCanvasSummaryForContext/);
+  assert.match(loomicAgent, /options\.executionContext[\s\S]*capabilities/);
+  assert.match(authority, /FORBIDDEN_AGENT_TOOL_NAMES/);
+  assert.equal(serverManifest.dependencies?.deepagents, undefined);
+  for (const relation of ["skill_files", "workspace_skills", "skills"]) {
+    assert.match(
+      removalMigration,
+      new RegExp(`drop table if exists public\\.${relation}`),
+    );
+  }
+  assert.doesNotMatch(
+    removalMigration,
+    /create\s+(?:table|view)|archive|compatib/i,
+  );
+  const acceptedAuthority = authority.match(
+    /PRODUCTION_AGENT_CAPABILITIES\s*=\s*Object\.freeze\(\[([\s\S]*?)\]\s*satisfies/,
+  )?.[1];
+  assert.ok(
+    acceptedAuthority,
+    "production accepted authority must be explicit",
+  );
+  assert.match(acceptedAuthority, /brand_kit\.read/);
+  assert.doesNotMatch(acceptedAuthority, /project\.search/);
+});
+
 test("root test command wires node:test and turbo package tests", async () => {
   const manifest = await readJson("package.json");
 
@@ -111,7 +208,7 @@ test("environment template validator rejects drift without resolving secrets", a
     envTemplate: [
       "OPENAI_API_KEY=placeholder",
       "UNKNOWN_ENV=value",
-      "LOOMIC_ALLOW_LOCAL_AGENT_EXECUTE=true",
+      "LOOMIC_ALLOW_EXTERNAL_SKILL_IMPORT=true",
     ].join("\n"),
     deployments: [
       {
@@ -133,7 +230,11 @@ test("environment template validator rejects drift without resolving secrets", a
   });
 
   assert.ok(issues.some((issue) => issue.includes("UNKNOWN_ENV")));
-  assert.ok(issues.some((issue) => issue.includes("dangerous")));
+  assert.ok(
+    issues.some((issue) =>
+      issue.includes("LOOMIC_ALLOW_EXTERNAL_SKILL_IMPORT"),
+    ),
+  );
   assert.ok(issues.some((issue) => issue.includes("public/private")));
   assert.ok(
     issues.some(

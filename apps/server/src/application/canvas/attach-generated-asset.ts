@@ -11,6 +11,16 @@ const requestSchema = z.object({
   canvasId: z.string().min(1),
   jobId: z.string().uuid(),
   effectKey: z.string().trim().min(1).max(100),
+  agentEffect: z
+    .object({
+      runId: z.string().uuid(),
+      attemptId: z.string().uuid(),
+      fencingToken: z.number().int().nonnegative(),
+      logicalToolCallId: z.string().min(1),
+      inputDigest: z.string().min(1),
+      result: z.unknown().optional(),
+    })
+    .optional(),
   placement: placementSchema.optional(),
   asset: z.discriminatedUnion("type", [
     z.object({

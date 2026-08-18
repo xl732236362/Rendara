@@ -18,7 +18,6 @@
     "@loomic/config": "workspace:*",
     "@loomic/shared": "workspace:*",
     "@supabase/supabase-js": "^2.57.0",
-    "deepagents": "^1.8.4",
     "fastify": "^5.2.1",
     "google-auth-library": "^10.6.2",
     "jose": "^6.2.2",

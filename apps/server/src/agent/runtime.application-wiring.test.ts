@@ -2,13 +2,120 @@ import { describe, expect, it, vi } from "vitest";
 
 import { loadServerEnv } from "../config/env.js";
 import { AppError } from "../errors/app-error.js";
+import { MemoryAgentExecutionRepository } from "../features/agent-runs/agent-execution-repository.js";
 import { ProviderRegistry } from "../generation/providers/registry.js";
 import { createAgentRunService } from "./runtime.js";
 import type { SubmitImageJobFn } from "./tools/image-generate.js";
-import { createMainAgentTools } from "./tools/index.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
 
 describe("Agent runtime application wiring", () => {
+  it("replaces an expired running attempt before Agent construction", async () => {
+    const repository = new MemoryAgentExecutionRepository();
+    await repository.accept({
+      clientRequestId: "request-resume",
+      requestDigest: "digest-resume",
+      context: {
+        runId: "run-resume",
+        attemptId: "attempt-stale",
+        userId: "user-resume",
+        workspaceId: "workspace-resume",
+        projectId: "project-resume",
+        canvasId: "canvas-resume",
+        capabilities: ["image.generate"],
+        capabilityPolicyVersion: "policy-1",
+        skillCatalogDigest: "catalog-1",
+        effectiveSkillNames: [],
+      },
+    });
+    await repository.claimAttempt({
+      attemptId: "attempt-stale",
+      leaseOwner: "dead-worker",
+      leaseMs: 1,
+      now: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    const constructedAttempts: string[] = [];
+    const service = createAgentRunService({
+      agentExecutionRepository: repository,
+      agentFactory: ((options: { executionContext: { attemptId: string } }) => {
+        constructedAttempts.push(options.executionContext.attemptId);
+        return { async *streamEvents() {}, async *stream() {} };
+      }) as never,
+      builtinSkillCatalog: {
+        digest: "catalog-1",
+        list: () => [],
+      } as never,
+      env: loadServerEnv({}, {}),
+      now: () => "2026-01-01T00:01:00.000Z",
+      providerRegistry: new ProviderRegistry().seal(),
+    });
+    service.createRun(
+      {
+        canvasId: "canvas-resume",
+        clientRequestId: "request-resume",
+        conversationId: "conversation-resume",
+        prompt: "hello",
+        sessionId: "session-resume",
+      },
+      { runId: "run-resume", userId: "user-resume" },
+    );
+    for await (const _event of service.streamRun("run-resume")) {
+    }
+    expect(constructedAttempts).toHaveLength(1);
+    expect(constructedAttempts[0]).not.toBe("attempt-stale");
+  });
+
+  it("claims the persisted attempt before Agent construction and durably cancels it", async () => {
+    const repository = new MemoryAgentExecutionRepository();
+    await repository.accept({
+      clientRequestId: "request-lease",
+      requestDigest: "digest-lease",
+      context: {
+        runId: "run-lease",
+        attemptId: "attempt-lease",
+        userId: "user-lease",
+        workspaceId: "workspace-lease",
+        projectId: "project-lease",
+        canvasId: "canvas-lease",
+        capabilities: ["image.generate"],
+        capabilityPolicyVersion: "policy-1",
+        skillCatalogDigest: "catalog-1",
+        effectiveSkillNames: [],
+      },
+    });
+    const constructionStates: boolean[] = [];
+    const service = createAgentRunService({
+      agentExecutionRepository: repository,
+      agentFactory: (() => {
+        constructionStates.push(
+          Boolean(repository.get("run-lease")?.attempt.fencingToken),
+        );
+        return { async *streamEvents() {}, async *stream() {} };
+      }) as never,
+      env: loadServerEnv({}, {}),
+      providerRegistry: new ProviderRegistry().seal(),
+    });
+    service.createRun(
+      {
+        canvasId: "canvas-lease",
+        clientRequestId: "request-lease",
+        conversationId: "conversation-lease",
+        prompt: "hello",
+        sessionId: "session-lease",
+      },
+      { runId: "run-lease", userId: "user-lease" },
+    );
+
+    for await (const _event of service.streamRun("run-lease")) {
+    }
+    expect(constructionStates).toEqual([true]);
+    await expect(service.cancelRun("run-lease")).resolves.toMatchObject({
+      status: "canceled",
+    });
+    await expect(
+      repository.getExecutionContext("run-lease"),
+    ).resolves.toBeNull();
+  });
+
   it("emits billing.error and aborts the run when submission is rejected for billing", async () => {
     let submitImageJob: SubmitImageJobFn | undefined;
     let runtimeSignal: AbortSignal | undefined;
@@ -33,10 +140,7 @@ describe("Agent runtime application wiring", () => {
           canvasId: "canvas-1",
           workspaceId: "workspace-1",
         })) as never,
-      env: loadServerEnv(
-        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
-        {},
-      ),
+      env: loadServerEnv({}, {}),
       jobService: {} as never,
       providerRegistry: new ProviderRegistry().seal(),
       submitGeneration: vi.fn(async () => {
@@ -58,6 +162,7 @@ describe("Agent runtime application wiring", () => {
     const run = service.createRun(
       {
         canvasId: "canvas-1",
+        clientRequestId: "request-1",
         conversationId: "conversation-1",
         prompt: "hello",
         sessionId: "session-1",
@@ -70,6 +175,7 @@ describe("Agent runtime application wiring", () => {
 
     await expect(
       submitImageJob({
+        logicalToolCallId: "tool-billing-image",
         prompt: "image",
         title: "Image",
         model: "image/model",
@@ -117,10 +223,7 @@ describe("Agent runtime application wiring", () => {
           canvasId: "canvas-1",
           workspaceId: "workspace-1",
         })) as never,
-      env: loadServerEnv(
-        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
-        {},
-      ),
+      env: loadServerEnv({}, {}),
       jobService: {} as never,
       providerRegistry: new ProviderRegistry().seal(),
       submitGeneration: vi.fn(async () => {
@@ -134,6 +237,7 @@ describe("Agent runtime application wiring", () => {
     const run = service.createRun(
       {
         canvasId: "canvas-1",
+        clientRequestId: "request-2",
         conversationId: "conversation-1",
         prompt: "hello",
         sessionId: "session-1",
@@ -146,6 +250,7 @@ describe("Agent runtime application wiring", () => {
 
     await expect(
       submitImageJob({
+        logicalToolCallId: "tool-failing-image",
         prompt: "image",
         title: "Image",
         model: "image/model",
@@ -174,19 +279,9 @@ describe("Agent runtime application wiring", () => {
       }),
     }));
     let factoryOptions: Record<string, unknown> | undefined;
-    let toolNames: string[] = [];
     const service = createAgentRunService({
       agentFactory: ((options: Record<string, unknown>) => {
         factoryOptions = options;
-        toolNames = createMainAgentTools(
-          (options.backendResult as { factory: never }).factory,
-          {
-            applyCanvasOperations: options.applyCanvasOperations as never,
-            createUserClient,
-            providerRegistry: new ProviderRegistry().seal(),
-            resolveWorkspaceId: options.resolveWorkspaceId as never,
-          },
-        ).map((registeredTool) => registeredTool.name);
         return {
           async *streamEvents() {},
           async *stream() {},
@@ -194,13 +289,12 @@ describe("Agent runtime application wiring", () => {
       }) as never,
       applyCanvasOperations: applyCanvasOperations as never,
       createUserClient,
-      env: loadServerEnv(
-        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
-        {},
-      ),
+      env: loadServerEnv({}, {}),
       providerRegistry: new ProviderRegistry().seal(),
     });
     const run = service.createRun({
+      canvasId: "canvas-team",
+      clientRequestId: "request-3",
       conversationId: "conversation-1",
       prompt: "hello",
       sessionId: "session-1",
@@ -212,7 +306,6 @@ describe("Agent runtime application wiring", () => {
 
     expect(factoryOptions?.applyCanvasOperations).toBe(applyCanvasOperations);
     expect(factoryOptions?.resolveWorkspaceId).toBeTypeOf("function");
-    expect(toolNames).toContain("manipulate_canvas");
     await expect(
       (
         factoryOptions?.resolveWorkspaceId as (context: {
@@ -263,10 +356,7 @@ describe("Agent runtime application wiring", () => {
         return { async *streamEvents() {}, async *stream() {} };
       }) as never,
       createUserClient: createUserClient as never,
-      env: loadServerEnv(
-        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
-        {},
-      ),
+      env: loadServerEnv({}, {}),
       jobService: {} as never,
       providerRegistry: new ProviderRegistry().seal(),
       submitGeneration,
@@ -274,6 +364,7 @@ describe("Agent runtime application wiring", () => {
     const run = service.createRun(
       {
         canvasId: "canvas-team",
+        clientRequestId: "request-4",
         conversationId: "conversation-1",
         prompt: "hello",
         sessionId: "session-1",
@@ -286,6 +377,7 @@ describe("Agent runtime application wiring", () => {
 
     await expect(
       submitImageJob({
+        logicalToolCallId: "tool-team-image",
         prompt: "image",
         title: "Image",
         model: "image/model",
@@ -293,7 +385,11 @@ describe("Agent runtime application wiring", () => {
       }),
     ).rejects.toThrow("stop before polling");
     await expect(
-      submitVideoJob({ prompt: "video", model: "video/model" }),
+      submitVideoJob({
+        logicalToolCallId: "tool-team-video",
+        prompt: "video",
+        model: "video/model",
+      }),
     ).rejects.toThrow("stop before polling");
 
     expect(submitGeneration).toHaveBeenCalledTimes(2);
@@ -331,10 +427,7 @@ describe("Agent runtime application wiring", () => {
       }) as never,
       createUserClient: (() =>
         canvasWorkspaceClient({ canvasId: null, workspaceId: null })) as never,
-      env: loadServerEnv(
-        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
-        {},
-      ),
+      env: loadServerEnv({}, {}),
       jobService: {} as never,
       providerRegistry: new ProviderRegistry().seal(),
       submitGeneration,
@@ -342,6 +435,7 @@ describe("Agent runtime application wiring", () => {
     const run = service.createRun(
       {
         canvasId: "canvas-foreign",
+        clientRequestId: "request-5",
         conversationId: "conversation-1",
         prompt: "hello",
         sessionId: "session-1",
@@ -354,6 +448,7 @@ describe("Agent runtime application wiring", () => {
 
     await expect(
       submitImageJob({
+        logicalToolCallId: "tool-foreign-image",
         prompt: "image",
         title: "Image",
         model: "image/model",
@@ -361,7 +456,11 @@ describe("Agent runtime application wiring", () => {
       }),
     ).rejects.toThrow("Canvas not found or access denied");
     await expect(
-      submitVideoJob({ prompt: "video", model: "video/model" }),
+      submitVideoJob({
+        logicalToolCallId: "tool-foreign-video",
+        prompt: "video",
+        model: "video/model",
+      }),
     ).rejects.toThrow("Canvas not found or access denied");
     expect(submitGeneration).not.toHaveBeenCalled();
   });
@@ -383,11 +482,12 @@ describe("Agent runtime application wiring", () => {
         submitVideoJob = options.submitVideoJob;
         return { async *streamEvents() {}, async *stream() {} };
       }) as never,
-      createUserClient: (() => workspaceClient()) as never,
-      env: loadServerEnv(
-        { agentBackendMode: "filesystem", agentFilesRoot: process.cwd() },
-        {},
-      ),
+      createUserClient: (() =>
+        canvasWorkspaceClient({
+          canvasId: "canvas-1",
+          workspaceId: "22222222-2222-4222-8222-222222222222",
+        })) as never,
+      env: loadServerEnv({}, {}),
       jobService: {
         getJobAdmin: async () => ({
           status: "succeeded",
@@ -405,6 +505,8 @@ describe("Agent runtime application wiring", () => {
     });
     const run = service.createRun(
       {
+        canvasId: "canvas-1",
+        clientRequestId: "request-6",
         conversationId: "conversation-1",
         prompt: "hello",
         sessionId: "session-1",
@@ -420,6 +522,7 @@ describe("Agent runtime application wiring", () => {
     if (!submitImageJob || !submitVideoJob)
       throw new Error("Generation tools were not wired");
     const imagePromise = submitImageJob({
+      logicalToolCallId: "tool-image-1",
       prompt: "image",
       title: "Image",
       model: "image/model",
@@ -429,6 +532,7 @@ describe("Agent runtime application wiring", () => {
     });
     await imagePromise;
     const videoPromise = submitVideoJob({
+      logicalToolCallId: "tool-video-1",
       prompt: "video",
       model: "video/model",
       duration: 6,
@@ -449,6 +553,7 @@ describe("Agent runtime application wiring", () => {
         idempotency_key: expect.stringMatching(
           /^agent:[^:]+:image:[0-9a-f]{32}$/,
         ),
+        canvas_id: "canvas-1",
         type: "image_generation",
         prompt: "image",
         title: "Image",
@@ -470,6 +575,7 @@ describe("Agent runtime application wiring", () => {
         idempotency_key: expect.stringMatching(
           /^agent:[^:]+:video:[0-9a-f]{32}$/,
         ),
+        canvas_id: "canvas-1",
         type: "video_generation",
         prompt: "video",
         model: "video/model",
@@ -481,6 +587,99 @@ describe("Agent runtime application wiring", () => {
       },
     );
   }, 10_000);
+
+  it("does not attach generated media without canvas.mutate", async () => {
+    try {
+      const repository = new MemoryAgentExecutionRepository();
+      await repository.accept({
+        clientRequestId: "request-generate-only",
+        requestDigest: "digest-generate-only",
+        context: {
+          runId: "run-generate-only",
+          attemptId: "attempt-generate-only",
+          userId: "user-generate-only",
+          workspaceId: "workspace-generate-only",
+          projectId: "project-generate-only",
+          canvasId: "canvas-generate-only",
+          capabilities: ["image.generate"],
+          capabilityPolicyVersion: "policy-1",
+          skillCatalogDigest: "catalog-1",
+          effectiveSkillNames: [],
+        },
+      });
+      let submitImageJob: SubmitImageJobFn | undefined;
+      const attachGeneratedAsset = vi.fn(async () => ({
+        elementId: "element-1",
+      }));
+      const service = createAgentRunService({
+        agentExecutionRepository: repository,
+        agentFactory: ((options: { submitImageJob?: SubmitImageJobFn }) => {
+          submitImageJob = options.submitImageJob;
+          return { async *streamEvents() {}, async *stream() {} };
+        }) as never,
+        attachGeneratedAsset: attachGeneratedAsset as never,
+        builtinSkillCatalog: { digest: "catalog-1", list: () => [] } as never,
+        createUserClient: (() =>
+          canvasWorkspaceClient({
+            canvasId: "canvas-generate-only",
+            workspaceId: "workspace-generate-only",
+          })) as never,
+        env: loadServerEnv({}, {}),
+        jobService: {
+          getJobAdmin: async () => ({
+            status: "succeeded",
+            result: {
+              signed_url: "https://example.com/result.png",
+              object_path: "generated/result.png",
+              width: 100,
+              height: 80,
+              mime_type: "image/png",
+            },
+          }),
+        } as never,
+        providerRegistry: new ProviderRegistry().seal(),
+        submitGeneration: vi.fn(async () => ({
+          jobId: "job-generate-only",
+          status: "queued" as const,
+        })),
+      });
+      service.createRun(
+        {
+          canvasId: "canvas-generate-only",
+          clientRequestId: "request-generate-only",
+          conversationId: "conversation-generate-only",
+          prompt: "generate",
+          sessionId: "session-generate-only",
+        },
+        {
+          accessToken: "token",
+          runId: "run-generate-only",
+          userId: "user-generate-only",
+        },
+      );
+      for await (const _event of service.streamRun("run-generate-only")) {
+      }
+      if (!submitImageJob) throw new Error("Image tool was not wired");
+
+      vi.useFakeTimers();
+      const generation = submitImageJob({
+        logicalToolCallId: "tool-generate-only",
+        prompt: "image",
+        title: "Image",
+        model: "image/model",
+        aspectRatio: "1:1",
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      await expect(generation).resolves.toMatchObject({
+        jobId: "job-generate-only",
+        imageUrl: "https://example.com/result.png",
+      });
+      expect(attachGeneratedAsset).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function workspaceClient() {

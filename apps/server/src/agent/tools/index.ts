@@ -1,9 +1,12 @@
 import type { StructuredTool } from "@langchain/core/tools";
-import type { BackendFactory, BackendProtocol } from "deepagents";
 
 import type { ApplyCanvasOperations } from "../../application/canvas/apply-canvas-operations.js";
+import type { AgentExecutionRepository } from "../../features/agent-runs/agent-execution-repository.js";
 import type { ProviderCatalog } from "../../generation/providers/registry.js";
 import type { ConnectionManager } from "../../ws/connection-manager.js";
+import type { BuiltinSkillCatalog } from "../builtin-skills/catalog.js";
+import { createBuiltinSkillReadTool } from "../builtin-skills/read-tool.js";
+import type { AgentExecutionContext } from "../execution-context.js";
 import { createBrandKitTool } from "./brand-kit.js";
 import {
   type PersistImageFn,
@@ -12,9 +15,8 @@ import {
 } from "./image-generate.js";
 import { createInspectCanvasTool } from "./inspect-canvas.js";
 import { createManipulateCanvasTool } from "./manipulate-canvas.js";
-import { createPersistSandboxFileTool } from "./persist-sandbox-file.js";
-import { createProjectSearchTool } from "./project-search.js";
 import { createScreenshotCanvasTool } from "./screenshot-canvas.js";
+import { guardStructuredTool } from "./tool-guard.js";
 import {
   type SubmitVideoJobFn,
   createVideoGenerateTool,
@@ -25,55 +27,35 @@ export { createVideoGenerateTool } from "./video-generate.js";
 export { createInspectCanvasTool } from "./inspect-canvas.js";
 export { createManipulateCanvasTool } from "./manipulate-canvas.js";
 
-// ---------------------------------------------------------------------------
-// deepagents 内置工具参考 (由 FilesystemMiddleware 自动注入)
-// ---------------------------------------------------------------------------
-//
-// deepagents@1.8.4 通过 createFilesystemMiddleware 自动注入以下工具，
-// 我们自定义的工具名称不能与这些冲突：
-//
-//   ls          — 列出目录内容
-//   read_file   — 读取文件内容（支持 offset/limit）
-//   write_file  — 写入文件
-//   edit_file   — 编辑文件（find & replace）
-//   glob        — 按模式匹配文件路径
-//   grep        — 按正则搜索文件内容
-//   execute     — 执行 shell 命令（仅 SandboxBackendProtocol 时可用）
-//   task        — 分发子任务到 subagent
-//   write_todos — 管理 TODO 列表
-//
-// 我们使用 LocalShellBackend 作为 CompositeBackend 的 default backend，
-// 它实现了 SandboxBackendProtocol，因此 execute 工具自动可用。
-// 代码执行无需额外自定义工具。
-//
-// CompositeBackend 路由互不干扰：
-//   /workspace/  → StoreBackend (PostgresStore) — 文件持久化
-//   /memories/   → StoreBackend (PostgresStore) — agent 记忆
-//   /skills/     → FilesystemBackend            — 系统 skills
-//   default      → LocalShellBackend            — execute + 临时文件
-// ---------------------------------------------------------------------------
-
-export function createMainAgentTools(
-  backend: BackendProtocol | BackendFactory,
-  deps: {
-    createUserClient: (accessToken: string) => any;
-    applyCanvasOperations?: ApplyCanvasOperations;
-    resolveWorkspaceId?: (context: {
-      accessToken: string;
-      userId: string;
-      canvasId: string;
-    }) => Promise<string>;
-    brandKitId?: string | null;
-    connectionManager?: ConnectionManager;
-    persistImage?: PersistImageFn;
-    providerRegistry: ProviderCatalog;
-    sandboxDir?: string;
-    submitImageJob?: SubmitImageJobFn;
-    submitVideoJob?: SubmitVideoJobFn;
-  },
-) {
+export function createMainAgentTools(deps: {
+  createUserClient: (accessToken: string) => any;
+  applyCanvasOperations?: ApplyCanvasOperations;
+  resolveWorkspaceId?: (context: {
+    accessToken: string;
+    userId: string;
+    canvasId: string;
+  }) => Promise<string>;
+  brandKitId?: string | null;
+  connectionManager?: ConnectionManager;
+  persistImage?: PersistImageFn;
+  providerRegistry: ProviderCatalog;
+  submitImageJob?: SubmitImageJobFn;
+  submitVideoJob?: SubmitVideoJobFn;
+  executionContext?: AgentExecutionContext;
+  builtinSkillCatalog?: BuiltinSkillCatalog;
+  agentExecutionRepository?: AgentExecutionRepository;
+  fencingToken?: number;
+  authorizeExecutionContext?: () => Promise<void>;
+  resolveCurrentCapabilities?: () => readonly AgentExecutionContext["capabilities"][number][];
+}) {
+  if (
+    !deps.executionContext ||
+    !deps.agentExecutionRepository ||
+    deps.fencingToken === undefined
+  ) {
+    throw new Error("persisted_agent_authority_required");
+  }
   const tools: StructuredTool[] = [
-    createProjectSearchTool(backend),
     createInspectCanvasTool(deps),
     createImageGenerateTool({
       providerRegistry: deps.providerRegistry,
@@ -84,43 +66,89 @@ export function createMainAgentTools(
       providerRegistry: deps.providerRegistry,
       ...(deps.submitVideoJob ? { submitVideoJob: deps.submitVideoJob } : {}),
     }),
-    createPersistSandboxFileTool({
-      createUserClient: deps.createUserClient,
-      ...(deps.sandboxDir ? { sandboxDir: deps.sandboxDir } : {}),
-    }),
-    // execute 工具由 deepagents FilesystemMiddleware 自动注入，
-    // 因为 CompositeBackend 的 default backend 是 LocalShellBackend。
-    // 不需要在这里手动注册。
   ];
+  if (
+    deps.executionContext &&
+    deps.builtinSkillCatalog &&
+    deps.agentExecutionRepository
+  ) {
+    tools.push(
+      createBuiltinSkillReadTool({
+        catalog: deps.builtinSkillCatalog,
+        context: deps.executionContext,
+        repository: deps.agentExecutionRepository,
+      }),
+    );
+  }
   if (deps.applyCanvasOperations && deps.resolveWorkspaceId) {
     tools.push(
       createManipulateCanvasTool({
         applyCanvasOperations: deps.applyCanvasOperations,
         resolveWorkspaceId: deps.resolveWorkspaceId,
+        agentEffect: {
+          runId: deps.executionContext.runId,
+          attemptId: deps.executionContext.attemptId,
+          fencingToken: deps.fencingToken,
+        },
       }),
     );
   }
-  if (deps.brandKitId) {
+  if (deps.executionContext.capabilities.includes("brand_kit.read")) {
     tools.push(createBrandKitTool(deps, deps.brandKitId));
   }
   if (deps.connectionManager) {
     tools.push(
       createScreenshotCanvasTool({
         connectionManager: deps.connectionManager,
+        ...(deps.executionContext
+          ? {
+              canvasId: deps.executionContext.canvasId,
+              userId: deps.executionContext.userId,
+            }
+          : {}),
         ...(deps.persistImage ? { persistImage: deps.persistImage } : {}),
       }),
     );
   }
-  return tools;
+  const executionContext = deps.executionContext;
+  const agentExecutionRepository = deps.agentExecutionRepository;
+  const capabilityByToolName = {
+    inspect_canvas: "canvas.read",
+    screenshot_canvas: "canvas.read",
+    manipulate_canvas: "canvas.mutate",
+    generate_image: "image.generate",
+    generate_video: "video.generate",
+    get_brand_kit: "brand_kit.read",
+    project_search: "project.search",
+  } as const;
+  return tools.map((registeredTool) => {
+    const capability =
+      capabilityByToolName[
+        registeredTool.name as keyof typeof capabilityByToolName
+      ];
+    return capability
+      ? guardStructuredTool({
+          capability,
+          context: executionContext,
+          repository: agentExecutionRepository,
+          registeredTool,
+          ...(deps.fencingToken !== undefined
+            ? { fencingToken: deps.fencingToken }
+            : {}),
+          ...(deps.authorizeExecutionContext
+            ? { authorize: deps.authorizeExecutionContext }
+            : {}),
+          ...(deps.resolveCurrentCapabilities
+            ? { resolveCurrentCapabilities: deps.resolveCurrentCapabilities }
+            : {}),
+        })
+      : registeredTool;
+  });
 }
 
 /** @deprecated Use createMainAgentTools + sub-agents instead */
-export function createPhaseATools(
-  backend: BackendProtocol | BackendFactory,
-  providerRegistry: ProviderCatalog,
-) {
+export function createPhaseATools(providerRegistry: ProviderCatalog) {
   return [
-    createProjectSearchTool(backend),
     createImageGenerateTool({ providerRegistry }),
     createVideoGenerateTool({ providerRegistry }),
   ] as const;

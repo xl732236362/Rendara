@@ -7,8 +7,6 @@ import {
   type GenerateVideoResponse,
   type GenerationModelInfo,
   type JobResponse,
-  type MarketplaceDetail,
-  type MarketplaceSearchResponse,
   type MessageCreateResponse,
   type MessageListResponse,
   type ModelListResponse,
@@ -21,15 +19,9 @@ import {
   type RunCreateResponse,
   type SessionCreateResponse,
   type SessionListResponse,
-  type SkillCreateRequest,
-  type SkillDetailResponse,
-  type SkillFilesResponse,
-  type SkillListResponse,
-  type SkillUpdateRequest,
   type UploadResponse,
   type ViewerResponse,
   type WorkspaceSettingsResponse,
-  type WorkspaceSkillListResponse,
   assetSignedUrlResponseSchema,
   canvasGetResponseSchema,
   canvasSaveRequestSchema,
@@ -42,9 +34,6 @@ import {
   generateVideoResponseSchema,
   imageModelListResponseSchema,
   jobResponseSchema,
-  marketplaceDetailSchema,
-  marketplaceInstallRequestSchema,
-  marketplaceSearchResponseSchema,
   messageCreateResponseSchema,
   messageListResponseSchema,
   modelListResponseSchema,
@@ -60,20 +49,11 @@ import {
   sessionCreateResponseSchema,
   sessionListResponseSchema,
   sessionTitleRequestSchema,
-  skillCreateRequestSchema,
-  skillDetailResponseSchema,
-  skillFilesResponseSchema,
-  skillImportRequestSchema,
-  skillListResponseSchema,
-  skillUpdateRequestSchema,
   uploadResponseSchema,
   videoModelListResponseSchema,
   viewerResponseSchema,
   workspaceSettingsResponseSchema,
   workspaceSettingsUpdateRequestSchema,
-  workspaceSkillInstallRequestSchema,
-  workspaceSkillListResponseSchema,
-  workspaceSkillToggleRequestSchema,
 } from "@loomic/shared";
 
 import {
@@ -474,188 +454,5 @@ export function submitImageJob(
     requestSchema: createImageJobRequestSchema,
     body,
     responseSchema: jobResponseSchema,
-  });
-}
-
-export function fetchSkills(accessToken: string): Promise<SkillListResponse> {
-  return apiFetch({
-    method: "GET",
-    path: "/api/skills",
-    accessToken,
-    responseSchema: skillListResponseSchema,
-  });
-}
-
-export function fetchSkillDetail(
-  accessToken: string,
-  id: string,
-): Promise<SkillDetailResponse> {
-  return apiFetch({
-    method: "GET",
-    path: `/api/skills/${id}`,
-    accessToken,
-    responseSchema: skillDetailResponseSchema,
-  });
-}
-
-export function createSkill(
-  accessToken: string,
-  data: SkillCreateRequest,
-): Promise<SkillDetailResponse> {
-  return apiFetch({
-    method: "POST",
-    path: "/api/skills",
-    accessToken,
-    requestSchema: skillCreateRequestSchema,
-    body: data,
-    responseSchema: skillDetailResponseSchema,
-  });
-}
-
-export function updateSkill(
-  accessToken: string,
-  id: string,
-  data: SkillUpdateRequest,
-): Promise<SkillDetailResponse> {
-  return apiFetch({
-    method: "PUT",
-    path: `/api/skills/${id}`,
-    accessToken,
-    requestSchema: skillUpdateRequestSchema,
-    body: data,
-    responseSchema: skillDetailResponseSchema,
-  });
-}
-
-export function deleteSkill(accessToken: string, id: string): Promise<void> {
-  return apiFetch({
-    method: "DELETE",
-    path: `/api/skills/${id}`,
-    accessToken,
-    responseMode: "empty",
-  });
-}
-
-export function fetchSkillFiles(
-  accessToken: string,
-  skillId: string,
-): Promise<SkillFilesResponse> {
-  return apiFetch({
-    method: "GET",
-    path: `/api/skills/${skillId}/files`,
-    accessToken,
-    responseSchema: skillFilesResponseSchema,
-  });
-}
-
-export function fetchWorkspaceSkills(
-  accessToken: string,
-): Promise<WorkspaceSkillListResponse> {
-  return apiFetch({
-    method: "GET",
-    path: "/api/workspaces/skills",
-    accessToken,
-    responseSchema: workspaceSkillListResponseSchema,
-  });
-}
-
-export function installSkill(
-  accessToken: string,
-  skillId: string,
-): Promise<void> {
-  return apiFetch({
-    method: "POST",
-    path: "/api/workspaces/skills",
-    accessToken,
-    requestSchema: workspaceSkillInstallRequestSchema,
-    body: { skillId },
-    responseMode: "empty",
-  });
-}
-
-export function uninstallSkill(
-  accessToken: string,
-  skillId: string,
-): Promise<void> {
-  return apiFetch({
-    method: "DELETE",
-    path: `/api/workspaces/skills/${skillId}`,
-    accessToken,
-    responseMode: "empty",
-  });
-}
-
-export function toggleSkill(
-  accessToken: string,
-  skillId: string,
-  enabled: boolean,
-): Promise<void> {
-  return apiFetch({
-    method: "PATCH",
-    path: `/api/workspaces/skills/${skillId}`,
-    accessToken,
-    requestSchema: workspaceSkillToggleRequestSchema,
-    body: { enabled },
-    responseMode: "empty",
-  });
-}
-
-export function searchMarketplace(
-  accessToken: string,
-  query: string,
-  page = 1,
-  limit = 20,
-): Promise<MarketplaceSearchResponse> {
-  const params = new URLSearchParams({
-    q: query,
-    page: String(page),
-    limit: String(limit),
-  });
-  return apiFetch({
-    method: "GET",
-    path: `/api/skills/marketplace/search?${params}`,
-    accessToken,
-    responseSchema: marketplaceSearchResponseSchema,
-  });
-}
-
-export function getMarketplaceDetail(
-  accessToken: string,
-  packageName: string,
-): Promise<MarketplaceDetail> {
-  const params = new URLSearchParams({ name: packageName });
-  return apiFetch({
-    method: "GET",
-    path: `/api/skills/marketplace/detail?${params}`,
-    accessToken,
-    responseSchema: marketplaceDetailSchema,
-  });
-}
-
-export function installMarketplaceSkill(
-  accessToken: string,
-  packageName: string,
-): Promise<SkillDetailResponse> {
-  return apiFetch({
-    method: "POST",
-    path: "/api/skills/marketplace/install",
-    accessToken,
-    requestSchema: marketplaceInstallRequestSchema,
-    body: { packageName },
-    responseSchema: skillDetailResponseSchema,
-  });
-}
-
-export function importSkillFromUrl(
-  accessToken: string,
-  url: string,
-): Promise<SkillDetailResponse> {
-  return apiFetch({
-    method: "POST",
-    path: "/api/skills/import",
-    accessToken,
-    requestSchema: skillImportRequestSchema,
-    body: { url },
-    responseSchema: skillDetailResponseSchema,
   });
 }

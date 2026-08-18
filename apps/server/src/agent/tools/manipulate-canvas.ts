@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { tool } from "langchain";
 
 import type { ApplyCanvasOperations } from "../../application/canvas/apply-canvas-operations.js";
@@ -15,6 +16,11 @@ export function createManipulateCanvasTool(deps: {
     userId: string;
     canvasId: string;
   }): Promise<string>;
+  agentEffect?: {
+    runId: string;
+    attemptId: string;
+    fencingToken: number;
+  };
 }) {
   return tool(
     async (input, config) => {
@@ -38,7 +44,21 @@ export function createManipulateCanvasTool(deps: {
         });
         const outcome = await deps.applyCanvasOperations(
           { userId, workspaceId, accessToken },
-          { canvasId, operations: input.operations },
+          {
+            canvasId,
+            operations: input.operations,
+            ...(deps.agentEffect
+              ? {
+                  agentEffect: {
+                    ...deps.agentEffect,
+                    logicalToolCallId: toolCallId(config),
+                    inputDigest: createHash("sha256")
+                      .update(stableJson(input))
+                      .digest("hex"),
+                  },
+                }
+              : {}),
+          },
         );
         return JSON.stringify({
           success: true,
@@ -78,6 +98,32 @@ export function createManipulateCanvasTool(deps: {
       schema: manipulateCanvasSchema,
     },
   );
+}
+
+function toolCallId(config: unknown): string {
+  if (!config || typeof config !== "object")
+    throw new Error("tool_call_id_required");
+  const candidate = config as {
+    toolCallId?: unknown;
+    toolCall?: { id?: unknown };
+  };
+  const value = candidate.toolCallId ?? candidate.toolCall?.id;
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("tool_call_id_required");
+  }
+  return value;
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, child]) => child !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function configurableString(config: unknown, key: string): string | undefined {

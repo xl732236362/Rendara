@@ -8,7 +8,6 @@ import { UploadServiceError } from "../features/uploads/upload-service.js";
 import { registerErrorHandler } from "./error-handler.js";
 import { registerPaymentWebhookRoute } from "./payments-webhook.js";
 import { registerSettingsRoutes } from "./settings.js";
-import { registerMarketplaceRoutes } from "./skills-marketplace.js";
 import { registerUploadRoutes } from "./uploads.js";
 import { registerViewerRoutes } from "./viewer.js";
 
@@ -87,27 +86,6 @@ describe("high-risk route error boundaries", () => {
     });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: { code: "upload_failed" } });
-    await app.close();
-  });
-
-  it("rejects an invalid marketplace mutation before database access", async () => {
-    const app = createApp();
-    await registerMarketplaceRoutes(app, {
-      auth,
-      createUserClient: () => {
-        throw new Error("database-secret");
-      },
-      viewerService: {} as never,
-    });
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/skills/marketplace/install",
-      payload: {},
-    });
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({
-      error: { code: "invalid_request" },
-    });
     await app.close();
   });
 

@@ -261,6 +261,24 @@ export class ConnectionManager {
     });
   }
 
+  async rpcToCanvas<T = unknown>(
+    userId: string,
+    canvasId: string,
+    method: string,
+    params: Record<string, unknown>,
+    timeout = 10_000,
+  ): Promise<T> {
+    const connectionIds = this.canvasIndex.get(canvasId);
+    if (!connectionIds) throw new Error("canvas_connection_not_available");
+    for (const connectionId of connectionIds) {
+      const entry = this.connections.get(connectionId);
+      if (entry?.userId === userId && entry.ws.readyState === 1) {
+        return this.rpc<T>(connectionId, method, params, timeout);
+      }
+    }
+    throw new Error("canvas_connection_not_available");
+  }
+
   /**
    * Handle an incoming RPC response. Keyed by the unique RPC request UUID,
    * so connectionId is accepted but not needed for dispatch.

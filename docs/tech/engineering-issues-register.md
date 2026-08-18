@@ -52,10 +52,10 @@
 | ENG-024 | P2 | 已解决 | 扩展注册 | Provider 与 Executor registry 使用进程级可变全局状态 |
 | ENG-025 | P2 | 部分解决 | 架构治理 | 模块依赖方向和边界没有自动化约束 |
 | ENG-026 | P2 | 已解决 | 依赖治理 | Loomic 源码契约曾同时使用 Zod 3 与 Zod 4 |
-| ENG-027 | P0 | 部分解决 | Agent 安全 | Production execute 并未隔离容器文件系统与网络 |
+| ENG-027 | P0 | 已解决 | Agent 安全 | Agent 任意执行、Sandbox 与进程后端已永久移除 |
 | ENG-028 | P0 | 已解决 | WebSocket 授权 | 画布事件订阅与运行取消缺少资源所有权校验 |
 | ENG-029 | P0 | 已解决 | 外部请求安全 | 图片代理与 skill 导入存在 SSRF 和无界下载风险 |
-| ENG-030 | P0 | 部分解决 | Skill 供应链 | 外部 skill 可影响具备 shell 权限的 Agent，缺少信任与审批边界 |
+| ENG-030 | P0 | 已解决 | Skill 供应链 | 用户/外部 Skill 产品与数据路径已永久移除 |
 | ENG-031 | P1 | 已解决 | 滥用防护 | 高成本 HTTP、WebSocket、上传和代理接口缺少统一限流 |
 | ENG-032 | P1 | 已确认 | 横向扩展 | WebSocket、事件回放和活跃运行状态仅保存在单进程内存中 |
 | ENG-033 | P1 | 已确认 | 认证 | Token 缓存缺少硬容量上限和主动失效机制 |
@@ -115,7 +115,7 @@
 ### ENG-006：lint 基线不可用
 
 - 严重度：P1
-- 状态：部分解决
+- 状态：已解决
 - 证据：本次运行 `pnpm lint` 失败，Biome 报告约 14,902 个错误；包含 `.next.stale-*` 等生成目录、CRLF 格式差异、显式 `any` 和 import 排序问题。
 - 影响：lint 无法作为提交门禁，也无法可靠识别新增问题；大量噪声会使真实缺陷被淹没。
 - 建议方向：先修正扫描范围，统一 `.editorconfig`/`.gitattributes` 和格式基线，再分批清理真实诊断并在 CI 中禁止新增违规。
@@ -298,7 +298,7 @@
 - 证据：`agent/backends/prod.ts` 使用与 API/Worker 同容器的 `LocalShellBackend`。代码注释明确指出 `virtualMode` 只限制文件工具，不限制 `execute`；shell 仍可访问完整容器文件系统和网络。
 - 影响：受用户提示、模型输出或外部 skill 影响的命令可以读取应用源码、`/proc`、挂载凭证和同容器文件，访问内网或发起外部攻击。按 DeepAgents 官方 production/sandboxes 指引，这种本地 shell 适合受信开发环境，不构成多租户隔离。
 - 最终方向：Loomic Agent 不需要任意代码执行。阶段 3 永久删除 `execute`、`LocalShellBackend`、进程创建、Sandbox backend 和恢复开关；所有节点/画布能力只通过显式授权工具实现。未来重新引入任意执行必须另立安全设计。
-- 阶段 0 结果：危险的本地执行能力现已默认关闭。阶段 3 完成实际删除前本项保持“部分解决”。
+- 阶段 3 结果：`execute`、Shell/进程后端、Sandbox、通用文件工具及相关配置已从 Agent 构造和依赖中删除；Agent 使用持久化画布范围与精确工具白名单，工具调用和流事件受 attempt lease/fencing 约束。关闭于 2026-08-19。
 
 ### ENG-028：WebSocket 资源操作缺少对象级授权
 
@@ -321,12 +321,13 @@
 ### ENG-030：外部 Skill 与命令执行之间缺少供应链隔离
 
 - 严重度：P0
-- 状态：部分解决
+- 状态：已解决
 - 证据：用户可从 GitHub、npm tarball 和 marketplace 导入包含 `SKILL.md`、scripts 与 references 的内容，并自动启用到 workspace；Agent 同时拥有不受容器隔离的 execute 能力。导入过程没有签名、固定 commit/integrity、恶意规则扫描或首次执行审批。
 - 影响：仓库所有者更新、依赖劫持、恶意 README/SKILL 指令或 prompt injection 都可能转化为服务端命令执行和数据外传。
 - 最终方向：不再接收任何用户或外部 Skill。阶段 3 永久删除创建、导入、市场、安装、启停及相关数据模型，运行时只加载仓库 manifest 显式列出的内置 Skill；依赖任意执行的 Skill 不得进入 manifest。
 - 阶段 0 结果：外部导入能力已默认关闭；显式开启后导入的 Skill 也默认禁用并要求人工审阅，来源与下载范围受到约束。当时规划的签名和审批体系已由后续产品决策取消，本项仍保持“部分解决”直至动态 Skill 路径被彻底删除。
-- 阶段 1 进展：新增 transport-neutral `ImportSkill` 并收紧导入边界，作为阶段 3 删除动态 Skill 前的临时保护。阶段 3 将删除该用例、HTTP import、marketplace、workspace installation 和数据库投影，而不是继续演进它们。
+- 阶段 1 进展：曾新增 transport-neutral `ImportSkill` 作为临时保护；该路径已在阶段 3 删除。
+- 阶段 3 结果：创建、导入、市场、安装、启停、页面/API/共享契约和动态 Skill 数据表均永久删除；运行时只加载闭合 manifest 中的 `json-image-prompt`，`canvas-design` 因依赖任意执行而排除。关闭于 2026-08-19。
 
 ### ENG-031：高成本入口缺少统一限流和配额入口
 

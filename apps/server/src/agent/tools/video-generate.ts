@@ -1,3 +1,4 @@
+import type { ToolRuntime } from "@langchain/core/tools";
 import { tool } from "langchain";
 import { z } from "zod";
 
@@ -12,6 +13,7 @@ const DEFAULT_MODEL = "wan-video/wan-2.6";
 // ── Submit function type ───────────────────────────────────────────────────
 
 export type SubmitVideoJobFn = (input: {
+  logicalToolCallId: string;
   prompt: string;
   model: string;
   duration?: number;
@@ -51,86 +53,93 @@ function buildVideoGenerateSchema(models: AvailableModel[]) {
           .describe(modelDescription)
       : z.string().default(DEFAULT_MODEL).describe(modelDescription);
 
-  return z.object({
-    title: z
-      .string()
-      .min(1)
-      .describe(
-        "Short descriptive title for the generated video, used as metadata so the video content is understood without re-analysis (e.g. 'Autumn forest bus scene', '恐龙追逐镜头')",
-      ),
-    prompt: z
-      .string()
-      .min(1)
-      .describe(
-        "Detailed video generation prompt. Be specific about motion, camera angles, lighting, mood, action, and scene transitions.",
-      ),
-    model: modelField,
-    duration: z
-      .number()
-      .int()
-      .min(3)
-      .max(16)
-      .optional()
-      .default(5)
-      .describe(
-        "Video duration in seconds. Valid range depends on model (see model descriptions). Google Veo supports 4/6/8, Replicate models support 3-16.",
-      ),
-    resolution: z
-      .enum(["480p", "720p", "1080p", "4k"])
-      .optional()
-      .default("720p")
-      .describe(
-        "Output resolution. 720p recommended for balance of quality and speed. 1080p/4k supported by Google Veo official models (8s duration required).",
-      ),
-    aspectRatio: z
-      .enum(["1:1", "16:9", "9:16", "4:3", "3:4"])
-      .optional()
-      .default("16:9")
-      .describe(
-        "Video aspect ratio. 16:9 for landscape, 9:16 for portrait/mobile.",
-      ),
-    inputImages: z
-      .array(z.string())
-      .max(7)
-      .optional()
-      .describe(
-        "Reference image URLs for image-to-video. First image used as first frame. Only for models with I2V capability.",
-      ),
-    inputVideo: z
-      .string()
-      .optional()
-      .describe(
-        "Source video URL for video-to-video editing. Only for Kling O1.",
-      ),
-    enableAudio: z
-      .boolean()
-      .optional()
-      .default(true)
-      .describe(
-        "Generate synchronized audio (dialogue, sound effects, ambient). Not all models support this — ignored for models without audio capability.",
-      ),
-    placementX: z
-      .number()
-      .optional()
-      .describe(
-        "Canvas X coordinate for video placement. Use inspect_canvas to find a good position.",
-      ),
-    placementY: z
-      .number()
-      .optional()
-      .describe(
-        "Canvas Y coordinate for video placement. Use inspect_canvas to find a good position.",
-      ),
-    placementWidth: z
-      .number()
-      .optional()
-      .describe("Width on canvas (default: 640)"),
-    placementHeight: z
-      .number()
-      .optional()
-      .describe("Height on canvas (default: 360)"),
-  });
+  return z
+    .object({
+      title: z
+        .string()
+        .min(1)
+        .describe(
+          "Short descriptive title for the generated video, used as metadata so the video content is understood without re-analysis (e.g. 'Autumn forest bus scene', '恐龙追逐镜头')",
+        ),
+      prompt: z
+        .string()
+        .min(1)
+        .describe(
+          "Detailed video generation prompt. Be specific about motion, camera angles, lighting, mood, action, and scene transitions.",
+        ),
+      model: modelField,
+      duration: z
+        .number()
+        .int()
+        .min(3)
+        .max(16)
+        .optional()
+        .default(5)
+        .describe(
+          "Video duration in seconds. Valid range depends on model (see model descriptions). Google Veo supports 4/6/8, Replicate models support 3-16.",
+        ),
+      resolution: z
+        .enum(["480p", "720p", "1080p", "4k"])
+        .optional()
+        .default("720p")
+        .describe(
+          "Output resolution. 720p recommended for balance of quality and speed. 1080p/4k supported by Google Veo official models (8s duration required).",
+        ),
+      aspectRatio: z
+        .enum(["1:1", "16:9", "9:16", "4:3", "3:4"])
+        .optional()
+        .default("16:9")
+        .describe(
+          "Video aspect ratio. 16:9 for landscape, 9:16 for portrait/mobile.",
+        ),
+      inputImages: z
+        .array(opaqueMediaIdSchema)
+        .max(7)
+        .optional()
+        .describe("Authorized reference image asset IDs for image-to-video."),
+      inputVideo: opaqueMediaIdSchema
+        .optional()
+        .describe(
+          "Authorized source video asset ID for video-to-video editing.",
+        ),
+      enableAudio: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe(
+          "Generate synchronized audio (dialogue, sound effects, ambient). Not all models support this — ignored for models without audio capability.",
+        ),
+      placementX: z
+        .number()
+        .optional()
+        .describe(
+          "Canvas X coordinate for video placement. Use inspect_canvas to find a good position.",
+        ),
+      placementY: z
+        .number()
+        .optional()
+        .describe(
+          "Canvas Y coordinate for video placement. Use inspect_canvas to find a good position.",
+        ),
+      placementWidth: z
+        .number()
+        .optional()
+        .describe("Width on canvas (default: 640)"),
+      placementHeight: z
+        .number()
+        .optional()
+        .describe("Height on canvas (default: 360)"),
+    })
+    .strict();
 }
+
+const opaqueMediaIdSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .refine((value) => !/^(?:https?:|data:|file:)/i.test(value), {
+    message: "raw_url_not_allowed",
+  });
 
 // ── Result type ────────────────────────────────────────────────────────────
 
@@ -159,6 +168,7 @@ export async function runVideoGenerate(
   input: VideoGenerateInput,
   submitVideoJob?: SubmitVideoJobFn,
   providerRegistry?: ProviderCatalog,
+  logicalToolCallId?: string,
 ): Promise<VideoGenerateResult> {
   const t0 = Date.now();
   const lap = (label: string, extra?: Record<string, unknown>) => {
@@ -185,8 +195,10 @@ export async function runVideoGenerate(
   // Job mode: submit to PGMQ and wait for worker
   if (submitVideoJob) {
     try {
+      if (!logicalToolCallId) throw new Error("tool_call_id_required");
       lap("job_submit", { model: input.model });
       const jobResult = await submitVideoJob({
+        logicalToolCallId,
         prompt: input.prompt,
         model: input.model,
         duration: input.duration,
@@ -314,11 +326,12 @@ export function createVideoGenerateTool(deps?: {
     : "No video models available";
 
   return tool(
-    async (input: VideoGenerateInput) => {
+    async (input: VideoGenerateInput, runtime: ToolRuntime) => {
       return await runVideoGenerate(
         input,
         deps?.submitVideoJob,
         deps?.providerRegistry,
+        runtime.toolCallId ?? runtime.toolCall?.id,
       );
     },
     {

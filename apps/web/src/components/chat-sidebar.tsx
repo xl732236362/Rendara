@@ -27,11 +27,7 @@ import { useVideoModelPreference } from "../hooks/use-video-model-preference";
 import type { WebSocketHandle } from "../hooks/use-websocket";
 import { fetchBrandKit } from "../lib/brand-kit-api";
 import { claimDailyCredits } from "../lib/credits-api";
-import {
-  fetchImageModels,
-  fetchWorkspaceSkills,
-  saveMessage,
-} from "../lib/server-api";
+import { fetchImageModels, saveMessage } from "../lib/server-api";
 import type { CanvasSelectedElement } from "./canvas-editor";
 import {
   type BrandKitMentionItem,
@@ -39,7 +35,6 @@ import {
   type ImageModelMentionItem,
   MessageMentionPicker,
   type MessageMentionPickerItem,
-  type SkillMentionItem,
 } from "./canvas-image-picker";
 import { ChatInput } from "./chat-input";
 import { ChatMessage } from "./chat-message";
@@ -126,9 +121,6 @@ export function ChatSidebar({
   >([]);
   const [imageModelMentionItems, setImageModelMentionItems] = useState<
     ImageModelMentionItem[]
-  >([]);
-  const [skillMentionItems, setSkillMentionItems] = useState<
-    SkillMentionItem[]
   >([]);
   const [creditDialog, setCreditDialog] = useState<{
     open: boolean;
@@ -298,39 +290,6 @@ export function ChatSidebar({
     };
   }, []);
 
-  // Fetch enabled workspace skills for @ mention
-  useEffect(() => {
-    if (!accessToken) return;
-    let cancelled = false;
-
-    fetchWorkspaceSkills(accessToken)
-      .then((data) => {
-        if (cancelled) return;
-        const allSkills = data.skills ?? [];
-        const enabledSkills = allSkills.filter((s) => s.enabled);
-        console.log(
-          `[chat-sidebar] Workspace skills loaded: ${allSkills.length} total, ${enabledSkills.length} enabled`,
-        );
-        setSkillMentionItems(
-          enabledSkills.map((s) => ({
-            kind: "skill" as const,
-            id: s.id,
-            label: s.name,
-            slug: s.slug,
-            description: s.description,
-          })),
-        );
-      })
-      .catch((err) => {
-        console.error("[chat-sidebar] Failed to load workspace skills:", err);
-        if (!cancelled) setSkillMentionItems([]);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [accessToken]);
-
   // ── Fetch brand kit items for @mention picker ──
   useEffect(() => {
     if (!currentBrandKitId) {
@@ -422,15 +381,6 @@ export function ChatSidebar({
             mentionType: "image-model" as const,
             id: mention.id,
             label: mention.label,
-          };
-        }
-        if (mention.mentionType === "skill") {
-          return {
-            type: "mention" as const,
-            mentionType: "skill" as const,
-            id: mention.id,
-            label: mention.label,
-            slug: mention.slug,
           };
         }
         return {
@@ -596,6 +546,7 @@ export function ChatSidebar({
               conversationId: canvasId,
               prompt: text,
               canvasId,
+              clientRequestId: crypto.randomUUID(),
               accessToken: accessTokenRef.current,
               ...(currentAttachments.length > 0
                 ? { attachments: currentAttachments }
@@ -676,7 +627,6 @@ export function ChatSidebar({
     ...(onRequestCanvasImages ? onRequestCanvasImages() : []),
     ...brandKitMentionItems,
     ...imageModelMentionItems,
-    ...skillMentionItems,
   ];
 
   const handleMentionSelect = useCallback(
@@ -698,13 +648,6 @@ export function ChatSidebar({
             mentionType: "image-model",
             id: item.id,
             label: item.label,
-          };
-        } else if (item.kind === "skill") {
-          nextMention = {
-            mentionType: "skill",
-            id: item.id,
-            label: item.label,
-            slug: item.slug,
           };
         } else {
           nextMention = {

@@ -5,33 +5,40 @@ import type { ScreenshotResult } from "@loomic/shared";
 import type { ConnectionManager } from "../../ws/connection-manager.js";
 import type { PersistImageFn } from "./image-generate.js";
 
-const screenshotCanvasSchema = z.object({
-  mode: z
-    .enum(["full", "region", "viewport"])
-    .describe(
-      "full: all elements; region: specific area; viewport: current user view",
-    ),
-  region: z
-    .object({
-      x: z.number(),
-      y: z.number(),
-      width: z.number(),
-      height: z.number(),
-    })
-    .optional()
-    .describe("Required when mode is 'region'. Defines the crop rectangle."),
-  max_dimension: z
-    .number()
-    .default(1024)
-    .describe(
-      "Max width or height in pixels. 512=low, 1024=medium, 2048=high quality",
-    ),
-});
+const screenshotCanvasSchema = z
+  .object({
+    mode: z
+      .enum(["full", "region", "viewport"])
+      .describe(
+        "full: all elements; region: specific area; viewport: current user view",
+      ),
+    region: z
+      .object({
+        x: z.number(),
+        y: z.number(),
+        width: z.number(),
+        height: z.number(),
+      })
+      .optional()
+      .describe("Required when mode is 'region'. Defines the crop rectangle."),
+    max_dimension: z
+      .number()
+      .int()
+      .min(1)
+      .max(2048)
+      .default(1024)
+      .describe(
+        "Max width or height in pixels. 512=low, 1024=medium, 2048=high quality",
+      ),
+  })
+  .strict();
 
 export function createScreenshotCanvasTool(deps: {
   connectionManager: ConnectionManager;
   persistImage?: PersistImageFn;
   rpcTimeout?: number;
+  canvasId?: string;
+  userId?: string;
 }) {
   const timeout = deps.rpcTimeout ?? 10_000;
 
@@ -41,9 +48,10 @@ export function createScreenshotCanvasTool(deps: {
       "Take a visual screenshot of the canvas to inspect layout, design quality, color harmony, and spatial relationships. Use this to visually verify your changes or understand the current canvas state. Supports full canvas, specific region, or current viewport capture.",
     schema: screenshotCanvasSchema,
     func: async (input, _runManager, config): Promise<string> => {
-      const userId = (config as any)?.configurable?.user_id;
+      const userId = deps.userId ?? (config as any)?.configurable?.user_id;
+      const canvasId = deps.canvasId;
 
-      if (!userId) {
+      if (!userId || !canvasId) {
         return JSON.stringify({
           error: "no_user_context",
           message:
@@ -52,16 +60,25 @@ export function createScreenshotCanvasTool(deps: {
       }
 
       try {
-        const result = await deps.connectionManager.rpc<ScreenshotResult>(
-          userId,
-          "canvas.screenshot",
-          {
-            mode: input.mode,
-            ...(input.region ? { region: input.region } : {}),
-            max_dimension: input.max_dimension,
-          },
-          timeout,
-        );
+        const result =
+          await deps.connectionManager.rpcToCanvas<ScreenshotResult>(
+            userId,
+            canvasId,
+            "canvas.screenshot",
+            {
+              mode: input.mode,
+              ...(input.region ? { region: input.region } : {}),
+              max_dimension: input.max_dimension,
+            },
+            timeout,
+          );
+        if (
+          result.width > 2048 ||
+          result.height > 2048 ||
+          estimateDataUrlBytes(result.url) > 5 * 1024 * 1024
+        ) {
+          throw new Error("tool_result_too_large");
+        }
 
         // Upload screenshot to storage to get a short HTTPS URL.
         // Returning the raw data: URI (~1-2 MB base64) in the ToolMessage
@@ -104,4 +121,12 @@ export function createScreenshotCanvasTool(deps: {
       }
     },
   });
+}
+
+function estimateDataUrlBytes(url: string): number {
+  const marker = ";base64,";
+  const markerIndex = url.indexOf(marker);
+  if (!url.startsWith("data:") || markerIndex < 0) return 0;
+  const encodedLength = url.length - markerIndex - marker.length;
+  return Math.floor((encodedLength * 3) / 4);
 }

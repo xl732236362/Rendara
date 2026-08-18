@@ -9,6 +9,7 @@ import {
 } from "@loomic/shared";
 
 import type { AgentRunService } from "../agent/runtime.js";
+import type { AcceptAgentRun } from "../application/agent/accept-agent-run.js";
 import {
   type AgentRunMetadataService,
   AgentRunPersistenceError,
@@ -37,13 +38,14 @@ export async function registerRunRoutes(
   app: FastifyInstance,
   agentRuns: AgentRunService,
   options: {
+    acceptAgentRun?: AcceptAgentRun;
     agentRunMetadataService?: AgentRunMetadataService;
     auth?: RequestAuthenticator;
     authorization?: ResourceAuthorization;
     settingsService?: SettingsService;
     threadService?: ThreadService;
     viewerService?: ViewerService;
-  } = {},
+  },
 ) {
   app.post("/api/agent/runs", async (request, reply) => {
     const payload = parseRequest(runCreateRequestSchema, request.body);
@@ -91,8 +93,23 @@ export async function registerRunRoutes(
       }
     }
 
+    if (!options.acceptAgentRun) {
+      throw new Error("Agent acceptance is not configured.");
+    }
+    const accepted = await options.acceptAgentRun(
+      payload,
+      {
+        userId: authenticatedUser.id,
+        accessToken: authenticatedUser.accessToken,
+      },
+      {
+        ...(model ? { model } : {}),
+        ...(sessionThread ? { threadId: sessionThread.threadId } : {}),
+      },
+    );
     const response = runCreateResponseSchema.parse(
       agentRuns.createRun(payload, {
+        runId: accepted.runId,
         ...(authenticatedUser
           ? {
               accessToken: authenticatedUser.accessToken,
@@ -103,15 +120,6 @@ export async function registerRunRoutes(
         ...(sessionThread ? { threadId: sessionThread.threadId } : {}),
       }),
     );
-
-    if (sessionThread && options.agentRunMetadataService) {
-      await options.agentRunMetadataService.createAcceptedRun({
-        ...(model ? { model } : {}),
-        runId: response.runId,
-        sessionId: payload.sessionId,
-        threadId: sessionThread.threadId,
-      });
-    }
 
     return reply.code(202).send(response);
   });
@@ -129,7 +137,7 @@ export async function registerRunRoutes(
 
     const { runId } = parseStringParams(request.params, ["runId"]);
     await options.authorization.requireRunAccess(authenticatedUser, runId);
-    const canceledRun = agentRuns.cancelRun(runId);
+    const canceledRun = await agentRuns.cancelRun(runId);
 
     if (!canceledRun) {
       throwRouteError({

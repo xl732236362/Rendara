@@ -1,18 +1,15 @@
 import { readFileSync } from "node:fs";
 import {
-  type AgentBackendMode,
   type ServerEnvironment,
   envDescriptors,
   parseServerEnvironment,
 } from "@loomic/config/server";
 
-export const DEFAULT_AGENT_BACKEND_MODE = "state";
 export const DEFAULT_AGENT_MODEL = "gpt-4.1";
 export const DEFAULT_GOOGLE_AGENT_MODEL = "gemini-2.5-flash";
 export const DEFAULT_SERVER_PORT = 3001;
 export const DEFAULT_WEB_ORIGIN = "http://localhost:3000";
 
-export type { AgentBackendMode };
 export type ServerEnv = ServerEnvironment & { version: string };
 
 export function resolveDefaultAgentModel(env: {

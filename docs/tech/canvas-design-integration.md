@@ -4,6 +4,11 @@
 
 This integration is retired and must not be enabled in development, test, or production.
 
+Phase 3 verification on 2026-08-19 confirmed that it is absent from the
+built-in manifest and that the Agent runtime does not inject canvas state or
+offer generic execution. Canvas inspection and mutation remain available only
+through capability-checked Loomic tools bound to the persisted run context.
+
 The current `canvas-design` Skill depends on Agent-reachable Python execution, Pillow, reportlab, host fonts, and sandbox-file persistence. Loomic's approved Phase 3 boundary permanently removes `execute`, Shell/process backends, generic filesystem access, and Sandbox infrastructure. The package is therefore excluded from `skills/builtin-skills.manifest.json` and cannot be discovered or loaded by an Agent.
 
 Do not restore `LOOMIC_SANDBOX_ROOT`, `LOOMIC_SKILLS_ROOT`, `LOOMIC_AGENT_BACKEND_MODE`, `LocalShellBackend`, `persist_sandbox_file`, automatic Skill directory discovery, or Python dependencies for this integration.

@@ -40,101 +40,111 @@ const labelSchema = z
 
 // Flat object schema — Gemini doesn't support union/oneOf/anyOf in tool params.
 // All fields are optional; which ones are required depends on `action`.
-export const canvasOperationSchema = z.object({
-  action: z
-    .enum([
-      "move",
-      "resize",
-      "delete",
-      "update_style",
-      "add_text",
-      "add_shape",
-      "add_line",
-      "reorder",
-      "align",
-      "distribute",
-      "update_text",
-    ])
-    .describe("The operation to perform"),
+export const canvasOperationSchema = z
+  .object({
+    action: z
+      .enum([
+        "move",
+        "resize",
+        "delete",
+        "update_style",
+        "add_text",
+        "add_shape",
+        "add_line",
+        "reorder",
+        "align",
+        "distribute",
+        "update_text",
+      ])
+      .describe("The operation to perform"),
 
-  // Common: target element ID (move, resize, delete, update_style, reorder)
-  element_id: z.string().optional().describe("ID of element to operate on"),
+    // Common: target element ID (move, resize, delete, update_style, reorder)
+    element_id: z.string().optional().describe("ID of element to operate on"),
 
-  // Position / size
-  x: z.number().optional().describe("X coordinate"),
-  y: z.number().optional().describe("Y coordinate"),
-  width: z.number().optional().describe("Width"),
-  height: z.number().optional().describe("Height"),
+    // Position / size
+    x: z.number().optional().describe("X coordinate"),
+    y: z.number().optional().describe("Y coordinate"),
+    width: z.number().optional().describe("Width"),
+    height: z.number().optional().describe("Height"),
 
-  // Style (update_style, add_shape, add_line, add_text)
-  strokeColor: z
-    .string()
-    .optional()
-    .describe("Stroke/text color hex, e.g. #FF0000"),
-  backgroundColor: z.string().optional().describe("Fill color hex"),
-  opacity: z.number().optional().describe("Opacity 0-100"),
-  fontSize: z.number().optional().describe("Font size"),
-  strokeWidth: z.number().optional().describe("Stroke width"),
-  fillStyle: z
-    .enum(["solid", "hachure", "cross-hatch"])
-    .optional()
-    .describe("Fill style"),
+    // Style (update_style, add_shape, add_line, add_text)
+    strokeColor: z
+      .string()
+      .optional()
+      .describe("Stroke/text color hex, e.g. #FF0000"),
+    backgroundColor: z.string().optional().describe("Fill color hex"),
+    opacity: z.number().optional().describe("Opacity 0-100"),
+    fontSize: z.number().optional().describe("Font size"),
+    strokeWidth: z.number().optional().describe("Stroke width"),
+    fillStyle: z
+      .enum(["solid", "hachure", "cross-hatch"])
+      .optional()
+      .describe("Fill style"),
 
-  // add_text / update_text
-  text: z.string().optional().describe("Text content (add_text / update_text)"),
+    // add_text / update_text
+    text: z
+      .string()
+      .optional()
+      .describe("Text content (add_text / update_text)"),
 
-  // add_shape
-  shape: z
-    .enum(["rectangle", "ellipse", "diamond"])
-    .optional()
-    .describe("Shape type (add_shape)"),
-  label: labelSchema,
+    // add_shape
+    shape: z
+      .enum(["rectangle", "ellipse", "diamond"])
+      .optional()
+      .describe("Shape type (add_shape)"),
+    label: labelSchema,
 
-  // add_line
-  line_type: z
-    .enum(["line", "arrow"])
-    .optional()
-    .describe("Line or arrow (add_line)"),
-  points: z
-    .array(z.object({ x: z.number(), y: z.number() }))
-    .optional()
-    .describe("Array of {x,y} points (add_line, optional when using bindings)"),
-  start_element_id: z
-    .string()
-    .optional()
-    .describe("Bind arrow start to this element ID"),
-  end_element_id: z
-    .string()
-    .optional()
-    .describe("Bind arrow end to this element ID"),
+    // add_line
+    line_type: z
+      .enum(["line", "arrow"])
+      .optional()
+      .describe("Line or arrow (add_line)"),
+    points: z
+      .array(z.object({ x: z.number(), y: z.number() }))
+      .optional()
+      .describe(
+        "Array of {x,y} points (add_line, optional when using bindings)",
+      ),
+    start_element_id: z
+      .string()
+      .optional()
+      .describe("Bind arrow start to this element ID"),
+    end_element_id: z
+      .string()
+      .optional()
+      .describe("Bind arrow end to this element ID"),
 
-  // reorder
-  position: z
-    .enum(["front", "back"])
-    .optional()
-    .describe("Bring to front or send to back (reorder)"),
+    // reorder
+    position: z
+      .enum(["front", "back"])
+      .optional()
+      .describe("Bring to front or send to back (reorder)"),
 
-  // align / distribute
-  element_ids: z
-    .array(z.string())
-    .optional()
-    .describe("IDs of elements (align/distribute)"),
-  alignment: z
-    .enum(["left", "right", "center", "top", "bottom", "middle"])
-    .optional()
-    .describe("Alignment direction (align)"),
-  direction: z
-    .enum(["horizontal", "vertical"])
-    .optional()
-    .describe("Distribution direction (distribute)"),
-});
+    // align / distribute
+    element_ids: z
+      .array(z.string())
+      .optional()
+      .describe("IDs of elements (align/distribute)"),
+    alignment: z
+      .enum(["left", "right", "center", "top", "bottom", "middle"])
+      .optional()
+      .describe("Alignment direction (align)"),
+    direction: z
+      .enum(["horizontal", "vertical"])
+      .optional()
+      .describe("Distribution direction (distribute)"),
+  })
+  .strict();
 
-export const manipulateCanvasSchema = z.object({
-  operations: z
-    .array(canvasOperationSchema)
-    .min(1)
-    .describe("List of operations to apply"),
-});
+export const manipulateCanvasSchema = z
+  .object({
+    operations: z
+      .array(canvasOperationSchema)
+      .min(1)
+      .max(100)
+      .describe("List of operations to apply"),
+  })
+  .strict();
 
 // The LLM tool keeps the flat schema above because Gemini rejects oneOf/anyOf.
 const identifierSchema = z.string().trim().min(1).max(200);

@@ -6,7 +6,6 @@ import type {
   BaseStore,
 } from "@langchain/langgraph-checkpoint";
 import { ChatOpenAI } from "@langchain/openai";
-import { createDeepAgent } from "deepagents";
 
 import type { ApplyCanvasOperations } from "../application/canvas/apply-canvas-operations.js";
 import {
@@ -14,12 +13,17 @@ import {
   DEFAULT_GOOGLE_AGENT_MODEL,
   type ServerEnv,
 } from "../config/env.js";
+import type { AgentExecutionRepository } from "../features/agent-runs/agent-execution-repository.js";
 import type { ProviderCatalog } from "../generation/providers/registry.js";
 import type { ConnectionManager } from "../ws/connection-manager.js";
+import { type ExactAgent, createExactLoomicAgent } from "./agent-factory.js";
+import type { BuiltinSkillCatalog } from "./builtin-skills/catalog.js";
 import {
-  type AgentBackendResult,
-  createAgentBackend,
-} from "./backends/index.js";
+  type AgentCapability,
+  PRODUCTION_AGENT_CAPABILITIES,
+  createAgentAuthority,
+} from "./capabilities.js";
+import type { AgentExecutionContext } from "./execution-context.js";
 import { LOOMIC_SYSTEM_PROMPT } from "./prompts/loomic-main.js";
 import { createVideoSubAgent } from "./sub-agents.js";
 import type {
@@ -28,15 +32,10 @@ import type {
 } from "./tools/image-generate.js";
 import { createMainAgentTools } from "./tools/index.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
-import type { WorkspaceSkillEntry } from "./workspace-skills.js";
 
-export type LoomicAgent = Pick<
-  ReturnType<typeof createDeepAgent>,
-  "stream" | "streamEvents"
->;
+export type LoomicAgent = Pick<ExactAgent, "stream" | "streamEvents">;
 
 export type LoomicAgentFactory = (options: {
-  backendResult?: AgentBackendResult;
   applyCanvasOperations?: ApplyCanvasOperations;
   brandKitId?: string | null;
   canvasId?: string;
@@ -51,16 +50,19 @@ export type LoomicAgentFactory = (options: {
   submitImageJob?: SubmitImageJobFn;
   submitVideoJob?: SubmitVideoJobFn;
   store?: BaseStore;
-  workspaceSkills?: WorkspaceSkillEntry[];
   resolveWorkspaceId?: (context: {
     accessToken: string;
     userId: string;
     canvasId: string;
   }) => Promise<string>;
+  executionContext?: AgentExecutionContext;
+  builtinSkillCatalog?: BuiltinSkillCatalog;
+  agentExecutionRepository?: AgentExecutionRepository;
+  fencingToken?: number;
+  authorizeExecutionContext?: () => Promise<void>;
 }) => LoomicAgent;
 
-export function createLoomicDeepAgent(options: {
-  backendResult?: AgentBackendResult;
+export function createLoomicAgent(options: {
   applyCanvasOperations?: ApplyCanvasOperations;
   brandKitId?: string | null;
   canvasId?: string;
@@ -75,16 +77,30 @@ export function createLoomicDeepAgent(options: {
   submitImageJob?: SubmitImageJobFn;
   submitVideoJob?: SubmitVideoJobFn;
   store?: BaseStore;
-  workspaceSkills?: WorkspaceSkillEntry[];
   resolveWorkspaceId?: (context: {
     accessToken: string;
     userId: string;
     canvasId: string;
   }) => Promise<string>;
+  executionContext?: AgentExecutionContext;
+  builtinSkillCatalog?: BuiltinSkillCatalog;
+  agentExecutionRepository?: AgentExecutionRepository;
+  fencingToken?: number;
+  authorizeExecutionContext?: () => Promise<void>;
 }): LoomicAgent {
-  const backendResult =
-    options.backendResult ?? createAgentBackend(options.env, options.canvasId);
-
+  if (
+    !options.executionContext ||
+    !options.agentExecutionRepository ||
+    options.fencingToken === undefined
+  ) {
+    throw new Error("persisted_agent_authority_required");
+  }
+  if (
+    options.executionContext.capabilities.includes("skill.read") &&
+    !options.builtinSkillCatalog
+  ) {
+    throw new Error("builtin_skill_catalog_required");
+  }
   applyOpenAICompatEnv(options.env);
 
   const modelSpec = options.model ?? createDefaultModelSpecifier(options.env);
@@ -97,72 +113,70 @@ export function createLoomicDeepAgent(options: {
     options.createUserClient ??
     ((_accessToken: string): never => {
       throw new Error(
-        "inspect_canvas is unavailable: no createUserClient was provided to createLoomicDeepAgent.",
+        "inspect_canvas is unavailable: no createUserClient was provided to createLoomicAgent.",
       );
     });
 
-  let systemPrompt = options.brandKitId
+  const systemPrompt = options.brandKitId
     ? LOOMIC_SYSTEM_PROMPT +
       "\n\n当前项目已绑定品牌套件。在进行设计相关工作时，请先使用 get_brand_kit 工具查询品牌信息，确保设计符合品牌规范。"
     : LOOMIC_SYSTEM_PROMPT;
 
-  // Inject enabled skills (both system and user-created) into the system prompt.
-  // All skills are loaded from the database via loadWorkspaceSkills() in runtime.ts.
-  const wsSkills = options.workspaceSkills ?? [];
-  if (wsSkills.length > 0) {
-    const skillsList = wsSkills
-      .map((s) => {
-        let line = `- **${s.name}**: ${s.description}\n  → Read \`${s.path}\` for full instructions`;
-        if (s.files.length > 0) {
-          const counts: Record<string, number> = {};
-          for (const f of s.files) {
-            const dir = f.path.split("/")[0] ?? "other";
-            counts[dir] = (counts[dir] ?? 0) + 1;
-          }
-          const summary = Object.entries(counts)
-            .map(([dir, n]) => `${dir}/ (${n})`)
-            .join(", ");
-          line += `\n  → Has: ${summary}`;
+  const tools = createMainAgentTools({
+    ...(options.applyCanvasOperations && options.resolveWorkspaceId
+      ? {
+          applyCanvasOperations: options.applyCanvasOperations,
+          resolveWorkspaceId: options.resolveWorkspaceId,
         }
-        return line;
-      })
-      .join("\n");
-    systemPrompt += `\n\n## Skills\n\nThe following skills are enabled in this workspace:\n${skillsList}`;
-  }
+      : {}),
+    createUserClient,
+    providerRegistry: options.providerRegistry,
+    ...(options.brandKitId != null ? { brandKitId: options.brandKitId } : {}),
+    ...(options.connectionManager
+      ? { connectionManager: options.connectionManager }
+      : {}),
+    ...(options.persistImage ? { persistImage: options.persistImage } : {}),
+    ...(options.submitImageJob
+      ? { submitImageJob: options.submitImageJob }
+      : {}),
+    ...(options.submitVideoJob
+      ? { submitVideoJob: options.submitVideoJob }
+      : {}),
+    ...(options.executionContext
+      ? { executionContext: options.executionContext }
+      : {}),
+    ...(options.builtinSkillCatalog
+      ? { builtinSkillCatalog: options.builtinSkillCatalog }
+      : {}),
+    ...(options.agentExecutionRepository
+      ? { agentExecutionRepository: options.agentExecutionRepository }
+      : {}),
+    ...(options.fencingToken !== undefined
+      ? { fencingToken: options.fencingToken }
+      : {}),
+    ...(options.authorizeExecutionContext
+      ? { authorizeExecutionContext: options.authorizeExecutionContext }
+      : {}),
+    resolveCurrentCapabilities: () => PRODUCTION_AGENT_CAPABILITIES,
+  });
+  const capabilities: AgentCapability[] = [
+    ...options.executionContext.capabilities,
+  ];
+  const generateVideoTool = tools.find(
+    (registeredTool) => registeredTool.name === "generate_video",
+  );
+  const subagents = generateVideoTool
+    ? [createVideoSubAgent(generateVideoTool)]
+    : [];
 
-  return createDeepAgent({
-    backend: backendResult.factory,
+  return createExactLoomicAgent({
+    authority: createAgentAuthority(capabilities),
     ...(options.checkpointer ? { checkpointer: options.checkpointer } : {}),
     model: resolvedModel,
-    name: "loomic",
     ...(options.store ? { store: options.store } : {}),
-    subagents: [createVideoSubAgent(options.providerRegistry)],
+    subagents,
     systemPrompt,
-    tools: createMainAgentTools(backendResult.factory, {
-      ...(options.applyCanvasOperations && options.resolveWorkspaceId
-        ? {
-            applyCanvasOperations: options.applyCanvasOperations,
-            resolveWorkspaceId: options.resolveWorkspaceId,
-          }
-        : {}),
-      createUserClient,
-      providerRegistry: options.providerRegistry,
-      ...(options.brandKitId != null ? { brandKitId: options.brandKitId } : {}),
-      ...(options.connectionManager
-        ? { connectionManager: options.connectionManager }
-        : {}),
-      ...(options.persistImage ? { persistImage: options.persistImage } : {}),
-      ...(backendResult.sandboxDir
-        ? { sandboxDir: backendResult.sandboxDir }
-        : {}),
-
-      ...(options.submitImageJob
-        ? { submitImageJob: options.submitImageJob }
-        : {}),
-      ...(options.submitVideoJob
-        ? { submitVideoJob: options.submitVideoJob }
-        : {}),
-    }),
+    tools,
   });
 }
 
