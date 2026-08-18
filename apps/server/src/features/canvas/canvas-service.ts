@@ -29,7 +29,15 @@ export type CanvasService = {
     canvasId: string,
     expectedRevision: number,
     content: CanvasContent,
-  ): Promise<{ revision: number }>;
+    agentEffect?: {
+      runId: string;
+      attemptId: string;
+      fencingToken: number;
+      logicalToolCallId: string;
+      inputDigest: string;
+      result?: unknown;
+    },
+  ): Promise<{ revision: number; replayed?: boolean; effectResult?: unknown }>;
 };
 
 /**
@@ -64,7 +72,13 @@ export function createCanvasService(options: {
       };
     },
 
-    async saveCanvasContent(user, canvasId, expectedRevision, content) {
+    async saveCanvasContent(
+      user,
+      canvasId,
+      expectedRevision,
+      content,
+      agentEffect,
+    ) {
       const client = options.createUserClient(user.accessToken);
 
       // Extract base64 files to Storage, replacing dataURLs with oss:// markers
@@ -80,8 +94,16 @@ export function createCanvasService(options: {
         content: leanContent,
         eventType: "canvas.updated",
         eventPayload: { canvasId, actorUserId: user.id, source: "browser" },
+        ...(agentEffect
+          ? {
+              agentEffect: {
+                ...agentEffect,
+                result: agentEffect.result ?? { canvasId },
+              },
+            }
+          : {}),
       });
-      return { revision: committed.revision };
+      return committed;
     },
   };
 }

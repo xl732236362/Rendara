@@ -353,6 +353,126 @@ begin
 end;
 $$;
 
+create or replace function public.commit_agent_canvas_revision(
+  p_canvas_id uuid, p_actor_user_id uuid, p_expected_revision bigint,
+  p_content jsonb, p_run_id uuid, p_attempt_id uuid,
+  p_fencing_token bigint, p_logical_tool_call_id text,
+  p_input_digest text, p_result jsonb, p_job_id uuid,
+  p_effect_kind text, p_event_type text, p_event_payload jsonb
+) returns jsonb
+language plpgsql security definer set search_path = '' as $$
+declare
+  v_canvas public.canvases%rowtype;
+  v_effect public.agent_effects%rowtype;
+begin
+  select c.* into v_canvas
+  from public.agent_run_attempts a
+  join public.agent_runs r on r.id = a.run_id
+  join public.canvases c on c.id = r.canvas_id
+  join public.projects p on p.id = c.project_id
+  join public.workspace_members wm
+    on wm.workspace_id = p.workspace_id
+    and wm.user_id = p_actor_user_id
+  where a.attempt_id = p_attempt_id
+    and a.run_id = p_run_id
+    and a.status = 'running'
+    and a.fencing_token = p_fencing_token
+    and a.lease_expires_at > now()
+    and r.user_id = p_actor_user_id
+    and r.canvas_id = p_canvas_id
+    and r.project_id = p.id
+    and r.workspace_id = p.workspace_id
+  for update of a, c, wm;
+  if not found then raise exception 'run_not_active'; end if;
+
+  select * into v_effect from public.agent_effects e
+  where e.run_id = p_run_id
+    and e.logical_tool_call_id = p_logical_tool_call_id
+  for update;
+  if found then
+    if v_effect.input_digest <> p_input_digest then
+      raise exception 'agent_effect_conflict';
+    end if;
+    if v_effect.status = 'completed' then
+      return jsonb_build_object(
+        'revision', v_canvas.revision, 'replayed', true,
+        'effectResult', v_effect.result
+      );
+    end if;
+  else
+    insert into public.agent_effects(
+      run_id, logical_tool_call_id, attempt_id, input_digest, status
+    ) values (
+      p_run_id, p_logical_tool_call_id, p_attempt_id, p_input_digest, 'reserved'
+    );
+  end if;
+
+  if p_job_id is not null and not exists (
+    select 1 from public.projects p
+    join public.background_jobs j
+      on j.workspace_id = p.workspace_id
+      and j.id = p_job_id
+      and j.canvas_id = p_canvas_id
+      and j.created_by = p_actor_user_id
+    where p.id = v_canvas.project_id
+  ) then
+    raise exception using errcode = 'P0002', message = 'CANVAS_JOB_NOT_FOUND',
+      detail = 'canvas_not_found';
+  end if;
+  if v_canvas.revision <> p_expected_revision then
+    raise exception using errcode = '40001', message = 'CANVAS_REVISION_CONFLICT',
+      detail = 'canvas_revision_conflict',
+      hint = jsonb_build_object(
+        'expectedRevision', p_expected_revision,
+        'currentRevision', v_canvas.revision
+      )::text;
+  end if;
+
+  update public.canvases set content = p_content, revision = revision + 1
+  where id = p_canvas_id returning * into v_canvas;
+
+  if p_job_id is not null then
+    insert into public.job_effect_receipts(job_id, effect_kind, result)
+    values (
+      p_job_id, btrim(p_effect_kind),
+      jsonb_build_object('canvasId', p_canvas_id, 'revision', v_canvas.revision)
+    ) on conflict (job_id, effect_kind) do nothing;
+  end if;
+
+  insert into public.domain_outbox(
+    aggregate_type, aggregate_id, aggregate_version, event_type, payload
+  ) values (
+    'canvas', p_canvas_id, v_canvas.revision, p_event_type,
+    coalesce(p_event_payload, '{}'::jsonb) || jsonb_build_object(
+      'canvasId', p_canvas_id,
+      'revision', v_canvas.revision,
+      'runId', p_run_id,
+      'attemptId', p_attempt_id
+    )
+  );
+
+  update public.agent_effects
+  set status = 'completed', result = coalesce(p_result, '{}'::jsonb),
+    completed_at = now()
+  where run_id = p_run_id
+    and logical_tool_call_id = p_logical_tool_call_id;
+
+  return jsonb_build_object(
+    'revision', v_canvas.revision, 'replayed', false,
+    'effectResult', coalesce(p_result, '{}'::jsonb)
+  );
+end;
+$$;
+
+revoke all on function public.commit_agent_canvas_revision(
+  uuid, uuid, bigint, jsonb, uuid, uuid, bigint, text, text, jsonb,
+  uuid, text, text, jsonb
+) from public, anon, authenticated;
+grant execute on function public.commit_agent_canvas_revision(
+  uuid, uuid, bigint, jsonb, uuid, uuid, bigint, text, text, jsonb,
+  uuid, text, text, jsonb
+) to service_role;
+
 create or replace function public.cancel_agent_attempt(
   p_attempt_id uuid, p_fencing_token bigint
 ) returns void language plpgsql security definer set search_path = '' as $$

@@ -5,10 +5,16 @@ const brandKitSchema = z.object({}).strict();
 
 export function createBrandKitTool(
   deps: { createUserClient: (accessToken: string) => any },
-  brandKitId: string,
+  brandKitId?: string | null,
 ) {
   return tool(
     async (_input, config) => {
+      if (!brandKitId) {
+        return JSON.stringify({
+          configured: false,
+          message: "No brand kit is configured for this project.",
+        });
+      }
       const accessToken = (config as any)?.configurable?.access_token;
       if (!accessToken) {
         return JSON.stringify({ error: "No access token available" });
@@ -37,6 +43,7 @@ export function createBrandKitTool(
       const safeAssets = assets ?? [];
 
       const result = {
+        configured: true,
         kit_name: kit.name,
         design_guidance: kit.guidance_text ?? "",
         colors: safeAssets

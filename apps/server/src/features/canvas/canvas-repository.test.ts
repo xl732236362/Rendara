@@ -70,6 +70,40 @@ describe("canvas repository", () => {
     );
   });
 
+  it("commits Agent canvas effects and fencing in one service-role RPC", async () => {
+    const adminRpc = vi.fn(async () => ({
+      data: { revision: 4, replayed: false },
+      error: null,
+    }));
+    const repository = createCanvasRepository({
+      createUserClient: () =>
+        ({ rpc: vi.fn() }) as unknown as UserSupabaseClient,
+      getAdminClient: () =>
+        ({ rpc: adminRpc }) as unknown as AdminSupabaseClient,
+    });
+    await repository.commit(user, {
+      ...command,
+      agentEffect: {
+        runId: "44444444-4444-4444-8444-444444444444",
+        attemptId: "55555555-5555-4555-8555-555555555555",
+        fencingToken: 7,
+        logicalToolCallId: "tool-call-1",
+        inputDigest: "digest-1",
+        result: { applied: 1 },
+      },
+    });
+    expect(adminRpc).toHaveBeenCalledWith(
+      "commit_agent_canvas_revision",
+      expect.objectContaining({
+        p_run_id: "44444444-4444-4444-8444-444444444444",
+        p_attempt_id: "55555555-5555-4555-8555-555555555555",
+        p_fencing_token: 7,
+        p_logical_tool_call_id: "tool-call-1",
+        p_input_digest: "digest-1",
+      }),
+    );
+  });
+
   it("maps a conflict to safe expected and current revisions", async () => {
     const repository = createCanvasRepository({
       createUserClient: () =>

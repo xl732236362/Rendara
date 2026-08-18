@@ -351,8 +351,9 @@ export function createImageGenerateTool(deps?: {
 
   return tool(
     async (input: ImageGenerateInput, runtime: ToolRuntime) => {
-      const attachmentMap = runtime.configurable
-        ?.user_attachment_map as Record<string, string> | undefined;
+      const attachmentMap = runtime.configurable?.user_attachment_map as
+        | Record<string, string>
+        | undefined;
       return await runImageGenerate(
         input,
         deps?.persistImage,

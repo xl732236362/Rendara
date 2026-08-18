@@ -45,7 +45,16 @@ export function createMainAgentTools(deps: {
   builtinSkillCatalog?: BuiltinSkillCatalog;
   agentExecutionRepository?: AgentExecutionRepository;
   fencingToken?: number;
+  authorizeExecutionContext?: () => Promise<void>;
+  resolveCurrentCapabilities?: () => readonly AgentExecutionContext["capabilities"][number][];
 }) {
+  if (
+    !deps.executionContext ||
+    !deps.agentExecutionRepository ||
+    deps.fencingToken === undefined
+  ) {
+    throw new Error("persisted_agent_authority_required");
+  }
   const tools: StructuredTool[] = [
     createInspectCanvasTool(deps),
     createImageGenerateTool({
@@ -76,10 +85,15 @@ export function createMainAgentTools(deps: {
       createManipulateCanvasTool({
         applyCanvasOperations: deps.applyCanvasOperations,
         resolveWorkspaceId: deps.resolveWorkspaceId,
+        agentEffect: {
+          runId: deps.executionContext.runId,
+          attemptId: deps.executionContext.attemptId,
+          fencingToken: deps.fencingToken,
+        },
       }),
     );
   }
-  if (deps.brandKitId) {
+  if (deps.executionContext.capabilities.includes("brand_kit.read")) {
     tools.push(createBrandKitTool(deps, deps.brandKitId));
   }
   if (deps.connectionManager) {
@@ -96,37 +110,40 @@ export function createMainAgentTools(deps: {
       }),
     );
   }
-  if (deps.executionContext && deps.agentExecutionRepository) {
-    const executionContext = deps.executionContext;
-    const agentExecutionRepository = deps.agentExecutionRepository;
-    const capabilityByToolName = {
-      inspect_canvas: "canvas.read",
-      screenshot_canvas: "canvas.read",
-      manipulate_canvas: "canvas.mutate",
-      generate_image: "image.generate",
-      generate_video: "video.generate",
-      get_brand_kit: "brand_kit.read",
-      project_search: "project.search",
-    } as const;
-    return tools.map((registeredTool) => {
-      const capability =
-        capabilityByToolName[
-          registeredTool.name as keyof typeof capabilityByToolName
-        ];
-      return capability
-        ? guardStructuredTool({
-            capability,
-            context: executionContext,
-            repository: agentExecutionRepository,
-            registeredTool,
-            ...(deps.fencingToken !== undefined
-              ? { fencingToken: deps.fencingToken }
-              : {}),
-          })
-        : registeredTool;
-    });
-  }
-  return tools;
+  const executionContext = deps.executionContext;
+  const agentExecutionRepository = deps.agentExecutionRepository;
+  const capabilityByToolName = {
+    inspect_canvas: "canvas.read",
+    screenshot_canvas: "canvas.read",
+    manipulate_canvas: "canvas.mutate",
+    generate_image: "image.generate",
+    generate_video: "video.generate",
+    get_brand_kit: "brand_kit.read",
+    project_search: "project.search",
+  } as const;
+  return tools.map((registeredTool) => {
+    const capability =
+      capabilityByToolName[
+        registeredTool.name as keyof typeof capabilityByToolName
+      ];
+    return capability
+      ? guardStructuredTool({
+          capability,
+          context: executionContext,
+          repository: agentExecutionRepository,
+          registeredTool,
+          ...(deps.fencingToken !== undefined
+            ? { fencingToken: deps.fencingToken }
+            : {}),
+          ...(deps.authorizeExecutionContext
+            ? { authorize: deps.authorizeExecutionContext }
+            : {}),
+          ...(deps.resolveCurrentCapabilities
+            ? { resolveCurrentCapabilities: deps.resolveCurrentCapabilities }
+            : {}),
+        })
+      : registeredTool;
+  });
 }
 
 /** @deprecated Use createMainAgentTools + sub-agents instead */

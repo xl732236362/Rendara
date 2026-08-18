@@ -1,10 +1,8 @@
-import type { ProviderCatalog } from "../generation/providers/registry.js";
+import type { StructuredTool } from "@langchain/core/tools";
 
 import type { SubagentDefinition } from "./agent-factory.js";
-import { createVideoGenerateTool } from "./tools/video-generate.js";
-
 export function createVideoSubAgent(
-  providerRegistry: ProviderCatalog,
+  generateVideoTool: StructuredTool,
 ): SubagentDefinition {
   return {
     name: "video_generate",
@@ -13,6 +11,6 @@ export function createVideoSubAgent(
     systemPrompt: `You are a video generation specialist. Given a description, generate a video using the generate_video tool and return the result.
 
 If video generation is not available or fails, clearly explain the limitation.`,
-    tools: [createVideoGenerateTool({ providerRegistry })],
+    tools: [generateVideoTool],
   };
 }

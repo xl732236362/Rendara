@@ -11,6 +11,7 @@ import type {
 const commitResultSchema = z.object({
   revision: z.number().int().nonnegative().safe(),
   replayed: z.boolean(),
+  effectResult: z.unknown().optional(),
 });
 
 type RpcError = { details?: string; hint?: string };
@@ -52,28 +53,54 @@ export function createCanvasRepository(options: {
         effectKind?: string;
         eventType: string;
         eventPayload: Record<string, unknown>;
+        agentEffect?: {
+          runId: string;
+          attemptId: string;
+          fencingToken: number;
+          logicalToolCallId: string;
+          inputDigest: string;
+          result: unknown;
+        };
       },
     ) {
-      const trustedJobCommit = command.jobId !== undefined;
-      const client = trustedJobCommit
+      const trustedCommit =
+        command.jobId !== undefined || command.agentEffect !== undefined;
+      const client = trustedCommit
         ? options.getAdminClient()
         : options.createUserClient(user.accessToken);
-      const { data, error } = trustedJobCommit
-        ? await callRpc(client, "commit_canvas_revision", {
+      const { data, error } = command.agentEffect
+        ? await callRpc(client, "commit_agent_canvas_revision", {
             p_canvas_id: command.canvasId,
             p_actor_user_id: user.id,
             p_expected_revision: command.expectedRevision,
             p_content: command.content,
-            p_job_id: command.jobId,
+            p_run_id: command.agentEffect.runId,
+            p_attempt_id: command.agentEffect.attemptId,
+            p_fencing_token: command.agentEffect.fencingToken,
+            p_logical_tool_call_id: command.agentEffect.logicalToolCallId,
+            p_input_digest: command.agentEffect.inputDigest,
+            p_result: command.agentEffect.result,
+            p_job_id: command.jobId ?? null,
             p_effect_kind: command.effectKind ?? null,
             p_event_type: command.eventType,
             p_event_payload: command.eventPayload,
           })
-        : await callRpc(client, "save_canvas_revision", {
-            p_canvas_id: command.canvasId,
-            p_expected_revision: command.expectedRevision,
-            p_content: command.content,
-          });
+        : command.jobId !== undefined
+          ? await callRpc(client, "commit_canvas_revision", {
+              p_canvas_id: command.canvasId,
+              p_actor_user_id: user.id,
+              p_expected_revision: command.expectedRevision,
+              p_content: command.content,
+              p_job_id: command.jobId,
+              p_effect_kind: command.effectKind ?? null,
+              p_event_type: command.eventType,
+              p_event_payload: command.eventPayload,
+            })
+          : await callRpc(client, "save_canvas_revision", {
+              p_canvas_id: command.canvasId,
+              p_expected_revision: command.expectedRevision,
+              p_content: command.content,
+            });
       if (error) throw mapCommitError(error, command.expectedRevision);
       const parsed = commitResultSchema.safeParse(data);
       if (!parsed.success) {

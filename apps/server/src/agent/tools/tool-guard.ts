@@ -29,8 +29,27 @@ export async function guardToolCall<T>(options: {
   fencingToken?: number;
   input: unknown;
   invoke: () => Promise<T>;
+  authorize?: () => Promise<void>;
+  resolveCurrentCapabilities?: () => readonly AgentCapability[];
 }): Promise<T> {
   assertBoundedInput(options.input);
+  await assertActiveAuthority(options);
+  await options.authorize?.();
+
+  const result = await options.invoke();
+  await assertActiveAuthority(options);
+  await options.authorize?.();
+  assertBoundedResult(result);
+  return result;
+}
+
+async function assertActiveAuthority(options: {
+  capability: AgentCapability;
+  context: AgentExecutionContext;
+  repository: AgentExecutionRepository;
+  fencingToken?: number;
+  resolveCurrentCapabilities?: () => readonly AgentCapability[];
+}): Promise<void> {
   const active = await options.repository.getExecutionContext(
     options.context.runId,
   );
@@ -48,7 +67,9 @@ export async function guardToolCall<T>(options: {
   }
   if (
     !options.context.capabilities.includes(options.capability) ||
-    !active.capabilities.includes(options.capability)
+    !active.capabilities.includes(options.capability) ||
+    (options.resolveCurrentCapabilities !== undefined &&
+      !options.resolveCurrentCapabilities().includes(options.capability))
   ) {
     throw new Error("capability_denied");
   }
@@ -60,10 +81,6 @@ export async function guardToolCall<T>(options: {
   ) {
     throw new Error("tool_not_authorized");
   }
-
-  const result = await options.invoke();
-  assertBoundedResult(result);
-  return result;
 }
 
 export function guardStructuredTool(options: {
@@ -72,6 +89,8 @@ export function guardStructuredTool(options: {
   repository: AgentExecutionRepository;
   registeredTool: StructuredTool;
   fencingToken?: number;
+  authorize?: () => Promise<void>;
+  resolveCurrentCapabilities?: () => readonly AgentCapability[];
 }): StructuredTool {
   return new DynamicStructuredTool({
     name: options.registeredTool.name,
@@ -87,6 +106,10 @@ export function guardStructuredTool(options: {
           : {}),
         input,
         invoke: async () => options.registeredTool.invoke(input, config),
+        ...(options.authorize ? { authorize: options.authorize } : {}),
+        ...(options.resolveCurrentCapabilities
+          ? { resolveCurrentCapabilities: options.resolveCurrentCapabilities }
+          : {}),
       }),
   }) as StructuredTool;
 }

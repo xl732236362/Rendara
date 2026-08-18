@@ -4,12 +4,23 @@ import { z } from "zod";
 
 import { type CreateAgentFn, createExactLoomicAgent } from "./agent-factory.js";
 import { createAgentAuthority } from "./capabilities.js";
+import { createLoomicAgent } from "./loomic-agent.js";
 
 const schema = z.object({});
 const namedTool = (name: string) =>
   tool(async () => `${name}:ok`, { name, description: name, schema });
 
 describe("exact LangChain Agent factory", () => {
+  it("rejects production construction without persisted execution authority", () => {
+    expect(() =>
+      createLoomicAgent({
+        env: {} as never,
+        model: "openai:test",
+        providerRegistry: {} as never,
+      }),
+    ).toThrow("persisted_agent_authority_required");
+  });
+
   it("passes only authorized classified tools to createAgent", () => {
     const createAgent = vi.fn<CreateAgentFn>(() => ({
       stream() {},
@@ -61,6 +72,12 @@ describe("exact LangChain Agent factory", () => {
         tools: [namedTool("unknown_tool")],
       }),
     ).toThrow("unclassified_agent_tool");
+    expect(() =>
+      createExactLoomicAgent({
+        ...base,
+        tools: [],
+      }),
+    ).toThrow("missing_authorized_tool:inspect_canvas");
   });
 
   it("constructs a closed task tool with the registered subagent enum", () => {

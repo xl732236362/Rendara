@@ -15,7 +15,10 @@ import {
   type BuiltinSkillCatalog,
   loadRepositoryBuiltinSkillCatalog,
 } from "./agent/builtin-skills/catalog.js";
-import { createAgentAuthority } from "./agent/capabilities.js";
+import {
+  PRODUCTION_AGENT_CAPABILITIES,
+  createAgentAuthority,
+} from "./agent/capabilities.js";
 import type { LoomicAgentFactory } from "./agent/loomic-agent.js";
 import {
   type AgentPersistenceService,
@@ -341,17 +344,7 @@ export function buildAppFromEnv(
           "Agent run acceptance persisted",
         ),
       resolveAuthority: () =>
-        createAgentAuthority([
-          "skill.read",
-          "canvas.read",
-          "canvas.mutate",
-          "asset.persist",
-          "image.generate",
-          "video.generate",
-          "brand_kit.read",
-          "project.search",
-          "agent.delegate",
-        ]),
+        createAgentAuthority(PRODUCTION_AGENT_CAPABILITIES),
       resolveScope: resolveAgentCanvasScope,
       requireSessionScope: async (principal, sessionId) => {
         if (!principal.accessToken) throw new Error("canvas_access_denied");

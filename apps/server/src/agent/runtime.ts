@@ -41,6 +41,11 @@ import type { ConnectionManager } from "../ws/connection-manager.js";
 import { createPipelineLogger } from "../ws/logger.js";
 import type { BuiltinSkillCatalog } from "./builtin-skills/catalog.js";
 import {
+  type AgentCapability,
+  PRODUCTION_AGENT_CAPABILITIES,
+  createAgentAuthority,
+} from "./capabilities.js";
+import {
   type LoomicAgent,
   type LoomicAgentFactory,
   createDefaultModelSpecifier,
@@ -49,7 +54,6 @@ import {
 import type { AgentPersistenceService } from "./persistence/index.js";
 import { adaptDeepAgentStream } from "./stream-adapter.js";
 import type { SubmitImageJobFn } from "./tools/image-generate.js";
-import { buildCanvasSummaryForContext } from "./tools/inspect-canvas.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
 
 /**
@@ -62,14 +66,8 @@ export function buildUserMessage(
   imageGenerationPreference?: ImageGenerationPreference,
   mentions: MessageMention[] = [],
   videoGenerationPreference?: VideoGenerationPreference,
-  canvasSummary?: string | null,
 ): { text: string } {
   const xmlBlocks: string[] = [];
-
-  // Canvas state context (auto-injected, not user-provided)
-  if (canvasSummary) {
-    xmlBlocks.push(`<canvas_state>\n${canvasSummary}\n</canvas_state>`);
-  }
 
   const inputImagesXml = buildInputImagesXml(attachments);
   if (inputImagesXml) xmlBlocks.push(inputImagesXml);
@@ -271,30 +269,42 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
   const runs = new Map<string, RuntimeRunRecord>();
   const runIdFactory = options.runIdFactory ?? (() => randomUUID());
   const createUserClientForCanvas = options.createUserClient;
+  const resolveCanvasScope = createUserClientForCanvas
+    ? async (context: { accessToken: string; canvasId: string }) => {
+        const client = createUserClientForCanvas(
+          context.accessToken,
+        ) as UserSupabaseClient;
+        const { data, error } = await client
+          .from("canvases")
+          .select("id, project_id, projects!inner(workspace_id)")
+          .eq("id", context.canvasId)
+          .maybeSingle();
+        const canvas = data as unknown as {
+          id?: string;
+          project_id?: string;
+          projects?: { workspace_id?: string };
+        } | null;
+        const workspaceId = canvas?.projects?.workspace_id;
+        if (
+          error ||
+          canvas?.id !== context.canvasId ||
+          !canvas.project_id ||
+          !workspaceId
+        ) {
+          throw new Error("Canvas not found or access denied");
+        }
+        return { projectId: canvas.project_id, workspaceId };
+      }
+    : undefined;
   const resolveWorkspaceId =
-    options.applyCanvasOperations && createUserClientForCanvas
+    options.applyCanvasOperations && resolveCanvasScope
       ? async (context: {
           accessToken: string;
           userId: string;
           canvasId: string;
         }) => {
-          const client = createUserClientForCanvas(
-            context.accessToken,
-          ) as UserSupabaseClient;
-          const { data, error } = await client
-            .from("canvases")
-            .select("id, project_id, projects!inner(workspace_id)")
-            .eq("id", context.canvasId)
-            .maybeSingle();
-          const canvas = data as unknown as {
-            id?: string;
-            projects?: { workspace_id?: string };
-          } | null;
-          const workspaceId = canvas?.projects?.workspace_id;
-          if (error || canvas?.id !== context.canvasId || !workspaceId) {
-            throw new Error("Canvas not found or access denied");
-          }
-          return workspaceId;
+          const scope = await resolveCanvasScope(context);
+          return scope.workspaceId;
         }
       : undefined;
 
@@ -526,6 +536,39 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         return;
       }
       if (executionContext && options.agentExecutionRepository) {
+        const attemptState =
+          await options.agentExecutionRepository.getAttemptState(runId);
+        const currentTime = new Date(now());
+        if (
+          attemptState?.status === "running" &&
+          attemptState.leaseExpiresAt &&
+          attemptState.leaseExpiresAt.getTime() <= currentTime.getTime()
+        ) {
+          if (!options.builtinSkillCatalog) {
+            throw new Error("builtin_skill_catalog_required");
+          }
+          const authority = createAgentAuthority(PRODUCTION_AGENT_CAPABILITIES);
+          const currentCapabilities = new Set<AgentCapability>(
+            PRODUCTION_AGENT_CAPABILITIES,
+          );
+          const eligibleSkills = options.builtinSkillCatalog
+            .list()
+            .filter((skill) =>
+              skill.requiredCapabilities.every((capability) =>
+                currentCapabilities.has(capability),
+              ),
+            )
+            .map((skill) => skill.name);
+          executionContext =
+            await options.agentExecutionRepository.resumeAttempt({
+              runId,
+              attemptId: randomUUID(),
+              activeCatalogDigest: options.builtinSkillCatalog.digest,
+              currentCapabilities: PRODUCTION_AGENT_CAPABILITIES,
+              capabilityPolicyVersion: authority.policyVersion,
+              effectiveSkillNames: eligibleSkills,
+            });
+        }
         const lease = await options.agentExecutionRepository.claimAttempt({
           attemptId: executionContext.attemptId,
           leaseOwner: `runtime-${randomUUID()}`,
@@ -538,6 +581,9 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           (await options.agentExecutionRepository.getExecutionContext(runId)) ??
           executionContext;
       }
+      const canMutateCanvas =
+        executionContext?.capabilities.includes("canvas.mutate") === true &&
+        PRODUCTION_AGENT_CAPABILITIES.includes("canvas.mutate");
 
       // Build submitImageJob / submitVideoJob closures for async jobs via PGMQ
       let submitImageJob: SubmitImageJobFn | undefined;
@@ -648,6 +694,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               if (
                 canvasId &&
                 result.object_path &&
+                canMutateCanvas &&
                 options.attachGeneratedAsset
               ) {
                 try {
@@ -673,6 +720,27 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                       canvasId,
                       jobId: job.id,
                       effectKey: "generated_asset_attached",
+                      ...(run.attemptId && run.fencingToken !== undefined
+                        ? {
+                            agentEffect: {
+                              runId,
+                              attemptId: run.attemptId,
+                              fencingToken: run.fencingToken,
+                              logicalToolCallId: input.logicalToolCallId,
+                              inputDigest: createHash("sha256")
+                                .update(stableJson(input))
+                                .digest("hex"),
+                              result: {
+                                jobId: job.id,
+                                elementId: job.id,
+                                imageUrl: result.signed_url ?? "",
+                                width: result.width ?? 1024,
+                                height: result.height ?? 1024,
+                                mimeType: result.mime_type ?? "image/png",
+                              },
+                            },
+                          }
+                        : {}),
                       asset: {
                         type: "image",
                         objectPath: result.object_path,
@@ -848,6 +916,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               if (
                 canvasId &&
                 result.signed_url &&
+                canMutateCanvas &&
                 options.attachGeneratedAsset
               ) {
                 try {
@@ -873,6 +942,32 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                       canvasId,
                       jobId: job.id,
                       effectKey: "generated_asset_attached",
+                      ...(run.attemptId && run.fencingToken !== undefined
+                        ? {
+                            agentEffect: {
+                              runId,
+                              attemptId: run.attemptId,
+                              fencingToken: run.fencingToken,
+                              logicalToolCallId: input.logicalToolCallId,
+                              inputDigest: createHash("sha256")
+                                .update(stableJson(input))
+                                .digest("hex"),
+                              result: {
+                                jobId: job.id,
+                                elementId: job.id,
+                                videoUrl: result.signed_url ?? "",
+                                width: result.width ?? 1280,
+                                height: result.height ?? 720,
+                                mimeType: result.mime_type ?? "video/mp4",
+                                ...(result.duration_seconds != null
+                                  ? {
+                                      durationSeconds: result.duration_seconds,
+                                    }
+                                  : {}),
+                              },
+                            },
+                          }
+                        : {}),
                       asset: {
                         type: "video",
                         signedUrl: result.signed_url,
@@ -977,55 +1072,6 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
             : createDefaultModelSpecifier({ agentModel: run.modelOverride })
           : options.model;
 
-        // Build persistImage closure using the user's Supabase client.
-        // Client creation is deferred into the closure so it only runs
-        // when an image is actually generated (avoids throwing in tests
-        // that don't configure Supabase env vars).
-        let persistImage:
-          | ((url: string, mime: string, prompt: string) => Promise<string>)
-          | undefined;
-        if (options.createUserClient && run.accessToken) {
-          const createClient = options.createUserClient;
-          const accessToken = run.accessToken;
-          persistImage = async (sourceUrl, mimeType, prompt) => {
-            const client = createClient(accessToken) as UserSupabaseClient;
-            const response = await fetch(sourceUrl);
-            if (!response.ok)
-              throw new Error(`Download failed: ${response.status}`);
-            const buffer = Buffer.from(await response.arrayBuffer());
-            const ext = mimeType === "image/webp" ? "webp" : "png";
-            const slug = prompt
-              .slice(0, 40)
-              .replace(/[^a-zA-Z0-9]+/g, "-")
-              .replace(/^-|-$/g, "");
-            const fileName = `gen-${slug}-${Date.now()}.${ext}`;
-
-            const { data: ws } = await client
-              .from("workspaces")
-              .select("id")
-              .eq("type", "personal")
-              .limit(1)
-              .single();
-            const workspaceId = ws?.id ?? "default";
-            const objectPath = `${workspaceId}/${Date.now()}-${fileName}`;
-
-            const { error: uploadError } = await client.storage
-              .from("project-assets")
-              .upload(objectPath, buffer, {
-                contentType: mimeType,
-                upsert: false,
-              });
-            if (uploadError)
-              throw new Error(`Upload failed: ${uploadError.message}`);
-
-            const { data: urlData } = client.storage
-              .from("project-assets")
-              .getPublicUrl(objectPath);
-
-            return urlData.publicUrl;
-          };
-        }
-
         // Resolve brand kit ID from canvas → project in a single joined query
         let brandKitId: string | null = null;
         if (run.canvasId && run.accessToken && options.createUserClient) {
@@ -1064,6 +1110,25 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         rlog.lap("brand_kit_resolved");
 
         agent = resolvedAgentFactory({
+          ...(executionContext &&
+          resolveCanvasScope &&
+          run.accessToken &&
+          run.userId
+            ? {
+                authorizeExecutionContext: async () => {
+                  const scope = await resolveCanvasScope({
+                    accessToken: run.accessToken!,
+                    canvasId: executionContext.canvasId,
+                  });
+                  if (
+                    scope.workspaceId !== executionContext.workspaceId ||
+                    scope.projectId !== executionContext.projectId
+                  ) {
+                    throw new Error("canvas_access_denied");
+                  }
+                },
+              }
+            : {}),
           ...(options.applyCanvasOperations && resolveWorkspaceId
             ? {
                 applyCanvasOperations: options.applyCanvasOperations,
@@ -1079,7 +1144,6 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           env: options.env,
           providerRegistry: options.providerRegistry,
           ...(resolvedModel ? { model: resolvedModel } : {}),
-          ...(persistImage ? { persistImage } : {}),
           ...(submitImageJob ? { submitImageJob } : {}),
           ...(submitVideoJob ? { submitVideoJob } : {}),
           ...(persistence ? { store: persistence.store } : {}),
@@ -1110,29 +1174,6 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
 
       let stream: AsyncIterable<unknown>;
       try {
-        // Auto-inject canvas state summary so the agent has immediate awareness
-        // of what's on the canvas without needing to call inspect_canvas first.
-        let canvasSummary: string | null = null;
-        if (run.canvasId && run.accessToken && options.createUserClient) {
-          try {
-            const canvasClient = options.createUserClient(
-              run.accessToken,
-            ) as any;
-            const { data: canvasData } = await canvasClient
-              .from("canvases")
-              .select("content")
-              .eq("id", run.canvasId)
-              .single();
-            if (canvasData?.content?.elements) {
-              canvasSummary = buildCanvasSummaryForContext(
-                canvasData.content.elements as Array<Record<string, unknown>>,
-              );
-            }
-          } catch {
-            // Non-critical — agent can still call inspect_canvas manually
-          }
-        }
-
         const hasAttachments = run.attachments && run.attachments.length > 0;
         let userMessage: HumanMessage;
         let attachmentDataMap: Record<string, string> = {};
@@ -1197,7 +1238,6 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
             run.imageGenerationPreference,
             run.mentions,
             run.videoGenerationPreference,
-            canvasSummary,
           );
 
           // Build assetId → data URI map for tool-level resolution
@@ -1216,7 +1256,6 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
             run.imageGenerationPreference,
             run.mentions,
             run.videoGenerationPreference,
-            canvasSummary,
           );
           userMessage = new HumanMessage(enrichedPrompt);
         }

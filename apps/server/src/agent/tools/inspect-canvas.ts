@@ -116,52 +116,6 @@ function computeBoundingBox(elements: CanvasElement[]) {
   return { minX, minY, maxX, maxY };
 }
 
-/**
- * Build a compact canvas summary for injecting into user message context.
- * Reuses the existing summarizeElement / computeBoundingBox helpers so the
- * format stays consistent with inspect_canvas output.
- * Returns null if canvas is empty (no visible elements).
- */
-export function buildCanvasSummaryForContext(
-  elements: Array<Record<string, unknown>>,
-): string | null {
-  const visible = elements.filter((el) => !el.isDeleted);
-  if (visible.length === 0) return null;
-
-  const bbox = computeBoundingBox(visible);
-  const summaries = visible.map((el) => summarizeElement(el));
-
-  // Compact format: element count + bounding box + per-element one-liner
-  const lines: string[] = [
-    `Canvas: ${visible.length} elements, bounds (${Math.round(bbox.minX)},${Math.round(bbox.minY)})→(${Math.round(bbox.maxX)},${Math.round(bbox.maxY)})`,
-  ];
-
-  // Cap at 30 elements to avoid bloating the context window
-  const toShow = summaries.slice(0, 30);
-  for (const s of toShow) {
-    const parts = [`${s.type}#${s.id}`];
-    parts.push(`@(${Math.round(s.x as number)},${Math.round(s.y as number)})`);
-    parts.push(
-      `${Math.round(s.width as number)}x${Math.round(s.height as number)}`,
-    );
-    if (s.text) parts.push(`"${s.text}"`);
-    if (s.title) parts.push(`title="${s.title}"`);
-    if (s.type === "video") {
-      if (s.durationSeconds) parts.push(`${s.durationSeconds}s`);
-      if (s.prompt)
-        parts.push(`prompt="${(s.prompt as string).slice(0, 120)}"`);
-    }
-    if (s.strokeColor) parts.push(`stroke=${s.strokeColor}`);
-    if (s.backgroundColor) parts.push(`fill=${s.backgroundColor}`);
-    lines.push(`  ${parts.join(" ")}`);
-  }
-  if (summaries.length > 30) {
-    lines.push(`  ... and ${summaries.length - 30} more elements`);
-  }
-
-  return lines.join("\n");
-}
-
 export function createInspectCanvasTool(deps: {
   createUserClient: (accessToken: string) => any;
 }) {

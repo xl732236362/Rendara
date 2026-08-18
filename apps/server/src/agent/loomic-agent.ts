@@ -18,7 +18,11 @@ import type { ProviderCatalog } from "../generation/providers/registry.js";
 import type { ConnectionManager } from "../ws/connection-manager.js";
 import { type ExactAgent, createExactLoomicAgent } from "./agent-factory.js";
 import type { BuiltinSkillCatalog } from "./builtin-skills/catalog.js";
-import { type AgentCapability, createAgentAuthority } from "./capabilities.js";
+import {
+  type AgentCapability,
+  PRODUCTION_AGENT_CAPABILITIES,
+  createAgentAuthority,
+} from "./capabilities.js";
 import type { AgentExecutionContext } from "./execution-context.js";
 import { LOOMIC_SYSTEM_PROMPT } from "./prompts/loomic-main.js";
 import { createVideoSubAgent } from "./sub-agents.js";
@@ -55,6 +59,7 @@ export type LoomicAgentFactory = (options: {
   builtinSkillCatalog?: BuiltinSkillCatalog;
   agentExecutionRepository?: AgentExecutionRepository;
   fencingToken?: number;
+  authorizeExecutionContext?: () => Promise<void>;
 }) => LoomicAgent;
 
 export function createLoomicAgent(options: {
@@ -81,7 +86,21 @@ export function createLoomicAgent(options: {
   builtinSkillCatalog?: BuiltinSkillCatalog;
   agentExecutionRepository?: AgentExecutionRepository;
   fencingToken?: number;
+  authorizeExecutionContext?: () => Promise<void>;
 }): LoomicAgent {
+  if (
+    !options.executionContext ||
+    !options.agentExecutionRepository ||
+    options.fencingToken === undefined
+  ) {
+    throw new Error("persisted_agent_authority_required");
+  }
+  if (
+    options.executionContext.capabilities.includes("skill.read") &&
+    !options.builtinSkillCatalog
+  ) {
+    throw new Error("builtin_skill_catalog_required");
+  }
   applyOpenAICompatEnv(options.env);
 
   const modelSpec = options.model ?? createDefaultModelSpecifier(options.env);
@@ -135,25 +154,27 @@ export function createLoomicAgent(options: {
     ...(options.fencingToken !== undefined
       ? { fencingToken: options.fencingToken }
       : {}),
+    ...(options.authorizeExecutionContext
+      ? { authorizeExecutionContext: options.authorizeExecutionContext }
+      : {}),
+    resolveCurrentCapabilities: () => PRODUCTION_AGENT_CAPABILITIES,
   });
-  const toolNames = new Set(tools.map((registeredTool) => registeredTool.name));
   const capabilities: AgentCapability[] = [
-    "image.generate",
-    "video.generate",
-    "agent.delegate",
+    ...options.executionContext.capabilities,
   ];
-  if (toolNames.has("inspect_canvas")) capabilities.push("canvas.read");
-  if (toolNames.has("manipulate_canvas")) capabilities.push("canvas.mutate");
-  if (toolNames.has("get_brand_kit")) capabilities.push("brand_kit.read");
-  if (toolNames.has("project_search")) capabilities.push("project.search");
-  if (toolNames.has("read_builtin_skill")) capabilities.push("skill.read");
+  const generateVideoTool = tools.find(
+    (registeredTool) => registeredTool.name === "generate_video",
+  );
+  const subagents = generateVideoTool
+    ? [createVideoSubAgent(generateVideoTool)]
+    : [];
 
   return createExactLoomicAgent({
     authority: createAgentAuthority(capabilities),
     ...(options.checkpointer ? { checkpointer: options.checkpointer } : {}),
     model: resolvedModel,
     ...(options.store ? { store: options.store } : {}),
-    subagents: [createVideoSubAgent(options.providerRegistry)],
+    subagents,
     systemPrompt,
     tools,
   });

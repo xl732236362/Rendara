@@ -14,11 +14,11 @@ WebSocket commands, connection identity, event buffering, and logging. Commands 
 
 ### `apps/server/src/agent/`
 
-LangGraph/DeepAgents runtime, persistence, tools, prompts, and backends. Queued generation and canvas mutation consume injected application use cases; streaming and run lifecycle remain runtime responsibilities.
+Tool-only LangChain/LangGraph runtime, persistence, prompts, and exact capability-mapped tools. Accepted runs persist canonical canvas scope, built-in Skill catalog identity, attempt leases, fencing tokens, and effect receipts. There is no Agent shell, Sandbox, generic filesystem, or automatic framework tool authority.
 
 ### `apps/server/src/features/`
 
-Domain-oriented services and adapters for jobs, credits, canvas, chat, projects, skills, payments, settings, uploads, and Agent run metadata. The `application/` layer composes narrow ports without introducing the phase 2 database consistency redesign.
+Domain-oriented services and adapters for jobs, credits, canvas, chat, projects, payments, settings, uploads, and Agent execution metadata. User-extensible Skill services are removed; the `application/` layer composes narrow ports.
 
 ### `apps/server/src/generation/`
 

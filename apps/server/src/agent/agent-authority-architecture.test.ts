@@ -1,8 +1,8 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { extname, relative } from "node:path";
 
-import { envDescriptors } from "../../../../packages/config/src/env.js";
 import { describe, expect, it } from "vitest";
+import { envDescriptors } from "../../../../packages/config/src/env.js";
 
 const agentRoot = new URL("./", import.meta.url);
 const forbiddenConfigKeys = [
@@ -17,6 +17,8 @@ const forbiddenSourcePatterns = [
   /(?:from|import\s*)[\s\S]*?["'][^"']*\/backends(?:\/index)?\.js["']/,
   /["']node:child_process["']/,
   /\bname\s*:\s*["'](?:execute|persist_sandbox_file)["']/,
+  /<canvas_state>/,
+  /buildCanvasSummaryForContext\s*\(/,
 ] as const;
 
 async function listProductionModules(directory: URL): Promise<URL[]> {

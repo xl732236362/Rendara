@@ -240,4 +240,83 @@ describe("canvas operation application adapter", () => {
       }),
     );
   });
+
+  it("returns the recorded result when an Agent canvas effect is replayed", async () => {
+    const recorded = {
+      canvasId: "canvas-1",
+      applied: 1,
+      descriptions: ["recorded"],
+      createdIds: { element: "committed-id" },
+      errors: [],
+    };
+    const adapter = createCanvasServiceOperationPort({
+      canvasService: {
+        getCanvas: async () => ({
+          id: "canvas-1",
+          name: "Canvas",
+          projectId: "project-1",
+          revision: 4,
+          content: { elements: [], appState: {}, files: {} },
+        }),
+        saveCanvasContent: async () => ({
+          revision: 4,
+          replayed: true,
+          effectResult: recorded,
+        }),
+      },
+      toAuthenticatedUser: () => ({ id: "user-1" }) as never,
+    });
+    await expect(
+      adapter.apply({
+        principal: { userId: "user-1", workspaceId: "workspace-1" },
+        canvasId: "canvas-1",
+        operations: [{ action: "add_text", text: "retry", x: 1, y: 2 }],
+        agentEffect: {
+          runId: "run-1",
+          attemptId: "attempt-1",
+          fencingToken: 1,
+          logicalToolCallId: "tool-1",
+          inputDigest: "digest-1",
+        },
+      }),
+    ).resolves.toEqual(recorded);
+  });
+
+  it("persists only the bounded public outcome for an Agent canvas effect", async () => {
+    const saveCanvasContent = vi.fn(async (..._args: unknown[]) => ({
+      revision: 2,
+    }));
+    const adapter = createCanvasServiceOperationPort({
+      canvasService: {
+        getCanvas: async () => ({
+          id: "canvas-1",
+          name: "Canvas",
+          projectId: "project-1",
+          revision: 1,
+          content: { elements: [], appState: {}, files: {} },
+        }),
+        saveCanvasContent,
+      },
+      toAuthenticatedUser: () => ({ id: "user-1" }) as never,
+    });
+
+    const result = await adapter.apply({
+      principal: { userId: "user-1", workspaceId: "workspace-1" },
+      canvasId: "canvas-1",
+      operations: [{ action: "add_text", text: "bounded", x: 1, y: 2 }],
+      agentEffect: {
+        runId: "run-1",
+        attemptId: "attempt-1",
+        fencingToken: 1,
+        logicalToolCallId: "tool-1",
+        inputDigest: "digest-1",
+      },
+    });
+
+    const persistedEffect = saveCanvasContent.mock.calls[0]?.[4] as
+      | { result?: unknown }
+      | undefined;
+    expect(persistedEffect?.result).toEqual(result);
+    expect(persistedEffect?.result).not.toHaveProperty("content");
+  });
 });

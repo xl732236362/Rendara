@@ -2,6 +2,7 @@ import type {
   CanvasOperationPorts,
   CanvasOperationPrincipal,
 } from "../../application/canvas/apply-canvas-operations.js";
+import { canvasOperationOutcomeSchema } from "../../application/canvas/apply-canvas-operations.js";
 import type { ResourceAuthorization } from "../../security/resource-authorization.js";
 import type { AuthenticatedUser } from "../../supabase/user.js";
 import {
@@ -45,20 +46,27 @@ export function createCanvasServiceOperationPort(options: {
         ) {
           throw new CanvasOperationError(outcome.issues);
         }
+        const publicOutcome = {
+          canvasId: canvas.id,
+          applied: outcome.applied,
+          descriptions: outcome.descriptions,
+          createdIds: outcome.createdIds,
+          errors: outcome.errors,
+        };
         try {
-          await options.canvasService.saveCanvasContent(
+          const committed = await options.canvasService.saveCanvasContent(
             user,
             command.canvasId,
             canvas.revision,
             outcome.content,
+            ...(command.agentEffect
+              ? [{ ...command.agentEffect, result: publicOutcome }]
+              : []),
           );
-          return {
-            canvasId: canvas.id,
-            applied: outcome.applied,
-            descriptions: outcome.descriptions,
-            createdIds: outcome.createdIds,
-            errors: outcome.errors,
-          };
+          if (committed.replayed) {
+            return canvasOperationOutcomeSchema.parse(committed.effectResult);
+          }
+          return publicOutcome;
         } catch (error) {
           if (!isRevisionConflict(error) || attempt === 3) throw error;
           await new Promise((resolve) => setTimeout(resolve, attempt * 10));

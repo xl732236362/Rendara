@@ -129,8 +129,9 @@ function selectAuthorizedTools(
   supplied: ReadonlyMap<string, StructuredTool>,
   authorizedNames: readonly string[],
 ): StructuredTool[] {
-  return authorizedNames.flatMap((name) => {
+  return authorizedNames.map((name) => {
     const registeredTool = supplied.get(name);
-    return registeredTool ? [registeredTool] : [];
+    if (!registeredTool) throw new Error(`missing_authorized_tool:${name}`);
+    return registeredTool;
   });
 }

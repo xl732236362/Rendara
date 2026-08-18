@@ -63,6 +63,66 @@ describe("Agent tool boundary", () => {
     ).rejects.toThrow("run_not_active");
   });
 
+  it("does not release a tool result after the attempt is canceled in flight", async () => {
+    const repo = await repository();
+    const lease = await repo.claimAttempt({
+      attemptId: context.attemptId,
+      leaseOwner: "worker-1",
+      leaseMs: 60_000,
+      now: new Date(),
+    });
+
+    await expect(
+      guardToolCall({
+        capability: "canvas.read",
+        context,
+        fencingToken: lease.fencingToken,
+        input: {},
+        invoke: async () => {
+          await repo.cancelAttempt({
+            attemptId: context.attemptId,
+            fencingToken: lease.fencingToken,
+          });
+          return { secret: "must-not-escape" };
+        },
+        repository: repo,
+      }),
+    ).rejects.toThrow("run_not_active");
+  });
+
+  it("revalidates current resource authorization before releasing results", async () => {
+    const repo = await repository();
+    const authorize = vi
+      .fn<() => Promise<void>>()
+      .mockResolvedValueOnce()
+      .mockRejectedValueOnce(new Error("canvas_access_denied"));
+    await expect(
+      guardToolCall({
+        capability: "canvas.read",
+        context,
+        input: {},
+        invoke: async () => ({ private: true }),
+        repository: repo,
+        authorize,
+      }),
+    ).rejects.toThrow("canvas_access_denied");
+    expect(authorize).toHaveBeenCalledTimes(2);
+  });
+
+  it("denies a capability removed by the current deployment policy", async () => {
+    const repo = await repository();
+    await expect(
+      guardToolCall({
+        capability: "canvas.read",
+        context,
+        input: {},
+        invoke: async () => ({ private: true }),
+        repository: repo,
+        resolveCurrentCapabilities: () => ["canvas.mutate"],
+      }),
+    ).rejects.toThrow("capability_denied");
+  });
+
   it("rejects scope authority, raw locations and oversized inputs", async () => {
     const repo = await repository();
     const invoke = async () => "ok";
@@ -168,9 +228,9 @@ describe("Agent tool boundary", () => {
     });
 
     const args = {
-        title: "Image",
-        prompt: "prompt",
-        model: "model",
+      title: "Image",
+      prompt: "prompt",
+      model: "model",
     };
     await imageTool.invoke(args, {
       toolCall: {

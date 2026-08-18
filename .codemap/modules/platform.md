@@ -2,7 +2,7 @@
 
 ### `supabase/`
 
-Ordered PostgreSQL migrations, local configuration, and database security tests. Phase 1 does not redesign the schema or job state machine; those are phase 2 responsibilities.
+Ordered PostgreSQL migrations, local configuration, and database security tests. Phase 3 adds durable Agent attempts/effects/Skill read budgets and permanently drops the former dynamic Skill schema.
 
 ### `.github/workflows/ci.yml`
 
@@ -14,7 +14,7 @@ Workspace invariants use Node test; server/shared/web behavior uses Vitest; brow
 
 ### `skills/`
 
-Workspace skills loaded by the Agent. External import is gated and disabled by default after phase 0. Full trust/capability enforcement belongs to phase 3.
+Server-owned built-in Skills. Only `builtin-skills.manifest.json` entries are loaded; users cannot create, import, install, enable, or download Skills. `json-image-prompt` is currently the only listed Skill.
 
 ### Deployment Files
 

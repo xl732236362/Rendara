@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(13);
+select plan(15);
 
 select has_table('public', 'agent_effects', 'Agent effects are durable');
 select ok(not has_table_privilege('authenticated', 'public.agent_effects', 'select'),
@@ -9,6 +9,9 @@ select ok(not has_table_privilege('authenticated', 'public.agent_effects', 'sele
 select ok(has_function_privilege('service_role',
   'public.claim_agent_attempt(uuid,text,integer,timestamptz)', 'execute'),
   'service role can claim attempts');
+select ok(has_function_privilege('service_role',
+  'public.commit_agent_canvas_revision(uuid,uuid,bigint,jsonb,uuid,uuid,bigint,text,text,jsonb,uuid,text,text,jsonb)',
+  'execute'), 'service role can atomically commit Agent canvas effects');
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -91,6 +94,17 @@ select is((select capabilities::text from public.resume_agent_attempt(
   '30000000-0000-4000-8000-000000000008', 'catalog-1',
   '["image.generate","video.generate"]', 'policy-2', '[]')),
   '["image.generate"]', 'resume cannot expand capabilities');
+select throws_ok(
+  $$select public.commit_agent_canvas_revision(
+    '30000000-0000-4000-8000-000000000004',
+    '30000000-0000-4000-8000-000000000001', 0, '{}'::jsonb,
+    '30000000-0000-4000-8000-000000000006',
+    '30000000-0000-4000-8000-000000000007', 2,
+    'tool-stale-canvas', 'input-stale', '{}'::jsonb,
+    null, null, 'canvas.updated', '{}'::jsonb
+  )$$,
+  'P0001', 'run_not_active',
+  'stale attempt cannot commit a Canvas mutation or effect');
 
 select * from finish();
 rollback;

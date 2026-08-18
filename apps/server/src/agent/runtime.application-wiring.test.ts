@@ -2,14 +2,68 @@ import { describe, expect, it, vi } from "vitest";
 
 import { loadServerEnv } from "../config/env.js";
 import { AppError } from "../errors/app-error.js";
-import { ProviderRegistry } from "../generation/providers/registry.js";
 import { MemoryAgentExecutionRepository } from "../features/agent-runs/agent-execution-repository.js";
+import { ProviderRegistry } from "../generation/providers/registry.js";
 import { createAgentRunService } from "./runtime.js";
 import type { SubmitImageJobFn } from "./tools/image-generate.js";
-import { createMainAgentTools } from "./tools/index.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
 
 describe("Agent runtime application wiring", () => {
+  it("replaces an expired running attempt before Agent construction", async () => {
+    const repository = new MemoryAgentExecutionRepository();
+    await repository.accept({
+      clientRequestId: "request-resume",
+      requestDigest: "digest-resume",
+      context: {
+        runId: "run-resume",
+        attemptId: "attempt-stale",
+        userId: "user-resume",
+        workspaceId: "workspace-resume",
+        projectId: "project-resume",
+        canvasId: "canvas-resume",
+        capabilities: ["image.generate"],
+        capabilityPolicyVersion: "policy-1",
+        skillCatalogDigest: "catalog-1",
+        effectiveSkillNames: [],
+      },
+    });
+    await repository.claimAttempt({
+      attemptId: "attempt-stale",
+      leaseOwner: "dead-worker",
+      leaseMs: 1,
+      now: new Date("2026-01-01T00:00:00.000Z"),
+    });
+    const constructedAttempts: string[] = [];
+    const service = createAgentRunService({
+      agentExecutionRepository: repository,
+      agentFactory: ((options: { executionContext: { attemptId: string } }) => {
+        constructedAttempts.push(options.executionContext.attemptId);
+        return { async *streamEvents() {}, async *stream() {} };
+      }) as never,
+      builtinSkillCatalog: {
+        digest: "catalog-1",
+        list: () => [],
+      } as never,
+      env: loadServerEnv({}, {}),
+      now: () => "2026-01-01T00:01:00.000Z",
+      providerRegistry: new ProviderRegistry().seal(),
+    });
+    service.createRun(
+      {
+        canvasId: "canvas-resume",
+        clientRequestId: "request-resume",
+        conversationId: "conversation-resume",
+        prompt: "hello",
+        sessionId: "session-resume",
+      },
+      { runId: "run-resume", userId: "user-resume" },
+    );
+    for await (const _event of service.streamRun("run-resume")) {
+    }
+    expect(constructedAttempts).toHaveLength(1);
+    expect(constructedAttempts[0]).not.toBe("attempt-stale");
+  });
+
   it("claims the persisted attempt before Agent construction and durably cancels it", async () => {
     const repository = new MemoryAgentExecutionRepository();
     await repository.accept({
@@ -57,7 +111,9 @@ describe("Agent runtime application wiring", () => {
     await expect(service.cancelRun("run-lease")).resolves.toMatchObject({
       status: "canceled",
     });
-    await expect(repository.getExecutionContext("run-lease")).resolves.toBeNull();
+    await expect(
+      repository.getExecutionContext("run-lease"),
+    ).resolves.toBeNull();
   });
 
   it("emits billing.error and aborts the run when submission is rejected for billing", async () => {
@@ -223,16 +279,9 @@ describe("Agent runtime application wiring", () => {
       }),
     }));
     let factoryOptions: Record<string, unknown> | undefined;
-    let toolNames: string[] = [];
     const service = createAgentRunService({
       agentFactory: ((options: Record<string, unknown>) => {
         factoryOptions = options;
-        toolNames = createMainAgentTools({
-          applyCanvasOperations: options.applyCanvasOperations as never,
-          createUserClient,
-          providerRegistry: new ProviderRegistry().seal(),
-          resolveWorkspaceId: options.resolveWorkspaceId as never,
-        }).map((registeredTool) => registeredTool.name);
         return {
           async *streamEvents() {},
           async *stream() {},
@@ -257,7 +306,6 @@ describe("Agent runtime application wiring", () => {
 
     expect(factoryOptions?.applyCanvasOperations).toBe(applyCanvasOperations);
     expect(factoryOptions?.resolveWorkspaceId).toBeTypeOf("function");
-    expect(toolNames).toContain("manipulate_canvas");
     await expect(
       (
         factoryOptions?.resolveWorkspaceId as (context: {
@@ -539,6 +587,99 @@ describe("Agent runtime application wiring", () => {
       },
     );
   }, 10_000);
+
+  it("does not attach generated media without canvas.mutate", async () => {
+    try {
+      const repository = new MemoryAgentExecutionRepository();
+      await repository.accept({
+        clientRequestId: "request-generate-only",
+        requestDigest: "digest-generate-only",
+        context: {
+          runId: "run-generate-only",
+          attemptId: "attempt-generate-only",
+          userId: "user-generate-only",
+          workspaceId: "workspace-generate-only",
+          projectId: "project-generate-only",
+          canvasId: "canvas-generate-only",
+          capabilities: ["image.generate"],
+          capabilityPolicyVersion: "policy-1",
+          skillCatalogDigest: "catalog-1",
+          effectiveSkillNames: [],
+        },
+      });
+      let submitImageJob: SubmitImageJobFn | undefined;
+      const attachGeneratedAsset = vi.fn(async () => ({
+        elementId: "element-1",
+      }));
+      const service = createAgentRunService({
+        agentExecutionRepository: repository,
+        agentFactory: ((options: { submitImageJob?: SubmitImageJobFn }) => {
+          submitImageJob = options.submitImageJob;
+          return { async *streamEvents() {}, async *stream() {} };
+        }) as never,
+        attachGeneratedAsset: attachGeneratedAsset as never,
+        builtinSkillCatalog: { digest: "catalog-1", list: () => [] } as never,
+        createUserClient: (() =>
+          canvasWorkspaceClient({
+            canvasId: "canvas-generate-only",
+            workspaceId: "workspace-generate-only",
+          })) as never,
+        env: loadServerEnv({}, {}),
+        jobService: {
+          getJobAdmin: async () => ({
+            status: "succeeded",
+            result: {
+              signed_url: "https://example.com/result.png",
+              object_path: "generated/result.png",
+              width: 100,
+              height: 80,
+              mime_type: "image/png",
+            },
+          }),
+        } as never,
+        providerRegistry: new ProviderRegistry().seal(),
+        submitGeneration: vi.fn(async () => ({
+          jobId: "job-generate-only",
+          status: "queued" as const,
+        })),
+      });
+      service.createRun(
+        {
+          canvasId: "canvas-generate-only",
+          clientRequestId: "request-generate-only",
+          conversationId: "conversation-generate-only",
+          prompt: "generate",
+          sessionId: "session-generate-only",
+        },
+        {
+          accessToken: "token",
+          runId: "run-generate-only",
+          userId: "user-generate-only",
+        },
+      );
+      for await (const _event of service.streamRun("run-generate-only")) {
+      }
+      if (!submitImageJob) throw new Error("Image tool was not wired");
+
+      vi.useFakeTimers();
+      const generation = submitImageJob({
+        logicalToolCallId: "tool-generate-only",
+        prompt: "image",
+        title: "Image",
+        model: "image/model",
+        aspectRatio: "1:1",
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      await expect(generation).resolves.toMatchObject({
+        jobId: "job-generate-only",
+        imageUrl: "https://example.com/result.png",
+      });
+      expect(attachGeneratedAsset).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function workspaceClient() {

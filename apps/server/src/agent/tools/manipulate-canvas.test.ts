@@ -41,6 +41,51 @@ describe("manipulate_canvas application boundary", () => {
     );
   });
 
+  it("forwards the stable Agent effect identity to the canvas transaction", async () => {
+    const applyCanvasOperations = vi.fn(async () => ({
+      canvasId: "canvas-team",
+      applied: 1,
+      descriptions: ["done"],
+      createdIds: {},
+    }));
+    const tool = createManipulateCanvasTool({
+      applyCanvasOperations: applyCanvasOperations as never,
+      resolveWorkspaceId: async () => "workspace-team",
+      agentEffect: {
+        runId: "run-1",
+        attemptId: "attempt-1",
+        fencingToken: 3,
+      },
+    });
+    const input = {
+      operations: [{ action: "delete" as const, element_id: "element-1" }],
+    };
+    await tool.invoke(input, {
+      configurable: {
+        access_token: "token",
+        user_id: "user-team",
+        canvas_id: "canvas-team",
+      },
+      toolCall: {
+        type: "tool_call",
+        id: "tool-call-1",
+        name: "manipulate_canvas",
+        args: input,
+      },
+    } as never);
+    expect(applyCanvasOperations).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        agentEffect: expect.objectContaining({
+          runId: "run-1",
+          attemptId: "attempt-1",
+          fencingToken: 3,
+          logicalToolCallId: "tool-call-1",
+        }),
+      }),
+    );
+  });
+
   it("rejects missing authenticated user context", async () => {
     const applyCanvasOperations = vi.fn();
     const tool = createManipulateCanvasTool({

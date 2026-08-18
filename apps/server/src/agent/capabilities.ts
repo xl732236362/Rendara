@@ -16,6 +16,17 @@ export const agentCapabilitySchema = z.enum([
 
 export type AgentCapability = z.infer<typeof agentCapabilitySchema>;
 
+export const PRODUCTION_AGENT_CAPABILITIES = Object.freeze([
+  "skill.read",
+  "canvas.read",
+  "canvas.mutate",
+  "asset.persist",
+  "image.generate",
+  "video.generate",
+  "brand_kit.read",
+  "agent.delegate",
+] satisfies AgentCapability[]);
+
 export const FORBIDDEN_AGENT_TOOL_NAMES = Object.freeze([
   "execute",
   "ls",

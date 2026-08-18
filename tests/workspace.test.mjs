@@ -142,6 +142,55 @@ test("dynamic Skill product and execution paths are removed", async () => {
   );
 });
 
+test("phase 3 keeps Agent authority manifest-only, tool-only, and canvas-scoped", async () => {
+  const manifest = await readJson("skills/builtin-skills.manifest.json");
+  const runtime = await readText("apps/server/src/agent/runtime.ts");
+  const loomicAgent = await readText("apps/server/src/agent/loomic-agent.ts");
+  const authority = await readText("apps/server/src/agent/capabilities.ts");
+  const serverManifest = await readJson("apps/server/package.json");
+  const removalMigration = await readText(
+    "supabase/migrations/20260819000001_phase3_remove_dynamic_skills.sql",
+  );
+
+  assert.deepEqual(manifest, {
+    schemaVersion: 1,
+    skills: [
+      {
+        name: "json-image-prompt",
+        path: "json-image-prompt",
+        requiredCapabilities: ["image.generate"],
+      },
+    ],
+  });
+  assert.doesNotMatch(
+    JSON.stringify(manifest),
+    /canvas-design|execute|python/i,
+  );
+  assert.doesNotMatch(runtime, /<canvas_state>|buildCanvasSummaryForContext/);
+  assert.match(loomicAgent, /options\.executionContext[\s\S]*capabilities/);
+  assert.match(authority, /FORBIDDEN_AGENT_TOOL_NAMES/);
+  assert.equal(serverManifest.dependencies?.deepagents, undefined);
+  for (const relation of ["skill_files", "workspace_skills", "skills"]) {
+    assert.match(
+      removalMigration,
+      new RegExp(`drop table if exists public\\.${relation}`),
+    );
+  }
+  assert.doesNotMatch(
+    removalMigration,
+    /create\s+(?:table|view)|archive|compatib/i,
+  );
+  const acceptedAuthority = authority.match(
+    /PRODUCTION_AGENT_CAPABILITIES\s*=\s*Object\.freeze\(\[([\s\S]*?)\]\s*satisfies/,
+  )?.[1];
+  assert.ok(
+    acceptedAuthority,
+    "production accepted authority must be explicit",
+  );
+  assert.match(acceptedAuthority, /brand_kit\.read/);
+  assert.doesNotMatch(acceptedAuthority, /project\.search/);
+});
+
 test("root test command wires node:test and turbo package tests", async () => {
   const manifest = await readJson("package.json");
 

@@ -76,6 +76,16 @@ export function createGeneratedAssetPort(options: {
               jobId: command.jobId,
               elementId: inserted.elementId,
             },
+            ...(command.agentEffect
+              ? {
+                  agentEffect: {
+                    ...command.agentEffect,
+                    result: command.agentEffect.result ?? {
+                      elementId: inserted.elementId,
+                    },
+                  },
+                }
+              : {}),
           });
           return {
             elementId: inserted.elementId,

@@ -346,9 +346,9 @@ Loomic/
 │   ├── config/                 # Shared configuration
 │   └── ui/                     # Shared UI components
 │
-├── skills/                     # Extensible workspace skills
-│   ├── canvas-design/          #   Canvas design guidance
-│   └── json-image-prompt/      #   Image prompt templates
+├── skills/                     # Server-owned built-in Skill catalog
+│   ├── builtin-skills.manifest.json # Closed loading allowlist
+│   └── json-image-prompt/      #   First approved built-in Skill
 │
 ├── supabase/
 │   └── migrations/             # Database migrations (18 files)
@@ -410,8 +410,6 @@ Loomic/
 |----------|---------|-------------|
 | `LOOMIC_SERVER_PORT` | `3001` | API server port |
 | `LOOMIC_WEB_ORIGIN` | `http://localhost:3000` | Frontend origin (CORS) |
-| `LOOMIC_AGENT_BACKEND_MODE` | `state` | Agent persistence (`state` or `filesystem`) |
-| `LOOMIC_SKILLS_ROOT` | `../../skills` | Path to skills directory |
 | `WORKER_CONCURRENCY` | `3` | Jobs per worker |
 | `WORKER_IMAGE_CONCURRENCY` | `3` | Image generation slots |
 | `WORKER_VIDEO_CONCURRENCY` | `2` | Video generation slots |
