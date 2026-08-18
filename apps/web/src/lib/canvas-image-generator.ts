@@ -22,6 +22,10 @@ export type ImageGeneratorData = {
   model: string;
   aspectRatio: string;
   quality: string;
+  referenceAssetIds?: string[];
+  jobId?: string;
+  idempotencyKey?: string;
+  /** @deprecated Runtime reference previews must not be persisted. */
   inputImages?: string[];
   errorMessage?: string;
 };
@@ -147,6 +151,46 @@ export function getImageGeneratorData(element: any): ImageGeneratorData | null {
   return element.customData as ImageGeneratorData;
 }
 
+const immutableGeneratingFields = new Set<keyof ImageGeneratorData>([
+  "prompt",
+  "model",
+  "aspectRatio",
+  "quality",
+  "referenceAssetIds",
+  "idempotencyKey",
+]);
+
+export function updateImageGeneratorData<T extends Record<string, any>>(
+  element: T & { customData: ImageGeneratorData },
+  updates: Partial<ImageGeneratorData>,
+): T & { customData: ImageGeneratorData } {
+  const allowedUpdates = Object.fromEntries(
+    Object.entries(updates).filter(
+      ([key]) =>
+        element.customData.status !== "generating" ||
+        !immutableGeneratingFields.has(key as keyof ImageGeneratorData),
+    ),
+  ) as Partial<ImageGeneratorData>;
+  return {
+    ...element,
+    customData: { ...element.customData, ...allowedUpdates },
+    version: ((element.version as number | undefined) ?? 1) + 1,
+    versionNonce: Math.floor(Math.random() * 2_000_000_000),
+    updated: Date.now(),
+  };
+}
+
+export function updateImageGeneratorAttempt<T extends Record<string, any>>(
+  element: T & { customData: ImageGeneratorData },
+  expectedIdempotencyKey: string,
+  updates: Partial<ImageGeneratorData>,
+): T & { customData: ImageGeneratorData } {
+  if (element.customData.idempotencyKey !== expectedIdempotencyKey) {
+    return element;
+  }
+  return updateImageGeneratorData(element, updates);
+}
+
 /**
  * Update the customData of an image-generator element.
  */
@@ -160,13 +204,7 @@ export function updateImageGeneratorElement(
 ): void {
   const elements = api.getSceneElements().map((el: any) => {
     if (el.id !== elementId || !isImageGeneratorElement(el)) return el;
-    return {
-      ...el,
-      customData: { ...el.customData, ...updates },
-      version: ((el.version as number | undefined) ?? 1) + 1,
-      versionNonce: Math.floor(Math.random() * 2_000_000_000),
-      updated: Date.now(),
-    };
+    return updateImageGeneratorData(el, updates);
   });
   api.updateScene({ elements, captureUpdate: "IMMEDIATELY" });
 }
