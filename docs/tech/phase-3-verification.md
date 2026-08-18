@@ -17,7 +17,7 @@ The final verification commands are run from the repository root:
 | --- | --- |
 | `pnpm lint` | Pass; no errors |
 | `pnpm typecheck` | Pass; 8 Turbo tasks successful |
-| `pnpm test` | Pass; server 318 passed and 7 database tests skipped, web 94 passed, workspace 87 passed |
+| `pnpm test` | Pass; server 319 passed and 7 database tests skipped, web 94 passed, workspace 87 passed |
 | `pnpm build` | Pass; 5 Turbo tasks successful |
 | `git diff --check` | Pass |
 

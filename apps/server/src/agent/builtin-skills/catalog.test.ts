@@ -47,6 +47,14 @@ describe("built-in Skill catalog", () => {
     expect(() => catalog.get("canvas-design")).toThrow("skill_not_found");
   });
 
+  it("accepts CRLF frontmatter from Windows checkouts", async () => {
+    const fixture = await createFixture({
+      content: validSkill.replaceAll("\n", "\r\n"),
+    });
+
+    await expect(loadFixture(fixture)).resolves.toBeDefined();
+  });
+
   it.each([
     ["unknown root field", { extra: true }],
     ["unknown schema version", { schemaVersion: 2 }],

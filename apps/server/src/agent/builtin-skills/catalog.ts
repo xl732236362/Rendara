@@ -269,10 +269,11 @@ async function collectFiles(root: string): Promise<string[]> {
 }
 
 function parseFrontmatter(source: string) {
-  if (!source.startsWith("---\n")) invalid();
-  const end = source.indexOf("\n---\n", 4);
+  const normalizedSource = source.replaceAll("\r\n", "\n");
+  if (!normalizedSource.startsWith("---\n")) invalid();
+  const end = normalizedSource.indexOf("\n---\n", 4);
   if (end < 0) invalid();
-  return frontmatterSchema.parse(loadYaml(source.slice(4, end)));
+  return frontmatterSchema.parse(loadYaml(normalizedSource.slice(4, end)));
 }
 
 function validateRelativePath(path: string) {

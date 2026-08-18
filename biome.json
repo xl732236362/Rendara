@@ -12,6 +12,7 @@
       "**/playwright-report/**",
       "**/test-results/**",
       "**/.codex-logs/**",
+      "**/.worktrees/**",
       "**/supabase/.temp/**",
       "**/dist/**",
       "**/build/**",

@@ -1,4 +1,4 @@
-import { defaultCanvasNodeRegistry, type CanvasContent } from "@loomic/shared";
+import { type CanvasContent, defaultCanvasNodeRegistry } from "@loomic/shared";
 import { z } from "zod";
 import {
   BINDING_GAP,
