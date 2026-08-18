@@ -81,6 +81,14 @@ export type CreditBalancePort = {
   }>;
 };
 
+export type ReferenceAssetAuthorizationPort = {
+  authorize(input: {
+    principal: GenerationPrincipal;
+    projectId: string;
+    assetIds: string[];
+  }): Promise<void>;
+};
+
 export type StructuredLogContext = Record<string, unknown>;
 
 export type StructuredLogger = {
@@ -95,4 +103,5 @@ export type GenerationApplicationPorts = {
   models: ModelCatalogPort;
   tiers: TierAuthorizationPort;
   credits?: CreditBalancePort;
+  referenceAssets?: ReferenceAssetAuthorizationPort;
 };

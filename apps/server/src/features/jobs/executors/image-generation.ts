@@ -18,7 +18,9 @@ export function createImageGenerationExecutor(
     const admin = ctx.getAdminClient();
     const { data: jobRow } = await admin
       .from("background_jobs")
-      .select("created_by, workspace_id, canvas_id, session_id, payload")
+      .select(
+        "created_by, workspace_id, project_id, canvas_id, session_id, payload",
+      )
       .eq("id", jobId)
       .single();
 
@@ -37,6 +39,7 @@ export function createImageGenerationExecutor(
       model?: string;
       aspect_ratio?: string;
       title?: string;
+      input_asset_ids?: string[];
       input_images?: string[];
       quality?: "standard" | "hd" | "ultra";
     };
@@ -46,6 +49,7 @@ export function createImageGenerationExecutor(
 
     const createdBy: string | null = jobRow.created_by ?? null;
     const workspaceId: string = jobRow.workspace_id ?? jobId;
+    const projectId: string | null = jobRow.project_id ?? null;
 
     // Resolve provider dynamically from model ID via registry
     const model = payload.model ?? "black-forest-labs/flux-kontext-pro";
@@ -69,6 +73,60 @@ export function createImageGenerationExecutor(
     }
 
     try {
+      let inputImages = payload.input_images ?? [];
+      if (payload.input_asset_ids?.length) {
+        const { data: referenceRows, error: referenceError } = await admin
+          .from("asset_objects")
+          .select(
+            "id, workspace_id, project_id, bucket, object_path, mime_type",
+          )
+          .in("id", payload.input_asset_ids);
+        if (referenceError) {
+          throw new Error(
+            `Reference asset lookup failed: ${referenceError.message}`,
+          );
+        }
+
+        type ReferenceAssetRow = {
+          id: string;
+          workspace_id: string;
+          project_id: string | null;
+          bucket: string;
+          object_path: string;
+          mime_type: string;
+        };
+        const rows = (referenceRows ?? []) as ReferenceAssetRow[];
+        const rowsById = new Map(rows.map((row) => [row.id, row]));
+        const orderedRows = payload.input_asset_ids.map((id) => rowsById.get(id));
+        if (
+          rows.length !== payload.input_asset_ids.length ||
+          orderedRows.some(
+            (row) =>
+              !row ||
+              row.workspace_id !== workspaceId ||
+              row.project_id !== projectId ||
+              !row.mime_type.startsWith("image/"),
+          )
+        ) {
+          throw new Error("Reference assets no longer match the generation job");
+        }
+
+        inputImages = await Promise.all(
+          orderedRows.map(async (row) => {
+            const { data, error } = await admin.storage
+              .from(row!.bucket)
+              .createSignedUrl(row!.object_path, 3600);
+            if (error || !data?.signedUrl) {
+              throw new Error(
+                `Reference asset URL creation failed: ${error?.message ?? "missing signed URL"}`,
+              );
+            }
+            return data.signedUrl;
+          }),
+        );
+        console.log(`${tag} resolved ${inputImages.length} reference assets`);
+      }
+
       // Generate image via the registered provider
       lap(`${providerName}_call_start`);
       let generated;
@@ -80,9 +138,7 @@ export function createImageGenerationExecutor(
           ...(payload.aspect_ratio !== undefined
             ? { aspectRatio: payload.aspect_ratio }
             : {}),
-          ...(payload.input_images?.length
-            ? { inputImages: payload.input_images }
-            : {}),
+          ...(inputImages.length ? { inputImages } : {}),
         });
       } catch (genError) {
         const detail =
@@ -151,6 +207,7 @@ export function createImageGenerationExecutor(
         .from("asset_objects")
         .insert({
           workspace_id: workspaceId,
+          project_id: projectId,
           bucket: "project-assets",
           object_path: objectPath,
           mime_type: generated.mimeType ?? "image/png",

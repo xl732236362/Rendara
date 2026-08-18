@@ -6,6 +6,7 @@ import { createApplyCanvasOperations } from "./application/canvas/apply-canvas-o
 import { createAttachGeneratedAsset } from "./application/canvas/attach-generated-asset.js";
 import { createCancelGeneration } from "./application/generation/cancel-generation.js";
 import { createSubmitGeneration } from "./application/generation/submit-generation.js";
+import { createReferenceAssetAuthorizationPort } from "./application/generation/reference-assets.js";
 import { createImportSkill } from "./application/skills/import-skill.js";
 import type { UseCases } from "./application/use-cases.js";
 import { createDomainEventPublisher } from "./events/domain-event-publisher.js";
@@ -362,6 +363,9 @@ export function buildAppFromEnv(
                 logger,
                 ports: {
                   ...generationPorts,
+                  referenceAssets: createReferenceAssetAuthorizationPort({
+                    createUserClient,
+                  }),
                   models: {
                     resolveModel(type, requestedModel) {
                       const fallback =

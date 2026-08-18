@@ -53,6 +53,32 @@ export function createSubmitGeneration(options: {
         principal.workspaceId,
         plan,
       );
+      if (
+        request.type === "image_generation" &&
+        request.input_asset_ids?.length
+      ) {
+        if (!request.project_id) {
+          throw new AppError({
+            code: "invalid_request",
+            statusCode: 400,
+            message: "Reference assets require a project.",
+            expose: true,
+          });
+        }
+        if (!options.ports.referenceAssets) {
+          throw new AppError({
+            code: "application_error",
+            statusCode: 500,
+            message: "Reference asset authorization is unavailable.",
+          });
+        }
+        stage = "reference_asset_authorization";
+        await options.ports.referenceAssets.authorize({
+          principal,
+          projectId: request.project_id,
+          assetIds: request.input_asset_ids,
+        });
+      }
       creditsCost = options.ports.tiers.calculateCreditCost(model, request);
 
       stage = "atomic_submission";

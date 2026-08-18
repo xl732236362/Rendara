@@ -56,6 +56,11 @@ function setup() {
         dailyClaimed: false,
       })),
     },
+    referenceAssets: {
+      authorize: vi.fn(async () => {
+        calls.push("reference-assets");
+      }),
+    },
     jobs: {
       submit: vi.fn(async () => {
         calls.push("submit");
@@ -198,6 +203,52 @@ describe("SubmitGeneration", () => {
       "cost",
       "submit",
     ]);
+  });
+
+  it("authorizes reference assets before atomic submission", async () => {
+    const { calls, ports, submit } = setup();
+
+    await submit(principal, {
+      type: "image_generation",
+      idempotency_key: "reference-order-1",
+      project_id: ids.project,
+      canvas_id: ids.canvas,
+      prompt: "draw from reference",
+      input_asset_ids: ["66666666-6666-4666-8666-666666666666"],
+    });
+
+    expect(ports.referenceAssets?.authorize).toHaveBeenCalledWith({
+      principal,
+      projectId: ids.project,
+      assetIds: ["66666666-6666-4666-8666-666666666666"],
+    });
+    expect(calls.indexOf("reference-assets")).toBeLessThan(
+      calls.indexOf("submit"),
+    );
+  });
+
+  it("never submits when reference asset authorization fails", async () => {
+    const { ports, submit } = setup();
+    vi.mocked(ports.referenceAssets!.authorize).mockRejectedValue(
+      new AppError({
+        code: "forbidden",
+        statusCode: 403,
+        message: "Reference asset is unavailable.",
+        expose: true,
+      }),
+    );
+
+    await expect(
+      submit(principal, {
+        type: "image_generation",
+        idempotency_key: "reference-denied-1",
+        project_id: ids.project,
+        canvas_id: ids.canvas,
+        prompt: "draw from reference",
+        input_asset_ids: ["66666666-6666-4666-8666-666666666666"],
+      }),
+    ).rejects.toMatchObject({ code: "forbidden", statusCode: 403 });
+    expect(ports.jobs.submit).not.toHaveBeenCalled();
   });
 
   it("rejects invalid payloads before calling ports", async () => {
