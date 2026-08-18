@@ -1,4 +1,4 @@
-import type { CanvasContent } from "@loomic/shared";
+import { defaultCanvasNodeRegistry, type CanvasContent } from "@loomic/shared";
 import { z } from "zod";
 import {
   BINDING_GAP,
@@ -999,6 +999,12 @@ export function applyCanvasOperations(
   }
 
   validateBindings(elements);
+  // Domain validation is the single boundary that prevents unsupported node
+  // types from being persisted through the operation engine.
+  for (const element of elements) {
+    if (element.isDeleted) continue;
+    defaultCanvasNodeRegistry.validate(element);
+  }
   return {
     content: { ...clonedContent, elements },
     applied: descriptions.length,

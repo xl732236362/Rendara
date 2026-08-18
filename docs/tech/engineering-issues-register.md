@@ -393,6 +393,13 @@
 - 影响：页面切换和多个组件消费同一资源时容易重复请求、显示陈旧数据或各自实现 loading/error；新增功能需要重复编写生命周期代码。
 - 建议方向：引入统一 server-state 层（如项目选定的成熟 query library或轻量内部封装），集中 auth-aware fetch、schema parse、query key、重试与失效；本地交互状态继续留在组件，避免建立无边界全局 store。
 
+### 阶段 4 验收记录：画布领域模型
+
+- 状态：核心交付完成，待处理全仓 lint 基础设施问题。
+- 证据：`docs/tech/phase-4-verification.md`；shared/server/domain 测试和全仓 typecheck/test 已通过。
+- 结果：节点类型通过单一 sealed registry 管理；patch 使用显式 base revision；asset manifest 拒绝重复、越权路径和非法 hash；server canvas operation boundary 已接入 registry 校验。
+- 遗留：Biome 仍扫描 `.worktrees/phase-3-tool-only-agent` 并产生历史诊断，需修复 ignore 边界后才能恢复全仓 lint 绿灯。
+
 ## 验证基线
 
 - 记录日期：2026-08-17
