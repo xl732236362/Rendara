@@ -16,6 +16,7 @@ import {
 import { createInspectCanvasTool } from "./inspect-canvas.js";
 import { createManipulateCanvasTool } from "./manipulate-canvas.js";
 import { createScreenshotCanvasTool } from "./screenshot-canvas.js";
+import { guardStructuredTool } from "./tool-guard.js";
 import {
   type SubmitVideoJobFn,
   createVideoGenerateTool,
@@ -84,9 +85,42 @@ export function createMainAgentTools(deps: {
     tools.push(
       createScreenshotCanvasTool({
         connectionManager: deps.connectionManager,
+        ...(deps.executionContext
+          ? {
+              canvasId: deps.executionContext.canvasId,
+              userId: deps.executionContext.userId,
+            }
+          : {}),
         ...(deps.persistImage ? { persistImage: deps.persistImage } : {}),
       }),
     );
+  }
+  if (deps.executionContext && deps.agentExecutionRepository) {
+    const executionContext = deps.executionContext;
+    const agentExecutionRepository = deps.agentExecutionRepository;
+    const capabilityByToolName = {
+      inspect_canvas: "canvas.read",
+      screenshot_canvas: "canvas.read",
+      manipulate_canvas: "canvas.mutate",
+      generate_image: "image.generate",
+      generate_video: "video.generate",
+      get_brand_kit: "brand_kit.read",
+      project_search: "project.search",
+    } as const;
+    return tools.map((registeredTool) => {
+      const capability =
+        capabilityByToolName[
+          registeredTool.name as keyof typeof capabilityByToolName
+        ];
+      return capability
+        ? guardStructuredTool({
+            capability,
+            context: executionContext,
+            repository: agentExecutionRepository,
+            registeredTool,
+          })
+        : registeredTool;
+    });
   }
   return tools;
 }

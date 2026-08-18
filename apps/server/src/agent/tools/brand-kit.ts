@@ -1,7 +1,7 @@
 import { tool } from "langchain";
 import { z } from "zod";
 
-const brandKitSchema = z.object({});
+const brandKitSchema = z.object({}).strict();
 
 export function createBrandKitTool(
   deps: { createUserClient: (accessToken: string) => any },
@@ -30,34 +30,11 @@ export function createBrandKitTool(
       // Fetch assets
       const { data: assets } = await client
         .from("brand_kit_assets")
-        .select(
-          "asset_type, display_name, role, text_content, file_url, metadata",
-        )
+        .select("id, asset_type, display_name, role, text_content, metadata")
         .eq("kit_id", brandKitId)
         .order("sort_order", { ascending: true });
 
       const safeAssets = assets ?? [];
-
-      // Resolve signed URLs for file-based assets (logo/image)
-      const fileAssets = safeAssets.filter((a: any) => a.file_url);
-      if (fileAssets.length > 0) {
-        const paths = fileAssets.map((a: any) => a.file_url as string);
-        const { data: signedData } = await client.storage
-          .from("brand-kit-assets")
-          .createSignedUrls(paths, 3600);
-
-        if (signedData) {
-          const urlByPath = new Map(
-            signedData
-              .filter((e: any) => e.signedUrl && e.path)
-              .map((e: any) => [e.path, e.signedUrl]),
-          );
-          for (const asset of fileAssets) {
-            const url = urlByPath.get(asset.file_url);
-            if (url) asset.file_url = url;
-          }
-        }
-      }
 
       const result = {
         kit_name: kit.name,
@@ -80,15 +57,15 @@ export function createBrandKitTool(
         logos: safeAssets
           .filter((a: any) => a.asset_type === "logo")
           .map((a: any) => ({
+            assetId: a.id,
             name: a.display_name,
-            url: a.file_url,
             role: a.role,
           })),
         images: safeAssets
           .filter((a: any) => a.asset_type === "image")
           .map((a: any) => ({
+            assetId: a.id,
             name: a.display_name,
-            url: a.file_url,
           })),
       };
 

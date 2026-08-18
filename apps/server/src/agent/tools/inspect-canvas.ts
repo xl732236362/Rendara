@@ -1,30 +1,35 @@
 import { tool } from "langchain";
 import { z } from "zod";
 
-const inspectCanvasSchema = z.object({
-  detail_level: z
-    .enum(["summary", "full"])
-    .default("summary")
-    .describe(
-      "Level of detail: summary (id, type, position, size) or full (all properties)",
-    ),
-  element_id: z.string().optional().describe("Query a specific element by ID"),
-  filter_type: z
-    .array(z.string())
-    .optional()
-    .describe(
-      "Filter by element type(s), e.g. ['text', 'image', 'video', 'rectangle']. Use 'video' to match video elements (stored internally as image elements with isVideo metadata).",
-    ),
-  filter_region: z
-    .object({
-      min_x: z.number(),
-      min_y: z.number(),
-      max_x: z.number(),
-      max_y: z.number(),
-    })
-    .optional()
-    .describe("Filter to elements within a bounding box region"),
-});
+const inspectCanvasSchema = z
+  .object({
+    detail_level: z
+      .enum(["summary", "full"])
+      .default("summary")
+      .describe(
+        "Level of detail: summary (id, type, position, size) or full (all properties)",
+      ),
+    element_id: z
+      .string()
+      .optional()
+      .describe("Query a specific element by ID"),
+    filter_type: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Filter by element type(s), e.g. ['text', 'image', 'video', 'rectangle']. Use 'video' to match video elements (stored internally as image elements with isVideo metadata).",
+      ),
+    filter_region: z
+      .object({
+        min_x: z.number(),
+        min_y: z.number(),
+        max_x: z.number(),
+        max_y: z.number(),
+      })
+      .optional()
+      .describe("Filter to elements within a bounding box region"),
+  })
+  .strict();
 
 type CanvasElement = Record<string, unknown>;
 
@@ -52,7 +57,6 @@ function summarizeElement(el: CanvasElement) {
     // Video elements are stored as Excalidraw image elements with customData.isVideo = true
     if (customData?.isVideo === true) {
       base.type = "video";
-      if (customData.videoUrl) base.videoUrl = customData.videoUrl;
       if (customData.mimeType) base.mimeType = customData.mimeType;
       if (customData.durationSeconds !== undefined)
         base.durationSeconds = customData.durationSeconds;
@@ -242,13 +246,9 @@ export function createInspectCanvasTool(deps: {
         });
       }
 
-      const summaryElements =
-        input.detail_level === "full"
-          ? filtered
-          : filtered.map(summarizeElement);
+      const summaryElements = filtered.slice(0, 100).map(summarizeElement);
 
       return JSON.stringify({
-        canvasId,
         elementCount: elements.length,
         matchedCount: filtered.length,
         boundingBox: computeBoundingBox(filtered),
@@ -257,6 +257,7 @@ export function createInspectCanvasTool(deps: {
             (content.appState as any)?.viewBackgroundColor ?? "#ffffff",
         },
         elements: summaryElements,
+        hasMore: filtered.length > summaryElements.length,
       });
     },
     {

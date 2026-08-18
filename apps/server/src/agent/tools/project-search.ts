@@ -3,11 +3,13 @@ import { z } from "zod";
 
 const DEFAULT_MAX_MATCHES = 5;
 
-const projectSearchSchema = z.object({
-  query: z.string().min(1),
-  glob: z.string().min(1).optional(),
-  maxMatches: z.number().int().min(1).max(20).optional(),
-});
+const projectSearchSchema = z
+  .object({
+    query: z.string().min(1),
+    glob: z.string().min(1).optional(),
+    maxMatches: z.number().int().min(1).max(20).optional(),
+  })
+  .strict();
 
 type ProjectSearchInput = z.infer<typeof projectSearchSchema>;
 

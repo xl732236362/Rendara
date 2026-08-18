@@ -34,65 +34,73 @@ function buildImageGenerateSchema(models: AvailableModel[]) {
           .describe(modelDescription)
       : z.string().default(DEFAULT_MODEL).describe(modelDescription);
 
-  return z.object({
-    title: z
-      .string()
-      .min(1)
-      .describe(
-        "Short descriptive title for the generated image, used as metadata so the image content is understood without re-analysis",
-      ),
-    prompt: z.string().min(1).describe("Detailed image generation prompt"),
-    model: modelField,
-    aspectRatio: z
-      .string()
-      .optional()
-      .default("1:1")
-      .describe(
-        "Aspect ratio (e.g. 1:1, 16:9, 9:16, 4:3, 3:4, 4:5, 5:4, 2:3, 3:2). Provider auto-normalizes unsupported ratios to nearest match.",
-      ),
-    quality: z
-      .enum(["standard", "hd", "ultra"])
-      .optional()
-      .default("hd")
-      .describe(
-        "Image quality/resolution level. standard: ~1K fast preview, hd: ~2K production quality (default), ultra: ~4K print quality (not all models support this, will use max available).",
-      ),
-    outputFormat: z
-      .enum(["png", "jpg", "webp"])
-      .optional()
-      .describe(
-        "Output image format. PNG for transparency, JPG for photos, WebP for web.",
-      ),
-    inputImages: z
-      .array(z.string())
-      .optional()
-      .describe(
-        "Reference image URLs for editing/transformation. Google models accept up to 14, Flux models accept 1. Imagen 4 and Recraft V3 are text-only.",
-      ),
-    placementX: z
-      .number()
-      .optional()
-      .describe(
-        "Left edge x coordinate on canvas. Use inspect_canvas to determine position.",
-      ),
-    placementY: z
-      .number()
-      .optional()
-      .describe(
-        "Top edge y coordinate on canvas. Use inspect_canvas to determine position.",
-      ),
-    placementWidth: z
-      .number()
-      .optional()
-      .default(512)
-      .describe("Display width on canvas"),
-    placementHeight: z
-      .number()
-      .optional()
-      .default(512)
-      .describe("Display height on canvas"),
-  });
+  return z
+    .object({
+      title: z
+        .string()
+        .min(1)
+        .describe(
+          "Short descriptive title for the generated image, used as metadata so the image content is understood without re-analysis",
+        ),
+      prompt: z.string().min(1).describe("Detailed image generation prompt"),
+      model: modelField,
+      aspectRatio: z
+        .string()
+        .optional()
+        .default("1:1")
+        .describe(
+          "Aspect ratio (e.g. 1:1, 16:9, 9:16, 4:3, 3:4, 4:5, 5:4, 2:3, 3:2). Provider auto-normalizes unsupported ratios to nearest match.",
+        ),
+      quality: z
+        .enum(["standard", "hd", "ultra"])
+        .optional()
+        .default("hd")
+        .describe(
+          "Image quality/resolution level. standard: ~1K fast preview, hd: ~2K production quality (default), ultra: ~4K print quality (not all models support this, will use max available).",
+        ),
+      outputFormat: z
+        .enum(["png", "jpg", "webp"])
+        .optional()
+        .describe(
+          "Output image format. PNG for transparency, JPG for photos, WebP for web.",
+        ),
+      inputImages: z
+        .array(opaqueAssetIdSchema)
+        .optional()
+        .describe("Authorized reference asset IDs for editing/transformation."),
+      placementX: z
+        .number()
+        .optional()
+        .describe(
+          "Left edge x coordinate on canvas. Use inspect_canvas to determine position.",
+        ),
+      placementY: z
+        .number()
+        .optional()
+        .describe(
+          "Top edge y coordinate on canvas. Use inspect_canvas to determine position.",
+        ),
+      placementWidth: z
+        .number()
+        .optional()
+        .default(512)
+        .describe("Display width on canvas"),
+      placementHeight: z
+        .number()
+        .optional()
+        .default(512)
+        .describe("Display height on canvas"),
+    })
+    .strict();
 }
+
+const opaqueAssetIdSchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .refine((value) => !/^(?:https?:|data:|file:)/i.test(value), {
+    message: "raw_url_not_allowed",
+  });
 
 type ImageGenerateInput = {
   title: string;
