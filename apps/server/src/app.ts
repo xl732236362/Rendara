@@ -123,6 +123,7 @@ import { registerSettingsRoutes } from "./http/settings.js";
 import { registerUploadRoutes } from "./http/uploads.js";
 import { registerVideoModelRoutes } from "./http/video-models.js";
 import { registerViewerRoutes } from "./http/viewer.js";
+import { sanitizeRequestUrl } from "./logging/sanitize-log-data.js";
 import { createPgmqClient } from "./queue/pgmq-client.js";
 import { registerRateLimiting } from "./security/rate-limit.js";
 import {
@@ -233,7 +234,20 @@ export function buildAppFromEnv(
   ).seal();
 
   const app = Fastify({
-    logger: { level: "info" },
+    logger: {
+      level: "info",
+      serializers: {
+        req(request) {
+          return {
+            host: request.headers.host ?? "",
+            method: request.method,
+            remoteAddress: request.socket.remoteAddress ?? "",
+            remotePort: request.socket.remotePort ?? 0,
+            url: sanitizeRequestUrl(request.url),
+          };
+        },
+      },
+    },
   });
   const loadCatalog =
     options.builtinSkillCatalogLoader ?? loadRepositoryBuiltinSkillCatalog;
