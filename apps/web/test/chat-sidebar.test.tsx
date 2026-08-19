@@ -44,13 +44,14 @@ vi.mock("../src/lib/server-api", () => ({
 function createMockWs(): WebSocketHandle {
   return {
     connected: true,
-    startRun: vi.fn((payload, onAck) => {
+    startRun: vi.fn((payload, callbacks) => {
       // Simulate server ack
-      onAck?.({
+      callbacks?.onAck({
         type: "command.ack",
         action: "agent.run",
-        payload: { runId: "run_123" },
+        payload: { runId: "run_123", clientRequestId: payload.clientRequestId },
       });
+      return true;
     }),
     cancelRun: vi.fn(),
     onEvent: vi.fn(() => () => {}),
@@ -142,7 +143,10 @@ describe("ChatSidebar", () => {
           prompt: "hello loom",
           canvasId: "canvas-1",
         }),
-        expect.any(Function),
+        expect.objectContaining({
+          onAck: expect.any(Function),
+          onError: expect.any(Function),
+        }),
       ),
     );
     expect(mockWs.startRun).not.toHaveBeenCalledWith(

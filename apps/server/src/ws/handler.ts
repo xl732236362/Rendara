@@ -357,7 +357,7 @@ async function handleRunCommand(
   const ackMessage = {
     type: "command.ack",
     action: "agent.run",
-    payload: response,
+    payload: { ...response, clientRequestId: payload.clientRequestId },
   };
   let ackSent = connectionManager.sendTo(connectionId, ackMessage);
   if (!ackSent) {

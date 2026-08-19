@@ -538,7 +538,7 @@ export function ChatSidebar({
           const timeout = setTimeout(() => {
             cleanup();
             reject(new Error("WebSocket ack timeout — connection may be down"));
-          }, 10_000);
+          }, 15_000);
 
           ws.startRun(
             {
@@ -568,15 +568,25 @@ export function ChatSidebar({
                 ? { model: agentModelRef.current }
                 : {}),
             },
-            (ack) => {
-              clearTimeout(timeout);
-              perf.tAck = performance.now();
-              console.log(
-                `[perf] send → ack: ${(perf.tAck - perf.t0Send).toFixed(0)}ms`,
-              );
-              const id = ack.payload.runId as string;
-              runIdRef.current = id;
-              resolve(id);
+            {
+              onAck: (ack) => {
+                clearTimeout(timeout);
+                perf.tAck = performance.now();
+                console.log(
+                  `[perf] send → ack: ${(perf.tAck - perf.t0Send).toFixed(0)}ms`,
+                );
+                const id = ack.payload.runId as string;
+                runIdRef.current = id;
+                resolve(id);
+              },
+              onError: (error) => {
+                clearTimeout(timeout);
+                reject(
+                  Object.assign(new Error(error.error.message), {
+                    wsError: error,
+                  }),
+                );
+              },
             },
           );
         });
