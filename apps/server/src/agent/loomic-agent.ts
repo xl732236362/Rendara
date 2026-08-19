@@ -26,6 +26,8 @@ import {
 import type { AgentExecutionContext } from "./execution-context.js";
 import { LOOMIC_SYSTEM_PROMPT } from "./prompts/loomic-main.js";
 import { createVideoSubAgent } from "./sub-agents.js";
+import { createToolExecutionSupervisor } from "./tool-execution-supervisor.js";
+import { createToolGovernanceMiddleware } from "./tool-governance-middleware.js";
 import type {
   PersistImageFn,
   SubmitImageJobFn,
@@ -33,7 +35,9 @@ import type {
 import { createMainAgentTools } from "./tools/index.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
 
-export type LoomicAgent = Pick<ExactAgent, "stream" | "streamEvents">;
+export type LoomicAgent = Pick<ExactAgent, "stream" | "streamEvents"> & {
+  readonly toolSupervisor: ReturnType<typeof createToolExecutionSupervisor>;
+};
 
 export type LoomicAgentFactory = (options: {
   applyCanvasOperations?: ApplyCanvasOperations;
@@ -169,15 +173,33 @@ export function createLoomicAgent(options: {
     ? [createVideoSubAgent(generateVideoTool)]
     : [];
 
-  return createExactLoomicAgent({
+  const toolSupervisor = createToolExecutionSupervisor({
+    agentRunId: options.executionContext.runId,
+    attemptId: options.executionContext.attemptId,
+    maxBytes: 2 * 1024 * 1024,
+    maxCalls: 64,
+  });
+  const toolGovernanceMiddleware = createToolGovernanceMiddleware({
+    context: options.executionContext,
+    fencingToken: options.fencingToken,
+    repository: options.agentExecutionRepository,
+    supervisor: toolSupervisor,
+    ...(options.authorizeExecutionContext
+      ? { authorize: options.authorizeExecutionContext }
+      : {}),
+    resolveCurrentCapabilities: () => PRODUCTION_AGENT_CAPABILITIES,
+  });
+  const agent = createExactLoomicAgent({
     authority: createAgentAuthority(capabilities),
     ...(options.checkpointer ? { checkpointer: options.checkpointer } : {}),
     model: resolvedModel,
+    middleware: [toolGovernanceMiddleware],
     ...(options.store ? { store: options.store } : {}),
     subagents,
     systemPrompt,
     tools,
   });
+  return Object.assign(agent, { toolSupervisor });
 }
 
 /**

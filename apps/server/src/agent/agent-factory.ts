@@ -4,6 +4,7 @@ import type {
   BaseCheckpointSaver,
   BaseStore,
 } from "@langchain/langgraph-checkpoint";
+import type { AgentMiddleware } from "langchain";
 import { createAgent as createLangChainAgent, tool } from "langchain";
 import { z } from "zod";
 
@@ -29,6 +30,7 @@ export interface ExactAgentOptions {
   model: BaseLanguageModel | string;
   systemPrompt: string;
   tools: StructuredTool[];
+  middleware: AgentMiddleware[];
   checkpointer?: BaseCheckpointSaver;
   store?: BaseStore;
 }
@@ -40,6 +42,7 @@ export function createExactLoomicAgent(options: {
   model: BaseLanguageModel | string;
   systemPrompt: string;
   tools: readonly StructuredTool[];
+  middleware: readonly AgentMiddleware[];
   subagents?: readonly SubagentDefinition[];
   checkpointer?: BaseCheckpointSaver;
   store?: BaseStore;
@@ -49,6 +52,12 @@ export function createExactLoomicAgent(options: {
   const createAgent =
     options.createAgent ?? (createLangChainAgent as unknown as CreateAgentFn);
   const registeredSubagents = new Map<string, ExactAgent>();
+  const toolMiddleware = (options.middleware ?? []).filter(
+    (middleware) => middleware.wrapToolCall !== undefined,
+  );
+  if (toolMiddleware.length !== 1) {
+    throw new Error("single_tool_governance_middleware_required");
+  }
 
   for (const authority of options.authority.subagents) {
     const definition = options.subagents?.find(
@@ -66,6 +75,7 @@ export function createExactLoomicAgent(options: {
         model: options.model,
         systemPrompt: definition.systemPrompt,
         tools: subagentTools,
+        middleware: [...options.middleware],
         ...(options.checkpointer ? { checkpointer: options.checkpointer } : {}),
         ...(options.store ? { store: options.store } : {}),
       }),
@@ -105,6 +115,7 @@ export function createExactLoomicAgent(options: {
     model: options.model,
     systemPrompt: options.systemPrompt,
     tools: mainTools,
+    middleware: [...options.middleware],
     ...(options.checkpointer ? { checkpointer: options.checkpointer } : {}),
     ...(options.store ? { store: options.store } : {}),
   });

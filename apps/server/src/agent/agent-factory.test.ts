@@ -1,4 +1,4 @@
-import { tool } from "langchain";
+import { createMiddleware, tool } from "langchain";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
@@ -9,6 +9,10 @@ import { createLoomicAgent } from "./loomic-agent.js";
 const schema = z.object({});
 const namedTool = (name: string) =>
   tool(async () => `${name}:ok`, { name, description: name, schema });
+const governanceMiddleware = createMiddleware({
+  name: "LoomicToolGovernance",
+  wrapToolCall: (request, handler) => handler(request),
+});
 
 describe("exact LangChain Agent factory", () => {
   it("rejects production construction without persisted execution authority", () => {
@@ -36,6 +40,7 @@ describe("exact LangChain Agent factory", () => {
       authority,
       createAgent,
       model: "openai:test",
+      middleware: [governanceMiddleware],
       systemPrompt: "system",
       tools: [
         namedTool("read_builtin_skill"),
@@ -50,7 +55,9 @@ describe("exact LangChain Agent factory", () => {
     expect(
       createAgent.mock.calls[0]?.[0].tools.map((registered) => registered.name),
     ).toEqual(authority.mainToolNames);
-    expect(createAgent.mock.calls[0]?.[0]).not.toHaveProperty("middleware");
+    expect(createAgent.mock.calls[0]?.[0].middleware).toEqual([
+      governanceMiddleware,
+    ]);
   });
 
   it("rejects duplicate and unclassified tools instead of widening authority", () => {
@@ -58,6 +65,7 @@ describe("exact LangChain Agent factory", () => {
       authority: createAgentAuthority(["canvas.read"]),
       createAgent: vi.fn<CreateAgentFn>(),
       model: "openai:test",
+      middleware: [governanceMiddleware],
       systemPrompt: "system",
     };
     expect(() =>
@@ -94,6 +102,7 @@ describe("exact LangChain Agent factory", () => {
       authority,
       createAgent,
       model: "openai:test",
+      middleware: [governanceMiddleware],
       systemPrompt: "system",
       subagents: [
         {
@@ -116,5 +125,35 @@ describe("exact LangChain Agent factory", () => {
     expect(videoCall?.[0].tools.map((item) => item.name)).toEqual([
       "generate_video",
     ]);
+    expect(
+      createAgent.mock.calls.every(
+        ([agentOptions]) =>
+          agentOptions.middleware?.[0] === governanceMiddleware,
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects missing or multiple tool execution middleware", () => {
+    const base = {
+      authority: createAgentAuthority(["canvas.read"]),
+      createAgent: vi.fn<CreateAgentFn>(),
+      model: "openai:test",
+      systemPrompt: "system",
+      tools: [namedTool("inspect_canvas"), namedTool("screenshot_canvas")],
+    };
+    const secondWrapper = createMiddleware({
+      name: "SecondToolWrapper",
+      wrapToolCall: (request, handler) => handler(request),
+    });
+
+    expect(() => createExactLoomicAgent(base as never)).toThrow(
+      "single_tool_governance_middleware_required",
+    );
+    expect(() =>
+      createExactLoomicAgent({
+        ...base,
+        middleware: [governanceMiddleware, secondWrapper],
+      }),
+    ).toThrow("single_tool_governance_middleware_required");
   });
 });

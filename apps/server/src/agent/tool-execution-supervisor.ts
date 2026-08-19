@@ -34,6 +34,8 @@ type FailedPayload = CanonicalToolFailed["error"];
 type StoredRecord = {
   readonly record: CanonicalToolRecord;
   projected: boolean;
+  readonly projectedPromise: Promise<void>;
+  readonly resolveProjected: () => void;
 };
 
 export interface ToolExecutionSupervisor {
@@ -47,6 +49,10 @@ export interface ToolExecutionSupervisor {
     error: FailedPayload,
   ): CanonicalToolFailed;
   acknowledge(record: CanonicalToolRecord): "projected" | "duplicate";
+  waitForAcknowledgement(
+    record: CanonicalToolRecord,
+    options?: { readonly signal?: AbortSignal; readonly timeoutMs?: number },
+  ): Promise<void>;
   closeOpenCalls(error: FailedPayload): readonly CanonicalToolFailed[];
   callState(logicalToolCallId: string): ToolCallState | undefined;
   records(): readonly CanonicalToolRecord[];
@@ -78,7 +84,16 @@ export function createToolExecutionSupervisor(
       throw new Error("tool_supervisor_capacity_exhausted");
     }
     serializedBytes += bytes;
-    staged.push({ record: parsed, projected: false });
+    let resolveProjected = () => {};
+    const projectedPromise = new Promise<void>((resolve) => {
+      resolveProjected = resolve;
+    });
+    staged.push({
+      record: parsed,
+      projected: false,
+      projectedPromise,
+      resolveProjected,
+    });
     nextSequence += 1;
     return parsed;
   }
@@ -195,6 +210,7 @@ export function createToolExecutionSupervisor(
       if (next !== stored)
         throw new Error("tool_lifecycle_record_out_of_order");
       stored.projected = true;
+      stored.resolveProjected();
 
       const call = calls.get(stored.record.logicalToolCallId);
       if (!call) throw new Error("unknown_logical_tool_call_id");
@@ -207,6 +223,47 @@ export function createToolExecutionSupervisor(
         call.state = "terminal";
       }
       return "projected";
+    },
+
+    async waitForAcknowledgement(record, waitOptions = {}) {
+      const stored = staged.find(
+        (candidate) => candidate.record.sequence === record.sequence,
+      );
+      if (!stored || !canonicalRecordsEqual(stored.record, record)) {
+        throw new Error("tool_lifecycle_record_conflict");
+      }
+      if (stored.projected) return;
+
+      const timeoutMs = waitOptions.timeoutMs ?? 5_000;
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          cleanup();
+          reject(new Error("tool_lifecycle_ack_timeout"));
+        }, timeoutMs);
+        const onAbort = () => {
+          cleanup();
+          reject(new Error("tool_lifecycle_ack_aborted"));
+        };
+        const cleanup = () => {
+          clearTimeout(timeout);
+          waitOptions.signal?.removeEventListener("abort", onAbort);
+        };
+        if (waitOptions.signal?.aborted) {
+          onAbort();
+          return;
+        }
+        waitOptions.signal?.addEventListener("abort", onAbort, { once: true });
+        stored.projectedPromise.then(
+          () => {
+            cleanup();
+            resolve();
+          },
+          (error: unknown) => {
+            cleanup();
+            reject(error);
+          },
+        );
+      });
     },
 
     closeOpenCalls(error) {

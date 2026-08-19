@@ -16,7 +16,6 @@ import {
 import { createInspectCanvasTool } from "./inspect-canvas.js";
 import { createManipulateCanvasTool } from "./manipulate-canvas.js";
 import { createScreenshotCanvasTool } from "./screenshot-canvas.js";
-import { guardStructuredTool } from "./tool-guard.js";
 import {
   type SubmitVideoJobFn,
   createVideoGenerateTool,
@@ -110,40 +109,7 @@ export function createMainAgentTools(deps: {
       }),
     );
   }
-  const executionContext = deps.executionContext;
-  const agentExecutionRepository = deps.agentExecutionRepository;
-  const capabilityByToolName = {
-    inspect_canvas: "canvas.read",
-    screenshot_canvas: "canvas.read",
-    manipulate_canvas: "canvas.mutate",
-    generate_image: "image.generate",
-    generate_video: "video.generate",
-    get_brand_kit: "brand_kit.read",
-    project_search: "project.search",
-  } as const;
-  return tools.map((registeredTool) => {
-    const capability =
-      capabilityByToolName[
-        registeredTool.name as keyof typeof capabilityByToolName
-      ];
-    return capability
-      ? guardStructuredTool({
-          capability,
-          context: executionContext,
-          repository: agentExecutionRepository,
-          registeredTool,
-          ...(deps.fencingToken !== undefined
-            ? { fencingToken: deps.fencingToken }
-            : {}),
-          ...(deps.authorizeExecutionContext
-            ? { authorize: deps.authorizeExecutionContext }
-            : {}),
-          ...(deps.resolveCurrentCapabilities
-            ? { resolveCurrentCapabilities: deps.resolveCurrentCapabilities }
-            : {}),
-        })
-      : registeredTool;
-  });
+  return tools;
 }
 
 /** @deprecated Use createMainAgentTools + sub-agents instead */

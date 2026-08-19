@@ -1,7 +1,3 @@
-import {
-  DynamicStructuredTool,
-  type StructuredTool,
-} from "@langchain/core/tools";
 import type { AgentExecutionRepository } from "../../features/agent-runs/agent-execution-repository.js";
 import type { AgentCapability } from "../capabilities.js";
 import type { AgentExecutionContext } from "../execution-context.js";
@@ -32,18 +28,18 @@ export async function guardToolCall<T>(options: {
   authorize?: () => Promise<void>;
   resolveCurrentCapabilities?: () => readonly AgentCapability[];
 }): Promise<T> {
-  assertBoundedInput(options.input);
-  await assertActiveAuthority(options);
+  assertBoundedToolInput(options.input);
+  await assertActiveToolAuthority(options);
   await options.authorize?.();
 
   const result = await options.invoke();
-  await assertActiveAuthority(options);
+  await assertActiveToolAuthority(options);
   await options.authorize?.();
-  assertBoundedResult(result);
+  assertBoundedToolResult(result);
   return result;
 }
 
-async function assertActiveAuthority(options: {
+export async function assertActiveToolAuthority(options: {
   capability: AgentCapability;
   context: AgentExecutionContext;
   repository: AgentExecutionRepository;
@@ -83,38 +79,7 @@ async function assertActiveAuthority(options: {
   }
 }
 
-export function guardStructuredTool(options: {
-  capability: AgentCapability;
-  context: AgentExecutionContext;
-  repository: AgentExecutionRepository;
-  registeredTool: StructuredTool;
-  fencingToken?: number;
-  authorize?: () => Promise<void>;
-  resolveCurrentCapabilities?: () => readonly AgentCapability[];
-}): StructuredTool {
-  return new DynamicStructuredTool({
-    name: options.registeredTool.name,
-    description: options.registeredTool.description,
-    schema: options.registeredTool.schema,
-    func: async (input, _runManager, config) =>
-      guardToolCall({
-        capability: options.capability,
-        context: options.context,
-        repository: options.repository,
-        ...(options.fencingToken !== undefined
-          ? { fencingToken: options.fencingToken }
-          : {}),
-        input,
-        invoke: async () => options.registeredTool.invoke(input, config),
-        ...(options.authorize ? { authorize: options.authorize } : {}),
-        ...(options.resolveCurrentCapabilities
-          ? { resolveCurrentCapabilities: options.resolveCurrentCapabilities }
-          : {}),
-      }),
-  }) as StructuredTool;
-}
-
-function assertBoundedInput(input: unknown): void {
+export function assertBoundedToolInput(input: unknown): void {
   const serialized = JSON.stringify(input);
   if (Buffer.byteLength(serialized) > MAX_INPUT_BYTES) {
     throw new Error("tool_input_too_large");
@@ -147,7 +112,7 @@ function visitInput(value: unknown): void {
   }
 }
 
-function assertBoundedResult(result: unknown): void {
+export function assertBoundedToolResult(result: unknown): void {
   const serialized =
     typeof result === "string" ? result : JSON.stringify(result);
   if (Buffer.byteLength(serialized) > MAX_OUTPUT_BYTES) {
