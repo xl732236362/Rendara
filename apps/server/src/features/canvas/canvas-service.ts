@@ -92,8 +92,6 @@ export function createCanvasService(options: {
         canvasId,
         expectedRevision,
         content: leanContent,
-        eventType: "canvas.updated",
-        eventPayload: { canvasId, actorUserId: user.id, source: "browser" },
         ...(agentEffect
           ? {
               agentEffect: {

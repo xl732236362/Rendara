@@ -53,7 +53,7 @@ type ChatSidebarProps = {
   onToggle: () => void;
   onImageGenerated?: (artifact: ImageArtifact) => void;
   onVideoGenerated?: (artifact: VideoArtifact) => void;
-  onCanvasSync?: () => void;
+  onCanvasSync?: (event: Extract<StreamEvent, { type: "canvas.sync" }>) => void;
   /** Called for every stream event — used by job fallback polling to detect timed-out jobs */
   onStreamEvent?: (event: StreamEvent) => void;
   initialPrompt?: string | undefined;
@@ -495,6 +495,10 @@ export function ChatSidebar({
         const runIdRef = { current: "" };
 
         const cleanup = ws.onEvent((event) => {
+          if (event.type === "canvas.sync") {
+            if (event.canvasId === canvasId) onCanvasSync?.(event);
+            return;
+          }
           if (!runIdRef.current || event.runId !== runIdRef.current) return;
           if (abortRef.current) {
             resolveStream();
@@ -554,10 +558,6 @@ export function ChatSidebar({
                 onVideoGenerated(artifact as VideoArtifact);
               }
             }
-          }
-
-          if (event.type === "canvas.sync" && onCanvasSync) {
-            onCanvasSync();
           }
 
           // Preview model hint: suggest switching when run fails
@@ -871,6 +871,10 @@ export function ChatSidebar({
 
           // Reuse the shared stream event handler — eliminates ~70 lines of duplication
           const unsub = ws.onEvent((evt) => {
+            if (evt.type === "canvas.sync") {
+              if (evt.canvasId === canvasId) onCanvasSync?.(evt);
+              return;
+            }
             if (evt.runId !== activeRunId) return;
 
             applyStreamEvent(evt, assistantId, sessionId);
@@ -897,10 +901,6 @@ export function ChatSidebar({
                   onVideoGenerated(artifact as VideoArtifact);
                 }
               }
-            }
-
-            if (evt.type === "canvas.sync" && onCanvasSync) {
-              onCanvasSync();
             }
 
             if (

@@ -150,8 +150,27 @@ export function useChatStream(updateSessionMessages: MessageUpdater) {
           );
           break;
 
+        case "tool.failed":
+          update((prev) =>
+            prev.map((m) => {
+              if (m.id !== assistantId) return m;
+              return {
+                ...m,
+                contentBlocks: m.contentBlocks.map((block) =>
+                  block.type === "tool" && block.toolCallId === event.toolCallId
+                    ? {
+                        ...block,
+                        status: "completed" as const,
+                        outputSummary: event.error.message,
+                      }
+                    : block,
+                ),
+              };
+            }),
+          );
+          break;
+
         case "run.failed":
-          console.error("[chat-stream] run.failed:", event.error);
           update((prev) =>
             prev.map((m) => {
               if (m.id !== assistantId) return m;

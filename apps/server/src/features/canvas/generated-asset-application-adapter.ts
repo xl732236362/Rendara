@@ -70,12 +70,6 @@ export function createGeneratedAssetPort(options: {
             content: inserted.content,
             jobId: command.jobId,
             effectKind: command.effectKey,
-            eventType: "canvas.generated_asset_attached",
-            eventPayload: {
-              canvasId: command.canvasId,
-              jobId: command.jobId,
-              elementId: inserted.elementId,
-            },
             ...(command.agentEffect
               ? {
                   agentEffect: {

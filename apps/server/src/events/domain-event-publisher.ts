@@ -15,9 +15,20 @@ type PublisherPorts = {
 export function createDomainEventPublisher(ports: PublisherPorts) {
   return async (event: OutboxEvent): Promise<void> => {
     if (event.aggregate_type === "canvas") {
+      if (
+        event.event_type !== "canvas.updated" ||
+        event.payload.canvasId !== event.aggregate_id ||
+        event.payload.revision !== event.aggregate_version ||
+        !Number.isSafeInteger(event.aggregate_version) ||
+        event.aggregate_version < 1
+      ) {
+        throw codedError("invalid_canvas_event");
+      }
       const streamEvent = {
         type: "canvas.sync" as const,
-        runId: event.event_id,
+        eventId: event.event_id,
+        canvasId: event.aggregate_id,
+        revision: event.aggregate_version,
         timestamp: event.occurred_at,
       };
       if (

@@ -153,7 +153,9 @@ describe("domain outbox dispatcher", () => {
     const buffer = new CanvasEventBuffer();
     const streamEvent = {
       type: "canvas.sync" as const,
-      runId: event.event_id,
+      eventId: event.event_id,
+      canvasId: event.aggregate_id,
+      revision: event.aggregate_version,
       timestamp: event.occurred_at,
     };
     expect(

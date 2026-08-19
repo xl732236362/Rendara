@@ -5,10 +5,54 @@ import { AppError } from "../errors/app-error.js";
 import { MemoryAgentExecutionRepository } from "../features/agent-runs/agent-execution-repository.js";
 import { ProviderRegistry } from "../generation/providers/registry.js";
 import { createAgentRunService } from "./runtime.js";
+import { createToolExecutionSupervisor } from "./tool-execution-supervisor.js";
 import type { SubmitImageJobFn } from "./tools/image-generate.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
 
 describe("Agent runtime application wiring", () => {
+  it("closes an open tool before publishing the run terminal event", async () => {
+    const supervisor = createToolExecutionSupervisor({
+      agentRunId: "run-open-tool",
+      attemptId: "attempt-open-tool",
+      maxBytes: 10_000,
+      maxCalls: 10,
+    });
+    const started = supervisor.stageStart({
+      logicalToolCallId: "tool-open",
+      toolName: "read_canvas",
+      inputDigest: "digest-open",
+    });
+    supervisor.acknowledge(started);
+    const service = createAgentRunService({
+      agentFactory: (() => ({
+        async *streamEvents() {},
+        async *stream() {},
+        toolSupervisor: supervisor,
+      })) as never,
+      env: loadServerEnv({}, {}),
+      providerRegistry: new ProviderRegistry().seal(),
+    });
+    service.createRun(
+      {
+        canvasId: "canvas-open-tool",
+        clientRequestId: "request-open-tool",
+        conversationId: "conversation-open-tool",
+        prompt: "hello",
+        sessionId: "session-open-tool",
+      },
+      { runId: "run-open-tool" },
+    );
+
+    const events = [];
+    for await (const event of service.streamRun("run-open-tool"))
+      events.push(event);
+
+    expect(events.slice(-2).map((event) => event.type)).toEqual([
+      "tool.failed",
+      "run.completed",
+    ]);
+  });
+
   it("fails a run when persistence initialization exceeds its deadline", async () => {
     vi.useFakeTimers();
     try {
@@ -99,6 +143,7 @@ describe("Agent runtime application wiring", () => {
     };
     const activeService = createAgentRunService({
       env: loadServerEnv({}, {}),
+      finalizationRetryDelayMs: 0,
       providerRegistry: new ProviderRegistry().seal(),
     });
 
@@ -187,7 +232,7 @@ describe("Agent runtime application wiring", () => {
     expect(constructedAttempts[0]).not.toBe("attempt-stale");
   });
 
-  it("claims the persisted attempt before Agent construction and durably cancels it", async () => {
+  it("claims and atomically finalizes the persisted attempt before reporting completion", async () => {
     const repository = new MemoryAgentExecutionRepository();
     await repository.accept({
       clientRequestId: "request-lease",
@@ -231,12 +276,72 @@ describe("Agent runtime application wiring", () => {
     for await (const _event of service.streamRun("run-lease")) {
     }
     expect(constructionStates).toEqual([true]);
-    await expect(service.cancelRun("run-lease")).resolves.toMatchObject({
-      status: "canceled",
+    await service.cancelRun("run-lease");
+    expect(repository.get("run-lease")).toMatchObject({
+      runStatus: "completed",
+      attempt: { status: "completed" },
     });
     await expect(
       repository.getExecutionContext("run-lease"),
     ).resolves.toBeNull();
+  });
+
+  it("emits no terminal event when persisted finalization is unconfirmed", async () => {
+    const repository = new MemoryAgentExecutionRepository();
+    await repository.accept({
+      clientRequestId: "request-unconfirmed",
+      requestDigest: "digest-unconfirmed",
+      context: {
+        runId: "run-unconfirmed",
+        attemptId: "attempt-unconfirmed",
+        userId: "user-unconfirmed",
+        workspaceId: "workspace-unconfirmed",
+        projectId: "project-unconfirmed",
+        canvasId: "canvas-unconfirmed",
+        capabilities: ["image.generate"],
+        capabilityPolicyVersion: "policy-1",
+        skillCatalogDigest: "catalog-1",
+        effectiveSkillNames: [],
+      },
+    });
+    vi.spyOn(repository, "finalizeRun").mockRejectedValue(
+      new Error("agent_execution_persistence_failed"),
+    );
+    const service = createAgentRunService({
+      agentExecutionRepository: repository,
+      agentFactory: (() => ({
+        async *streamEvents() {},
+        async *stream() {},
+      })) as never,
+      env: loadServerEnv({}, {}),
+      finalizationRetryDelayMs: 0,
+      providerRegistry: new ProviderRegistry().seal(),
+    });
+    service.createRun(
+      {
+        canvasId: "canvas-unconfirmed",
+        clientRequestId: "request-unconfirmed",
+        conversationId: "conversation-unconfirmed",
+        prompt: "hello",
+        sessionId: "session-unconfirmed",
+      },
+      { runId: "run-unconfirmed", userId: "user-unconfirmed" },
+    );
+    const events: Array<{ type: string }> = [];
+
+    const consume = async () => {
+      for await (const event of service.streamRun("run-unconfirmed")) {
+        events.push(event);
+      }
+    };
+    await expect(consume()).rejects.toMatchObject({
+      code: "run_finalization_unconfirmed",
+    });
+    expect(
+      events.some((event) =>
+        ["run.completed", "run.failed", "run.canceled"].includes(event.type),
+      ),
+    ).toBe(false);
   });
 
   it("emits billing.error and aborts the run when submission is rejected for billing", async () => {
@@ -711,7 +816,7 @@ describe("Agent runtime application wiring", () => {
     );
   }, 10_000);
 
-  it("does not attach generated media without canvas.mutate", async () => {
+  it("rejects late generation after run finalization without mutating canvas", async () => {
     try {
       const repository = new MemoryAgentExecutionRepository();
       await repository.accept({
@@ -784,20 +889,15 @@ describe("Agent runtime application wiring", () => {
       }
       if (!submitImageJob) throw new Error("Image tool was not wired");
 
-      vi.useFakeTimers();
-      const generation = submitImageJob({
-        logicalToolCallId: "tool-generate-only",
-        prompt: "image",
-        title: "Image",
-        model: "image/model",
-        aspectRatio: "1:1",
-      });
-      await vi.advanceTimersByTimeAsync(2_000);
-
-      await expect(generation).resolves.toMatchObject({
-        jobId: "job-generate-only",
-        imageUrl: "https://example.com/result.png",
-      });
+      await expect(
+        submitImageJob({
+          logicalToolCallId: "tool-generate-only",
+          prompt: "image",
+          title: "Image",
+          model: "image/model",
+          aspectRatio: "1:1",
+        }),
+      ).rejects.toThrow("run_not_active");
       expect(attachGeneratedAsset).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();

@@ -223,7 +223,7 @@ export async function* adaptDeepAgentStream(
   };
 }
 
-function toPublicToolEvent(record: CanonicalToolRecord): StreamEvent {
+export function toPublicToolEvent(record: CanonicalToolRecord): StreamEvent {
   switch (record.type) {
     case "loomic.tool.started":
       return {

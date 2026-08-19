@@ -16,8 +16,6 @@ const command = {
   canvasId: "22222222-2222-4222-8222-222222222222",
   expectedRevision: 3,
   content: { elements: [], appState: {}, files: {} },
-  eventType: "canvas.updated",
-  eventPayload: { source: "browser" },
 };
 
 describe("canvas repository", () => {
@@ -44,10 +42,12 @@ describe("canvas repository", () => {
 
   it("uses the service-role boundary for a Job effect commit", async () => {
     const userRpc = vi.fn();
-    const adminRpc = vi.fn(async () => ({
-      data: { revision: 4, replayed: false },
-      error: null,
-    }));
+    const adminRpc = vi.fn(
+      async (_name: string, _args: Record<string, unknown>) => ({
+        data: { revision: 4, replayed: false },
+        error: null,
+      }),
+    );
     const repository = createCanvasRepository({
       createUserClient: () =>
         ({ rpc: userRpc }) as unknown as UserSupabaseClient,
@@ -68,13 +68,17 @@ describe("canvas repository", () => {
         p_effect_kind: "generated_asset",
       }),
     );
+    expect(adminRpc.mock.calls[0]?.[1]).not.toHaveProperty("p_event_type");
+    expect(adminRpc.mock.calls[0]?.[1]).not.toHaveProperty("p_event_payload");
   });
 
   it("commits Agent canvas effects and fencing in one service-role RPC", async () => {
-    const adminRpc = vi.fn(async () => ({
-      data: { revision: 4, replayed: false },
-      error: null,
-    }));
+    const adminRpc = vi.fn(
+      async (_name: string, _args: Record<string, unknown>) => ({
+        data: { revision: 4, replayed: false },
+        error: null,
+      }),
+    );
     const repository = createCanvasRepository({
       createUserClient: () =>
         ({ rpc: vi.fn() }) as unknown as UserSupabaseClient,
@@ -102,6 +106,8 @@ describe("canvas repository", () => {
         p_input_digest: "digest-1",
       }),
     );
+    expect(adminRpc.mock.calls[0]?.[1]).not.toHaveProperty("p_event_type");
+    expect(adminRpc.mock.calls[0]?.[1]).not.toHaveProperty("p_event_payload");
   });
 
   it("maps a conflict to safe expected and current revisions", async () => {

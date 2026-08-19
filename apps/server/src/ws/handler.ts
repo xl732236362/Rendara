@@ -14,7 +14,10 @@ import type {
   AgentRunStageLogger,
   PrepareAgentRun,
 } from "../application/agent/prepare-agent-run.js";
-import type { AgentRunMetadataService } from "../features/agent-runs/agent-run-service.js";
+import {
+  AgentFinalizationUnconfirmedError,
+  type AgentRunMetadataService,
+} from "../features/agent-runs/agent-run-service.js";
 import type { ChatService } from "../features/chat/chat-service.js";
 import {
   type ResourceAuthorization,
@@ -487,17 +490,20 @@ async function handleRunCommand(
       runId,
       error: error instanceof Error ? error.message : "unknown",
     });
-    const failedEvent = {
-      type: "run.failed" as const,
-      runId,
-      error: {
-        code: "run_failed" as const,
-        message: error instanceof Error ? error.message : "Stream failed",
-      },
-      timestamp: new Date().toISOString(),
-    };
-    services.eventBuffer?.push(canvasId, failedEvent);
-    connectionManager.pushToCanvas(canvasId, failedEvent);
+    connectionManager.sendTo(connectionId, {
+      type: "error",
+      error:
+        error instanceof AgentFinalizationUnconfirmedError
+          ? {
+              code: error.code,
+              message: error.message,
+              correlationId: error.correlationId,
+            }
+          : {
+              code: "application_error",
+              message: "Agent stream could not be completed.",
+            },
+    });
   } finally {
     clearInterval(keepAlive);
     connectionManager.clearActiveRun(canvasId);

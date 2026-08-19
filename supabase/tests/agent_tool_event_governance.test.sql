@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(10);
+select plan(16);
 
 select has_column('public', 'agent_runs', 'current_attempt_id',
   'runs identify their one current attempt');
@@ -14,6 +14,12 @@ select ok(has_function_privilege('service_role',
 select ok(not has_function_privilege('authenticated',
   'public.finalize_agent_run(uuid,uuid,bigint,text,jsonb)', 'execute'),
   'clients cannot finalize runs directly');
+select has_function('public', 'commit_canvas_revision',
+  array['uuid','uuid','bigint','jsonb','uuid','text'],
+  'canvas commits expose only the canonical server-owned event contract');
+select ok(to_regprocedure(
+  'public.commit_canvas_revision(uuid,uuid,bigint,jsonb,uuid,text,text,jsonb)'
+  ) is null, 'the caller-controlled canvas event contract is removed');
 
 insert into auth.users (
   id, instance_id, aud, role, email, encrypted_password, email_confirmed_at,
@@ -44,6 +50,39 @@ insert into public.chat_sessions(id, canvas_id, title, created_by, thread_id)
 select '31000000-0000-4000-8000-000000000005', canvas_id,
   'Governance session', '31000000-0000-4000-8000-000000000001',
   'governance-thread' from governance_fixture;
+insert into public.background_jobs(
+  id, workspace_id, project_id, canvas_id, session_id, thread_id,
+  queue_name, job_type, status, payload, created_by, idempotency_key,
+  request_fingerprint, credits_cost
+)
+select '31000000-0000-4000-8000-000000000009', workspace_id, project_id,
+  canvas_id, '31000000-0000-4000-8000-000000000005', 'governance-thread',
+  'image_generation_jobs', 'image_generation', 'succeeded', '{}'::jsonb,
+  '31000000-0000-4000-8000-000000000001', 'governance-job',
+  'governance-fingerprint', 0 from governance_fixture;
+
+select is((select public.commit_canvas_revision(
+  canvas_id, '31000000-0000-4000-8000-000000000001', 0,
+  '{"elements":[],"appState":{},"files":{}}'::jsonb,
+  '31000000-0000-4000-8000-000000000009', 'attach-result'
+) ->> 'replayed' from governance_fixture), 'false',
+  'a committed canvas mutation is applied once');
+select is((select public.commit_canvas_revision(
+  canvas_id, '31000000-0000-4000-8000-000000000001', 0,
+  '{"elements":[],"appState":{},"files":{}}'::jsonb,
+  '31000000-0000-4000-8000-000000000009', 'attach-result'
+) ->> 'replayed' from governance_fixture), 'true',
+  'an identical effect replay does not mutate the canvas again');
+select is((select count(*)::integer from public.domain_outbox o
+  join governance_fixture f on f.canvas_id = o.aggregate_id
+  where o.event_type = 'canvas.updated'), 1,
+  'one canvas revision creates exactly one authoritative outbox event');
+select throws_ok(format(
+  $$insert into public.domain_outbox(
+    aggregate_type,aggregate_id,aggregate_version,event_type,payload
+  ) values ('canvas',%L::uuid,1,'canvas.updated','{}'::jsonb)$$,
+  (select canvas_id from governance_fixture)), '23505', null,
+  'a second event for the same canvas revision is rejected');
 
 select public.accept_agent_run(
   '31000000-0000-4000-8000-000000000006',

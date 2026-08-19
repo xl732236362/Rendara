@@ -10,7 +10,7 @@ select ok(has_function_privilege('service_role',
   'public.claim_agent_attempt(uuid,text,integer,timestamptz)', 'execute'),
   'service role can claim attempts');
 select ok(has_function_privilege('service_role',
-  'public.commit_agent_canvas_revision(uuid,uuid,bigint,jsonb,uuid,uuid,bigint,text,text,jsonb,uuid,text,text,jsonb)',
+  'public.commit_agent_canvas_revision(uuid,uuid,bigint,jsonb,uuid,uuid,bigint,text,text,jsonb,uuid,text)',
   'execute'), 'service role can atomically commit Agent canvas effects');
 
 insert into auth.users (
@@ -102,7 +102,7 @@ select throws_ok(
     '30000000-0000-4000-8000-000000000006',
     '30000000-0000-4000-8000-000000000007', 2,
     'tool-stale-canvas', 'input-stale', '{}'::jsonb,
-    null, null, 'canvas.updated', '{}'::jsonb
+    null, null
   )$$,
   'P0001', 'run_not_active',
   'stale attempt cannot commit a Canvas mutation or effect');

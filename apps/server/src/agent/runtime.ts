@@ -29,8 +29,15 @@ import type { AttachGeneratedAsset } from "../application/canvas/attach-generate
 import type { SubmitGeneration } from "../application/generation/submit-generation.js";
 import type { ServerEnv } from "../config/env.js";
 import { AppError } from "../errors/app-error.js";
-import type { AgentExecutionRepository } from "../features/agent-runs/agent-execution-repository.js";
-import type { AgentRunMetadataService } from "../features/agent-runs/agent-run-service.js";
+import type {
+  AgentExecutionRepository,
+  AgentTerminalStatus,
+} from "../features/agent-runs/agent-execution-repository.js";
+import {
+  AgentFinalizationUnconfirmedError,
+  type AgentRunMetadataService,
+  finalizeAgentRun,
+} from "../features/agent-runs/agent-run-service.js";
 import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
 import type { CreditService } from "../features/credits/credit-service.js";
 import {
@@ -56,7 +63,7 @@ import {
   createLoomicAgent,
 } from "./loomic-agent.js";
 import type { AgentPersistenceService } from "./persistence/index.js";
-import { adaptDeepAgentStream } from "./stream-adapter.js";
+import { adaptDeepAgentStream, toPublicToolEvent } from "./stream-adapter.js";
 import type { SubmitImageJobFn } from "./tools/image-generate.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
 
@@ -257,6 +264,7 @@ type CreateAgentRuntimeOptions = {
   env: ServerEnv;
   eventDelayMs?: number;
   firstEventTimeoutMs?: number;
+  finalizationRetryDelayMs?: number;
   jobService?: JobService;
   model?: BaseLanguageModel | string;
   providerRegistry: ProviderCatalog;
@@ -456,20 +464,20 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         return null;
       }
 
-      if (
-        options.agentExecutionRepository &&
-        run.attemptId &&
-        run.fencingToken !== undefined
-      ) {
-        await options.agentExecutionRepository.cancelAttempt({
-          attemptId: run.attemptId,
-          fencingToken: run.fencingToken,
-        });
+      if (isTerminalStatus(run.status)) {
+        return { runId, status: "canceled" };
       }
 
       if (!run.controller.signal.aborted) run.controller.abort();
 
-      run.status = "canceled";
+      const finalized = await finalizeRuntimeRun(
+        options.agentExecutionRepository,
+        run,
+        "canceled",
+        {},
+        options.finalizationRetryDelayMs,
+      );
+      run.status = finalized ?? "canceled";
       return {
         runId,
         status: "canceled",
@@ -515,83 +523,11 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
 
       const rlog = createPipelineLogger("runtime", { runId });
 
-      try {
-        await updatePersistedRunStatus(
-          options.agentRunMetadataService,
-          run,
-          "running",
-        );
-      } catch (error) {
-        const failedEvent = toFailedEvent(runId, now, error);
-        run.status = "failed";
-        yield failedEvent;
-        return;
-      }
-
-      let persistence: Awaited<
-        ReturnType<NonNullable<AgentPersistenceService["getPersistence"]>>
-      > | null = null;
-      const persistenceStartedAt = Date.now();
-      try {
-        const persistenceService = options.agentPersistenceService;
-        persistence =
-          run.threadId && persistenceService
-            ? await runWithDeadline({
-                operation: () => persistenceService.getPersistence(),
-                timeoutError: () =>
-                  new AgentRunError({
-                    code: "agent_persistence_timeout",
-                    message: "Agent persistence initialization timed out.",
-                    retryable: true,
-                    statusCode: 504,
-                  }),
-                timeoutMs: persistenceTimeoutMs,
-              })
-            : null;
-        rlog.info("agent.persistence.init.completed", {
-          durationMs: Date.now() - persistenceStartedAt,
-        });
-      } catch (error) {
-        rlog.warn("agent.persistence.init.failed", {
-          durationMs: Date.now() - persistenceStartedAt,
-          errorCode: runtimeFailureCode(error),
-          retryable: error instanceof AgentRunError && error.retryable,
-        });
-        const failedEvent = toFailedEvent(runId, now, error);
-        run.status = "failed";
-        await updatePersistedRunFailure(
-          options.agentRunMetadataService,
-          run,
-          now,
-          error,
-        );
-        yield failedEvent;
-        return;
-      }
-
-      if (run.threadId && !persistence) {
-        const failedEvent = toFailedEvent(
-          runId,
-          now,
-          new Error("SUPABASE_DB_URL is required for persisted agent threads."),
-        );
-        run.status = "failed";
-        await updatePersistedRunFailure(
-          options.agentRunMetadataService,
-          run,
-          now,
-          new Error("SUPABASE_DB_URL is required for persisted agent threads."),
-        );
-        yield failedEvent;
-        return;
-      }
-
       let executionContext = options.agentExecutionRepository
         ? await options.agentExecutionRepository.getExecutionContext(runId)
         : null;
       if (options.agentExecutionRepository && !executionContext) {
-        yield toFailedEvent(runId, now, new Error("run_not_active"));
-        return;
+        throw new Error("run_not_active");
       }
       if (executionContext && options.agentExecutionRepository) {
         const attemptState =
@@ -638,6 +574,55 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         executionContext =
           (await options.agentExecutionRepository.getExecutionContext(runId)) ??
           executionContext;
+      }
+
+      let persistence: Awaited<
+        ReturnType<NonNullable<AgentPersistenceService["getPersistence"]>>
+      > | null = null;
+      const persistenceStartedAt = Date.now();
+      try {
+        await updatePersistedRunStatus(
+          options.agentRunMetadataService,
+          run,
+          "running",
+        );
+        const persistenceService = options.agentPersistenceService;
+        persistence =
+          run.threadId && persistenceService
+            ? await runWithDeadline({
+                operation: () => persistenceService.getPersistence(),
+                timeoutError: () =>
+                  new AgentRunError({
+                    code: "agent_persistence_timeout",
+                    message: "Agent persistence initialization timed out.",
+                    retryable: true,
+                    statusCode: 504,
+                  }),
+                timeoutMs: persistenceTimeoutMs,
+              })
+            : null;
+        rlog.info("agent.persistence.init.completed", {
+          durationMs: Date.now() - persistenceStartedAt,
+        });
+        if (run.threadId && !persistence) {
+          throw new Error(
+            "SUPABASE_DB_URL is required for persisted agent threads.",
+          );
+        }
+      } catch (error) {
+        rlog.warn("agent.persistence.init.failed", {
+          durationMs: Date.now() - persistenceStartedAt,
+          errorCode: runtimeFailureCode(error),
+          retryable: error instanceof AgentRunError && error.retryable,
+        });
+        yield await finalizeRuntimeFailure(
+          options.agentExecutionRepository,
+          run,
+          now,
+          error,
+          options.finalizationRetryDelayMs,
+        );
+        return;
       }
       const canMutateCanvas =
         executionContext?.capabilities.includes("canvas.mutate") === true &&
@@ -814,12 +799,6 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                   );
                   elementId = insertResult.elementId;
 
-                  // Notify connected frontends to refresh canvas
-                  options.connectionManager?.pushToCanvas(canvasId, {
-                    type: "canvas.sync" as const,
-                    runId,
-                    timestamp: new Date().toISOString(),
-                  });
                   jobLap("canvas_element_inserted", { elementId });
                 } catch (insertErr) {
                   // Graceful degradation: log error but still return result
@@ -1043,12 +1022,6 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                   );
                   elementId = insertResult.elementId;
 
-                  // Notify connected frontends to refresh canvas
-                  options.connectionManager?.pushToCanvas(canvasId, {
-                    type: "canvas.sync" as const,
-                    runId,
-                    timestamp: new Date().toISOString(),
-                  });
                   jobLap("canvas_element_inserted", { elementId });
                 } catch (insertErr) {
                   // Graceful degradation: log error but still return result
@@ -1218,15 +1191,13 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         });
         rlog.lap("agent_factory_done");
       } catch (error) {
-        const failedEvent = toFailedEvent(runId, now, error);
-        run.status = "failed";
-        await updatePersistedRunFailure(
-          options.agentRunMetadataService,
+        yield await finalizeRuntimeFailure(
+          options.agentExecutionRepository,
           run,
           now,
           error,
+          options.finalizationRetryDelayMs,
         );
-        yield failedEvent;
         return;
       }
 
@@ -1349,15 +1320,13 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         );
         rlog.lap("stream_call_returned");
       } catch (error) {
-        const failedEvent = toFailedEvent(runId, now, error);
-        run.status = "failed";
-        await updatePersistedRunFailure(
-          options.agentRunMetadataService,
+        yield await finalizeRuntimeFailure(
+          options.agentExecutionRepository,
           run,
           now,
           error,
+          options.finalizationRetryDelayMs,
         );
-        yield failedEvent;
         return;
       }
 
@@ -1406,20 +1375,38 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           ) {
             throw new Error("run_not_active");
           }
-          run.status = mapEventToStatus(event);
-          try {
-            await syncPersistedRunFromEvent(
-              options.agentRunMetadataService,
+          if (isTerminalEvent(event)) {
+            const abandoned =
+              agent.toolSupervisor?.closeOpenCalls({
+                code:
+                  event.type === "run.failed"
+                    ? event.error.code
+                    : "run_terminated",
+                correlationId: run.runId,
+                message: "Tool execution ended before completion.",
+              }) ?? [];
+            for (const record of abandoned) {
+              yield toPublicToolEvent(record);
+              agent.toolSupervisor?.acknowledge(record);
+            }
+            const requestedStatus: AgentTerminalStatus =
+              event.type === "run.completed"
+                ? "completed"
+                : event.type === "run.canceled"
+                  ? "canceled"
+                  : "failed";
+            const finalizedStatus = await finalizeRuntimeRun(
+              options.agentExecutionRepository,
               run,
-              event,
-              now,
+              requestedStatus,
+              terminalMetadata(event),
+              options.finalizationRetryDelayMs,
             );
-          } catch (error) {
-            const failedEvent = toFailedEvent(runId, now, error);
-            run.status = "failed";
-            yield failedEvent;
+            run.status = finalizedStatus ?? requestedStatus;
+            yield terminalEventForStatus(run, now, event);
             return;
           }
+          run.status = "running";
           yield event;
 
           if (!isTerminalEvent(event) && options.eventDelayMs) {
@@ -1428,17 +1415,41 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                 signal: run.controller.signal,
               });
             } catch {
-              run.status = "canceled";
-              yield {
+              const canceledEvent: Extract<
+                StreamEvent,
+                { type: "run.canceled" }
+              > = {
                 runId,
                 timestamp: now(),
                 type: "run.canceled",
               };
+              const abandoned =
+                agent.toolSupervisor?.closeOpenCalls({
+                  code: "run_terminated",
+                  correlationId: run.runId,
+                  message: "Tool execution ended before completion.",
+                }) ?? [];
+              for (const record of abandoned) {
+                yield toPublicToolEvent(record);
+                agent.toolSupervisor?.acknowledge(record);
+              }
+              const finalized = await finalizeRuntimeRun(
+                options.agentExecutionRepository,
+                run,
+                "canceled",
+                {},
+                options.finalizationRetryDelayMs,
+              );
+              run.status = finalized ?? "canceled";
+              yield terminalEventForStatus(run, now, canceledEvent);
               return;
             }
           }
         }
       } catch (streamError) {
+        if (streamError instanceof AgentFinalizationUnconfirmedError) {
+          throw streamError;
+        }
         if (streamError instanceof AgentRunError) {
           rlog.warn("agent.model.first_event.failed", {
             durationMs: Date.now() - modelStartedAt,
@@ -1452,20 +1463,23 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         // (e.g. Supabase circuit-breaker, connection pool exhaustion).
         // Instead of crashing the process, yield a clean failure event.
         console.error("[agent-runtime] Stream iteration failed:", streamError);
-        const failedEvent = toFailedEvent(runId, now, streamError);
-        run.status = "failed";
-        await updatePersistedRunFailure(
-          options.agentRunMetadataService,
+        const abandoned =
+          agent.toolSupervisor?.closeOpenCalls({
+            code: runtimeFailureCode(streamError),
+            correlationId: run.runId,
+            message: "Tool execution ended before completion.",
+          }) ?? [];
+        for (const record of abandoned) {
+          yield toPublicToolEvent(record);
+          agent.toolSupervisor?.acknowledge(record);
+        }
+        yield await finalizeRuntimeFailure(
+          options.agentExecutionRepository,
           run,
           now,
           streamError,
-        ).catch((persistErr) =>
-          console.error(
-            "[agent-runtime] Failed to persist run failure:",
-            persistErr,
-          ),
+          options.finalizationRetryDelayMs,
         );
-        yield failedEvent;
         return;
       }
     },
@@ -1532,7 +1546,12 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-function isTerminalEvent(event: StreamEvent) {
+function isTerminalEvent(
+  event: StreamEvent,
+): event is Extract<
+  StreamEvent,
+  { type: "run.canceled" | "run.completed" | "run.failed" }
+> {
   return (
     event.type === "run.canceled" ||
     event.type === "run.completed" ||
@@ -1592,17 +1611,95 @@ function createGenerationWorkspaceResolver(options: {
   }
 }
 
-function mapEventToStatus(event: StreamEvent): RuntimeRunStatus {
-  switch (event.type) {
-    case "run.canceled":
-      return "canceled";
-    case "run.completed":
-      return "completed";
-    case "run.failed":
-      return "failed";
-    default:
-      return "running";
+function isTerminalStatus(
+  status: RuntimeRunStatus,
+): status is AgentTerminalStatus {
+  return status === "canceled" || status === "completed" || status === "failed";
+}
+
+async function finalizeRuntimeRun(
+  repository: AgentExecutionRepository | undefined,
+  run: RuntimeRunRecord,
+  status: AgentTerminalStatus,
+  metadata: Readonly<Record<string, unknown>>,
+  retryDelayMs?: number,
+): Promise<AgentTerminalStatus | null> {
+  if (!repository || !run.attemptId || run.fencingToken === undefined) {
+    return null;
   }
+  const result = await finalizeAgentRun({
+    repository,
+    input: {
+      runId: run.runId,
+      attemptId: run.attemptId,
+      fencingToken: run.fencingToken,
+      status,
+      metadata,
+    },
+    ...(retryDelayMs === undefined ? {} : { retryDelayMs }),
+  });
+  return result.status;
+}
+
+async function finalizeRuntimeFailure(
+  repository: AgentExecutionRepository | undefined,
+  run: RuntimeRunRecord,
+  now: () => string,
+  error: unknown,
+  retryDelayMs?: number,
+): Promise<StreamEvent> {
+  const failedEvent = toFailedEvent(run.runId, now, error) as Extract<
+    StreamEvent,
+    { type: "run.failed" }
+  >;
+  const finalized = await finalizeRuntimeRun(
+    repository,
+    run,
+    "failed",
+    terminalMetadata(failedEvent),
+    retryDelayMs,
+  );
+  run.status = finalized ?? "failed";
+  return terminalEventForStatus(run, now, failedEvent);
+}
+
+function terminalMetadata(
+  event: Extract<
+    StreamEvent,
+    { type: "run.canceled" | "run.completed" | "run.failed" }
+  >,
+): Readonly<Record<string, unknown>> {
+  return event.type === "run.failed"
+    ? { errorCode: event.error.code, errorMessage: event.error.message }
+    : {};
+}
+
+function terminalEventForStatus(
+  run: RuntimeRunRecord,
+  now: () => string,
+  requested: Extract<
+    StreamEvent,
+    { type: "run.canceled" | "run.completed" | "run.failed" }
+  >,
+): StreamEvent {
+  if (run.status === "completed") {
+    return { type: "run.completed", runId: run.runId, timestamp: now() };
+  }
+  if (run.status === "canceled") {
+    return { type: "run.canceled", runId: run.runId, timestamp: now() };
+  }
+  return {
+    type: "run.failed",
+    runId: run.runId,
+    timestamp: now(),
+    error:
+      requested.type === "run.failed"
+        ? requested.error
+        : {
+            code: "run_failed",
+            message: "Agent run failed.",
+          },
+  };
 }
 
 function toFailedEvent(
@@ -1627,39 +1724,15 @@ function toFailedEvent(
 async function updatePersistedRunStatus(
   agentRunMetadataService: AgentRunMetadataService | undefined,
   run: RuntimeRunRecord,
-  status: "running" | "completed",
-  options?: {
-    completedAt?: string;
-  },
+  status: "running",
 ) {
   if (!agentRunMetadataService || !run.threadId) {
     return;
   }
 
   await agentRunMetadataService.updateRun({
-    ...(options?.completedAt ? { completedAt: options.completedAt } : {}),
     runId: run.runId,
     status,
-  });
-}
-
-async function updatePersistedRunFailure(
-  agentRunMetadataService: AgentRunMetadataService | undefined,
-  run: RuntimeRunRecord,
-  now: () => string,
-  error: unknown,
-) {
-  if (!agentRunMetadataService || !run.threadId) {
-    return;
-  }
-
-  await agentRunMetadataService.updateRun({
-    completedAt: now(),
-    errorCode: runtimeFailureCode(error),
-    errorMessage:
-      error instanceof Error ? error.message : "Deep agent runtime failed.",
-    runId: run.runId,
-    status: "failed",
   });
 }
 
@@ -1674,27 +1747,4 @@ function runtimeFailureCode(
     return error.code;
   }
   return "run_failed";
-}
-
-async function syncPersistedRunFromEvent(
-  agentRunMetadataService: AgentRunMetadataService | undefined,
-  run: RuntimeRunRecord,
-  event: StreamEvent,
-  now: () => string,
-) {
-  if (event.type === "run.completed") {
-    await updatePersistedRunStatus(agentRunMetadataService, run, "completed", {
-      completedAt: now(),
-    });
-    return;
-  }
-
-  if (event.type === "run.failed") {
-    await updatePersistedRunFailure(
-      agentRunMetadataService,
-      run,
-      now,
-      new Error(event.error.message),
-    );
-  }
 }

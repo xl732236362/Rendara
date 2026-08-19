@@ -3,7 +3,7 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 
-import type { ImageArtifact, VideoArtifact } from "@loomic/shared";
+import type { ImageArtifact, StreamEvent, VideoArtifact } from "@loomic/shared";
 import { BrandKitSelector } from "../../components/brand-kit-selector";
 import { CanvasBottomBar } from "../../components/canvas-bottom-bar";
 import type { CanvasSelectedElement } from "../../components/canvas-editor";
@@ -24,6 +24,7 @@ import {
   insertImageOnCanvas,
   insertVideoOnCanvas,
 } from "../../lib/canvas-elements";
+import { createCanvasSyncCoordinator } from "../../lib/canvas-sync-coordinator";
 import { ApiAuthError, fetchCanvas, fetchProject } from "../../lib/server-api";
 
 function CanvasPageContent() {
@@ -65,6 +66,9 @@ function CanvasPageContent() {
   >([]);
 
   const excalidrawApiRef = useRef<any>(null);
+  const canvasSyncCoordinatorRef = useRef<ReturnType<
+    typeof createCanvasSyncCoordinator
+  > | null>(null);
   const [excalidrawApi, setExcalidrawApi] = useState<any>(null);
 
   const signOutRef = useRef(signOut);
@@ -116,33 +120,48 @@ function CanvasPageContent() {
   }, []);
 
   // Must be defined BEFORE useJobFallbackPolling which references it
-  const handleCanvasSync = useCallback(async () => {
-    const api = excalidrawApiRef.current;
-    const token = accessTokenRef.current;
-    if (!api || !token || !canvasData) return;
-    try {
-      const { canvas } = await fetchCanvas(token, canvasData.id);
-      const elements = canvas.content.elements ?? [];
-      const files = (canvas.content as Record<string, unknown>).files as
-        | Record<
-            string,
-            { id: string; dataURL: string; mimeType: string; created: number }
-          >
-        | undefined;
-
-      // Sync files (base64 dataURLs from backend-inserted images) into Excalidraw
-      if (files && Object.keys(files).length > 0) {
-        api.addFiles(Object.values(files));
+  const handleCanvasSync = useCallback(
+    async (event: Extract<StreamEvent, { type: "canvas.sync" }>) => {
+      const api = excalidrawApiRef.current;
+      const token = accessTokenRef.current;
+      if (!api || !token || !canvasData || event.canvasId !== canvasData.id)
+        return;
+      try {
+        if (!canvasSyncCoordinatorRef.current) {
+          canvasSyncCoordinatorRef.current = createCanvasSyncCoordinator({
+            appliedRevision: canvasData.revision,
+            fetchAndApply: async () => {
+              const { canvas } = await fetchCanvas(token, canvasData.id);
+              const elements = canvas.content.elements ?? [];
+              const files = (canvas.content as Record<string, unknown>).files as
+                | Record<
+                    string,
+                    {
+                      id: string;
+                      dataURL: string;
+                      mimeType: string;
+                      created: number;
+                    }
+                  >
+                | undefined;
+              if (files && Object.keys(files).length > 0) {
+                api.addFiles(Object.values(files));
+              }
+              api.updateScene({ elements, captureUpdate: "IMMEDIATELY" });
+              setCanvasData((current) =>
+                current ? { ...current, revision: canvas.revision } : current,
+              );
+              return canvas.revision;
+            },
+          });
+        }
+        await canvasSyncCoordinatorRef.current.request(event);
+      } catch (err) {
+        console.warn("Failed to sync canvas:", err);
       }
-
-      api.updateScene({ elements, captureUpdate: "IMMEDIATELY" });
-      setCanvasData((current) =>
-        current ? { ...current, revision: canvas.revision } : current,
-      );
-    } catch (err) {
-      console.warn("Failed to sync canvas:", err);
-    }
-  }, [canvasData]);
+    },
+    [canvasData],
+  );
 
   // Fallback polling for timed-out generation jobs.
   // When the agent's tool times out but the worker eventually succeeds,
@@ -150,13 +169,9 @@ function CanvasPageContent() {
   // This hook detects completion and triggers a canvas re-fetch.
   const { checkForTimedOutJobs } = useJobFallbackPolling({
     accessTokenRef,
-    onJobSucceeded: useCallback(
-      (_jobId: string, _jobType: string) => {
-        // Element was inserted by backend — just refresh the canvas
-        handleCanvasSync();
-      },
-      [handleCanvasSync],
-    ),
+    onJobSucceeded: useCallback((_jobId: string, _jobType: string) => {
+      // The committed canvas.updated event is the only refresh authority.
+    }, []),
   });
 
   const handleSessionChange = useCallback(
@@ -223,6 +238,7 @@ function CanvasPageContent() {
             files: (c.content as any).files ?? {},
           },
         });
+        canvasSyncCoordinatorRef.current = null;
         setPageLoading(false);
         // Fetch project to get brand_kit_id and name
         fetchProject(token, c.projectId)

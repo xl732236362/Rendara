@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 
 import { AgentRunError } from "../application/agent/agent-run-errors.js";
+import { AgentFinalizationUnconfirmedError } from "../features/agent-runs/agent-run-service.js";
 import {
   type ResourceAuthorization,
   ResourceAuthorizationError,
@@ -154,6 +155,64 @@ describe("WebSocket resource commands", () => {
         clientRequestId: "request-1",
         requestId: "ws-request-1",
         runId: "run-1",
+      }),
+    );
+    socket.emit("close");
+  });
+
+  it("does not fabricate run.failed when finalization is unconfirmed", async () => {
+    const socket = new FakeSocket();
+    const agentRuns = fakeAgentRuns();
+    agentRuns.registerRun.mockReturnValue({
+      ownership: "created",
+      response: {
+        conversationId: "conversation-1",
+        runId: "run-1",
+        sessionId: "session-1",
+        status: "accepted",
+      },
+    });
+    agentRuns.streamRun.mockReturnValue({
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => {
+            throw new AgentFinalizationUnconfirmedError("corr-1");
+          },
+        };
+      },
+    } as never);
+    const connectionManager = new ConnectionManager();
+    const pushToCanvas = vi.spyOn(connectionManager, "pushToCanvas");
+
+    await bindAuthenticatedSocket(
+      socket as never,
+      "token",
+      { url: "/api/ws", headers: { host: "localhost" } } as never,
+      {
+        agentRuns: agentRuns as never,
+        authorization: fakeAuthorization("canvas-1"),
+        auth: { authenticate: async () => user },
+        connectionManager,
+        prepareAgentRun: async () => preparedRun(true),
+      },
+    );
+    socket.emit("message", runCommand());
+    await nextTurn();
+    await nextTurn();
+
+    expect(pushToCanvas).not.toHaveBeenCalledWith(
+      "canvas-1",
+      expect.objectContaining({ type: "run.failed" }),
+    );
+    expect(
+      socket.messages.map((message) => JSON.parse(message)),
+    ).toContainEqual(
+      expect.objectContaining({
+        type: "error",
+        error: expect.objectContaining({
+          code: "run_finalization_unconfirmed",
+          correlationId: "corr-1",
+        }),
       }),
     );
     socket.emit("close");
