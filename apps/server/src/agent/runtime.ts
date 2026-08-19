@@ -20,6 +20,10 @@ import {
   type ImageQualityLevel,
   getPlanConfig,
 } from "@loomic/shared";
+import {
+  AgentRunError,
+  runWithDeadline,
+} from "../application/agent/agent-run-errors.js";
 import type { ApplyCanvasOperations } from "../application/canvas/apply-canvas-operations.js";
 import type { AttachGeneratedAsset } from "../application/canvas/attach-generated-asset.js";
 import type { SubmitGeneration } from "../application/generation/submit-generation.js";
@@ -252,9 +256,11 @@ type CreateAgentRuntimeOptions = {
   creditService?: CreditService;
   env: ServerEnv;
   eventDelayMs?: number;
+  firstEventTimeoutMs?: number;
   jobService?: JobService;
   model?: BaseLanguageModel | string;
   providerRegistry: ProviderCatalog;
+  persistenceTimeoutMs?: number;
   now?: () => string;
   runIdFactory?: () => string;
   tierGuard?: TierGuard;
@@ -268,6 +274,8 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
   const now = options.now ?? (() => new Date().toISOString());
   const runs = new Map<string, RuntimeRunRecord>();
   const runIdFactory = options.runIdFactory ?? (() => randomUUID());
+  const firstEventTimeoutMs = options.firstEventTimeoutMs ?? 30_000;
+  const persistenceTimeoutMs = options.persistenceTimeoutMs ?? 10_000;
   const createUserClientForCanvas = options.createUserClient;
   const resolveCanvasScope = createUserClientForCanvas
     ? async (context: { accessToken: string; canvasId: string }) => {
@@ -524,9 +532,20 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         ReturnType<NonNullable<AgentPersistenceService["getPersistence"]>>
       > | null = null;
       try {
+        const persistenceService = options.agentPersistenceService;
         persistence =
-          run.threadId && options.agentPersistenceService
-            ? await options.agentPersistenceService.getPersistence()
+          run.threadId && persistenceService
+            ? await runWithDeadline({
+                operation: () => persistenceService.getPersistence(),
+                timeoutError: () =>
+                  new AgentRunError({
+                    code: "agent_persistence_timeout",
+                    message: "Agent persistence initialization timed out.",
+                    retryable: true,
+                    statusCode: 504,
+                  }),
+                timeoutMs: persistenceTimeoutMs,
+              })
             : null;
         rlog.lap("persistence_init");
       } catch (error) {
@@ -1334,15 +1353,33 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         return;
       }
 
+      const adaptedStream = adaptDeepAgentStream({
+        conversationId: run.conversationId,
+        now,
+        runId,
+        sessionId: run.sessionId,
+        signal: run.controller.signal,
+        stream,
+      })[Symbol.asyncIterator]();
+      let receivedModelEvent = false;
       try {
-        for await (const event of adaptDeepAgentStream({
-          conversationId: run.conversationId,
-          now,
-          runId,
-          sessionId: run.sessionId,
-          signal: run.controller.signal,
-          stream,
-        })) {
+        while (true) {
+          const next = receivedModelEvent
+            ? await adaptedStream.next()
+            : await runWithDeadline({
+                operation: () => adaptedStream.next(),
+                timeoutError: () =>
+                  new AgentRunError({
+                    code: "agent_first_event_timeout",
+                    message: "Agent model did not produce an event in time.",
+                    retryable: true,
+                    statusCode: 504,
+                  }),
+                timeoutMs: firstEventTimeoutMs,
+              });
+          if (next.done) break;
+          const event = next.value;
+          if (event.type !== "run.started") receivedModelEvent = true;
           if (
             options.agentExecutionRepository &&
             run.attemptId &&
@@ -1387,6 +1424,10 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           }
         }
       } catch (streamError) {
+        if (streamError instanceof AgentRunError) {
+          run.controller.abort();
+          void adaptedStream.return?.(undefined).catch(() => undefined);
+        }
         // Catch DB / checkpoint errors that bubble up from the LangGraph stream
         // (e.g. Supabase circuit-breaker, connection pool exhaustion).
         // Instead of crashing the process, yield a clean failure event.
@@ -1554,7 +1595,7 @@ function toFailedEvent(
 
   return {
     error: {
-      code: "run_failed",
+      code: runtimeFailureCode(error),
       message: sanitizeErrorForClient(error),
     },
     runId,
@@ -1594,12 +1635,25 @@ async function updatePersistedRunFailure(
 
   await agentRunMetadataService.updateRun({
     completedAt: now(),
-    errorCode: "run_failed",
+    errorCode: runtimeFailureCode(error),
     errorMessage:
       error instanceof Error ? error.message : "Deep agent runtime failed.",
     runId: run.runId,
     status: "failed",
   });
+}
+
+function runtimeFailureCode(
+  error: unknown,
+): "agent_first_event_timeout" | "agent_persistence_timeout" | "run_failed" {
+  if (
+    error instanceof AgentRunError &&
+    (error.code === "agent_first_event_timeout" ||
+      error.code === "agent_persistence_timeout")
+  ) {
+    return error.code;
+  }
+  return "run_failed";
 }
 
 async function syncPersistedRunFromEvent(

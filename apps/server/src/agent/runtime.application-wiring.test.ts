@@ -9,6 +9,86 @@ import type { SubmitImageJobFn } from "./tools/image-generate.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
 
 describe("Agent runtime application wiring", () => {
+  it("fails a run when persistence initialization exceeds its deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const service = createAgentRunService({
+        agentPersistenceService: {
+          getPersistence: vi.fn(() => new Promise<never>(() => undefined)),
+        },
+        env: loadServerEnv({}, {}),
+        persistenceTimeoutMs: 10,
+        providerRegistry: new ProviderRegistry().seal(),
+      });
+      service.createRun(
+        {
+          canvasId: "canvas-persistence-timeout",
+          clientRequestId: "request-persistence-timeout",
+          conversationId: "conversation-persistence-timeout",
+          prompt: "hello",
+          sessionId: "session-persistence-timeout",
+        },
+        { runId: "run-persistence-timeout", threadId: "thread-1" },
+      );
+
+      const eventPromise = service.streamRun("run-persistence-timeout").next();
+      await vi.advanceTimersByTimeAsync(10);
+
+      await expect(eventPromise).resolves.toMatchObject({
+        value: {
+          error: { code: "agent_persistence_timeout" },
+          type: "run.failed",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails a run when no model event arrives before its deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const service = createAgentRunService({
+        agentFactory: (() => ({
+          async *streamEvents() {
+            await new Promise(() => undefined);
+          },
+          async *stream() {},
+        })) as never,
+        env: loadServerEnv({}, {}),
+        firstEventTimeoutMs: 30,
+        providerRegistry: new ProviderRegistry().seal(),
+      });
+      service.createRun(
+        {
+          canvasId: "canvas-first-event-timeout",
+          clientRequestId: "request-first-event-timeout",
+          conversationId: "conversation-first-event-timeout",
+          prompt: "hello",
+          sessionId: "session-first-event-timeout",
+        },
+        { runId: "run-first-event-timeout" },
+      );
+      const events = service.streamRun("run-first-event-timeout");
+
+      await expect(events.next()).resolves.toMatchObject({
+        value: { type: "run.started" },
+      });
+      const eventPromise = events.next();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(30);
+
+      await expect(eventPromise).resolves.toMatchObject({
+        value: {
+          error: { code: "agent_first_event_timeout" },
+          type: "run.failed",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("returns explicit ownership for created, active, and rehydrated runs", () => {
     const request = {
       canvasId: "canvas-ownership",
