@@ -9,12 +9,10 @@ import {
 } from "@loomic/shared";
 import type { ContentBlock, ToolBlock } from "@loomic/shared";
 import type { AgentRunService } from "../agent/runtime.js";
-import type { AcceptAgentRun } from "../application/agent/accept-agent-run.js";
+import { AgentRunError } from "../application/agent/agent-run-errors.js";
+import type { PrepareAgentRun } from "../application/agent/prepare-agent-run.js";
 import type { AgentRunMetadataService } from "../features/agent-runs/agent-run-service.js";
-import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
 import type { ChatService } from "../features/chat/chat-service.js";
-import type { ThreadService } from "../features/chat/thread-service.js";
-import type { SettingsService } from "../features/settings/settings-service.js";
 import {
   type ResourceAuthorization,
   ResourceAuthorizationError,
@@ -33,7 +31,6 @@ import type { CanvasEventBuffer } from "./event-buffer.js";
 import { createPipelineLogger } from "./logger.js";
 
 type RegisterWsOptions = {
-  acceptAgentRun?: AcceptAgentRun;
   agentRuns: AgentRunService;
   authorization: ResourceAuthorization;
   agentRunMetadataService?: AgentRunMetadataService;
@@ -41,9 +38,7 @@ type RegisterWsOptions = {
   chatService?: ChatService;
   connectionManager: ConnectionManager;
   eventBuffer?: CanvasEventBuffer;
-  settingsService?: SettingsService;
-  threadService?: ThreadService;
-  viewerService?: ViewerService;
+  prepareAgentRun?: PrepareAgentRun;
 };
 
 export async function registerWsRoute(
@@ -229,7 +224,12 @@ export async function bindAuthenticatedSocket(
           connectionManager,
           options,
         )
-          .catch((error) => sendCommandError(socket, error))
+          .catch((error) =>
+            sendCommandError(socket, error, {
+              action: "agent.run",
+              clientRequestId: p.clientRequestId,
+            }),
+          )
           .finally(() => commandBudget.finishAgentRun());
       } else if (msg.action === "agent.cancel") {
         void (async () => {
@@ -320,76 +320,36 @@ async function handleRunCommand(
     userId: authenticatedUser.id,
     sessionId: payload.sessionId,
   });
-  const canvasId = await authorizeRunResources(
-    services.authorization,
-    authenticatedUser,
-    payload,
-  );
+  if (!services.prepareAgentRun) {
+    throw new Error("Agent preparation is not configured.");
+  }
+  const prepared = await services.prepareAgentRun(payload, {
+    accessToken: authenticatedUser.accessToken,
+    userId: authenticatedUser.id,
+  });
+  const canvasId = prepared.context.canvasId;
   log.info("started", {
     canvasId: payload.canvasId,
     clientRequestId: payload.clientRequestId,
   });
 
-  // Resolve thread + model in parallel
-  const [threadId, model] = await Promise.all([
-    (async (): Promise<string | undefined> => {
-      if (!services.threadService) return undefined;
-      const sessionThread =
-        await services.threadService.resolveOwnedSessionThread(
-          authenticatedUser,
-          payload.sessionId,
-        );
-      return sessionThread.threadId;
-    })(),
-    (async (): Promise<string | undefined> => {
-      if (!services.settingsService || !services.viewerService)
-        return undefined;
-      try {
-        const viewer =
-          await services.viewerService.ensureViewer(authenticatedUser);
-        const settings = await services.settingsService.getWorkspaceSettings(
-          authenticatedUser,
-          viewer.workspace.id,
-        );
-        return settings.defaultModel;
-      } catch (error) {
-        log.warn("model_resolve_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return undefined;
-      }
-    })(),
-  ]);
-  // Client-provided model takes priority over workspace default
-  const resolvedModel = payload.model ?? model;
-  log.lap("resolve", { threadId: !!threadId, model: resolvedModel });
-
-  if (!services.acceptAgentRun) {
-    throw new Error("Agent acceptance is not configured.");
-  }
-  const accepted = await services.acceptAgentRun(
-    payload,
-    {
-      userId: authenticatedUser.id,
-      accessToken: authenticatedUser.accessToken,
-    },
-    {
-      ...(resolvedModel ? { model: resolvedModel } : {}),
-      ...(threadId ? { threadId } : {}),
-    },
-  );
-  const response = agentRuns.createRun(payload, {
+  const registration = agentRuns.registerRun(payload, {
     accessToken: authenticatedUser.accessToken,
-    runId: accepted.runId,
+    durableCreated: prepared.accepted.created,
+    runId: prepared.accepted.runId,
     userId: authenticatedUser.id,
-    ...(resolvedModel ? { model: resolvedModel } : {}),
-    ...(threadId ? { threadId } : {}),
+    ...(prepared.model ? { model: prepared.model } : {}),
+    threadId: prepared.context.threadId,
   });
+  const response = registration.response;
   const runId = response.runId;
   log.lap("run_created", { runId });
 
   // Bind this connection to the canvas so events route correctly
   connectionManager.bindCanvas(connectionId, canvasId);
+  if (registration.ownership !== "existing_active") {
+    connectionManager.setActiveRun(canvasId, runId);
+  }
 
   // Send ACK to the specific connection that initiated the run.
   // Retry with short delays if the connection is temporarily unavailable
@@ -409,8 +369,7 @@ async function handleRunCommand(
   }
   log.lap("ack_sent", { runId, connectionId, delivered: ackSent });
 
-  // Track active run so reconnecting clients can detect it
-  connectionManager.setActiveRun(canvasId, runId);
+  if (registration.ownership === "existing_active") return;
 
   const keepAlive = setInterval(() => {
     connectionManager.sendTo(connectionId, { type: "keep-alive" });
@@ -541,17 +500,28 @@ export async function authorizeRunCancel(
   await authorization.requireRunAccess(user, runId);
 }
 
-function sendCommandError(socket: WebSocket, error: unknown) {
+function sendCommandError(
+  socket: WebSocket,
+  error: unknown,
+  correlation: { action?: string; clientRequestId?: string } = {},
+) {
   const isForbidden = error instanceof ResourceAuthorizationError;
   const isBudgetError = error instanceof WsBudgetError;
   socket.send(
     JSON.stringify({
       type: "error",
-      code: isForbidden || isBudgetError ? error.code : "application_error",
-      message:
-        isForbidden || isBudgetError
-          ? error.message
-          : "Command could not be completed.",
+      ...correlation,
+      ...(error instanceof AgentRunError ? { retryable: error.retryable } : {}),
+      error: {
+        code:
+          isForbidden || isBudgetError || error instanceof AgentRunError
+            ? error.code
+            : "application_error",
+        message:
+          isForbidden || isBudgetError || error instanceof AgentRunError
+            ? error.message
+            : "Command could not be completed.",
+      },
     }),
   );
 }

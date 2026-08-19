@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 
+import { AgentRunError } from "../application/agent/agent-run-errors.js";
 import { ResourceAuthorizationError } from "../security/resource-authorization.js";
 import { registerErrorHandler } from "./error-handler.js";
 import { registerRunRoutes } from "./runs.js";
@@ -16,6 +17,14 @@ describe("HTTP run authorization", () => {
         requireCanvasAccess: vi.fn(),
         requireSessionAccess: async () => ({ canvasId: "canvas-1" }),
         requireRunAccess: vi.fn(),
+      },
+      prepareAgentRun: async () => {
+        throw new AgentRunError({
+          code: "agent_context_forbidden",
+          message: "You do not have access to this Agent context.",
+          retryable: false,
+          statusCode: 403,
+        });
       },
     });
 
@@ -33,9 +42,9 @@ describe("HTTP run authorization", () => {
 
     expect(response.statusCode).toBe(403);
     expect(response.json()).toMatchObject({
-      error: { code: "forbidden" },
+      error: { code: "agent_context_forbidden" },
     });
-    expect(agentRuns.createRun).not.toHaveBeenCalled();
+    expect(agentRuns.registerRun).not.toHaveBeenCalled();
     await app.close();
   });
 
@@ -81,6 +90,7 @@ function fakeAgentRuns() {
       sessionId: "session-1",
       status: "accepted",
     })),
+    registerRun: vi.fn(),
     streamRun: vi.fn(),
   };
 }

@@ -386,6 +386,61 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
     );
   }
 
+  type RunRegistrationOptions = {
+    accessToken?: string;
+    durableCreated: boolean;
+    model?: string;
+    runId: string;
+    threadId?: string;
+    userId?: string;
+  };
+
+  function registerRun(
+    input: RunCreateRequest,
+    runOptions: RunRegistrationOptions,
+  ): {
+    ownership: "created" | "existing_active" | "rehydrated";
+    response: RunCreateResponse;
+  } {
+    const existing = runs.get(runOptions.runId);
+    if (existing) {
+      return {
+        ownership: "existing_active",
+        response: {
+          conversationId: existing.conversationId,
+          runId: runOptions.runId,
+          sessionId: existing.sessionId,
+          status: "accepted",
+        },
+      };
+    }
+
+    const { accessToken: _ignoredAccessToken, ...runInput } = input;
+    runs.set(runOptions.runId, {
+      ...runInput,
+      ...(runOptions.accessToken
+        ? { accessToken: runOptions.accessToken }
+        : {}),
+      consumed: false,
+      controller: new AbortController(),
+      ...(runOptions.model ? { modelOverride: runOptions.model } : {}),
+      ...(runOptions.threadId ? { threadId: runOptions.threadId } : {}),
+      ...(runOptions.userId ? { userId: runOptions.userId } : {}),
+      runId: runOptions.runId,
+      status: "accepted",
+    });
+
+    return {
+      ownership: runOptions.durableCreated ? "created" : "rehydrated",
+      response: {
+        conversationId: input.conversationId,
+        runId: runOptions.runId,
+        sessionId: input.sessionId,
+        status: "accepted",
+      },
+    };
+  }
+
   return {
     async cancelRun(runId: string): Promise<RunCancelResponse | null> {
       const run = runs.get(runId);
@@ -424,38 +479,14 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
       },
     ): RunCreateResponse {
       const runId = runOptions?.runId ?? runIdFactory();
-      const existing = runs.get(runId);
-      if (existing) {
-        return {
-          conversationId: existing.conversationId,
-          runId,
-          sessionId: existing.sessionId,
-          status: "accepted",
-        };
-      }
-      const { accessToken: _ignoredAccessToken, ...runInput } = input;
-
-      runs.set(runId, {
-        ...runInput,
-        ...(runOptions?.accessToken
-          ? { accessToken: runOptions.accessToken }
-          : {}),
-        consumed: false,
-        controller: new AbortController(),
-        ...(runOptions?.model ? { modelOverride: runOptions.model } : {}),
-        ...(runOptions?.threadId ? { threadId: runOptions.threadId } : {}),
-        ...(runOptions?.userId ? { userId: runOptions.userId } : {}),
+      return registerRun(input, {
+        durableCreated: true,
         runId,
-        status: "accepted",
-      });
-
-      return {
-        conversationId: input.conversationId,
-        runId,
-        sessionId: input.sessionId,
-        status: "accepted",
-      };
+        ...runOptions,
+      }).response;
     },
+
+    registerRun,
 
     hasRun(runId: string) {
       return runs.has(runId);

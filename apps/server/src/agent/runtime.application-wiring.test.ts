@@ -9,6 +9,49 @@ import type { SubmitImageJobFn } from "./tools/image-generate.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
 
 describe("Agent runtime application wiring", () => {
+  it("returns explicit ownership for created, active, and rehydrated runs", () => {
+    const request = {
+      canvasId: "canvas-ownership",
+      clientRequestId: "request-ownership",
+      conversationId: "conversation-ownership",
+      prompt: "hello",
+      sessionId: "session-ownership",
+    };
+    const activeService = createAgentRunService({
+      env: loadServerEnv({}, {}),
+      providerRegistry: new ProviderRegistry().seal(),
+    });
+
+    const created = activeService.registerRun(request, {
+      durableCreated: true,
+      runId: "run-ownership",
+    });
+    const existing = activeService.registerRun(request, {
+      durableCreated: false,
+      runId: "run-ownership",
+    });
+
+    expect(created.ownership).toBe("created");
+    expect(existing).toMatchObject({
+      ownership: "existing_active",
+      response: { runId: "run-ownership" },
+    });
+
+    const coldService = createAgentRunService({
+      env: loadServerEnv({}, {}),
+      providerRegistry: new ProviderRegistry().seal(),
+    });
+    expect(
+      coldService.registerRun(request, {
+        durableCreated: false,
+        runId: "run-ownership",
+      }),
+    ).toMatchObject({
+      ownership: "rehydrated",
+      response: { runId: "run-ownership" },
+    });
+  });
+
   it("replaces an expired running attempt before Agent construction", async () => {
     const repository = new MemoryAgentExecutionRepository();
     await repository.accept({

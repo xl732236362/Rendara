@@ -15,8 +15,39 @@ export interface AgentAcceptanceResult {
   readonly runId: string;
 }
 
+export interface PersistedAgentAcceptance {
+  readonly model?: string;
+  readonly requestDigest: string;
+  readonly runId: string;
+}
+
+export type AgentAcceptanceRepositoryFailureKind =
+  | "conflict"
+  | "definitive_failed"
+  | "definitive_unavailable"
+  | "indeterminate"
+  | "lookup_unavailable";
+
+export class AgentAcceptanceRepositoryError extends Error {
+  readonly kind: AgentAcceptanceRepositoryFailureKind;
+
+  constructor(kind: AgentAcceptanceRepositoryFailureKind) {
+    super(repositoryFailureCode(kind));
+    this.name = "AgentAcceptanceRepositoryError";
+    this.kind = kind;
+  }
+}
+
 export interface AgentExecutionRepository {
-  accept(input: AgentRunAcceptance): Promise<AgentAcceptanceResult>;
+  accept(
+    input: AgentRunAcceptance,
+    signal?: AbortSignal,
+  ): Promise<AgentAcceptanceResult>;
+  findAcceptance(input: {
+    readonly clientRequestId: string;
+    readonly signal?: AbortSignal;
+    readonly userId: string;
+  }): Promise<PersistedAgentAcceptance | null>;
   claimAttempt(input: AttemptClaim): Promise<AttemptLease>;
   beginEffect(input: AgentEffectRequest): Promise<AgentEffectReservation>;
   completeEffect(
@@ -102,6 +133,7 @@ export interface SkillReadReservationResult {
 
 interface StoredAcceptance {
   readonly clientRequestId: string;
+  readonly model?: string;
   readonly requestDigest: string;
   context: Readonly<AgentExecutionContext>;
   attempt: {
@@ -164,18 +196,23 @@ export class MemoryAgentExecutionRepository
     };
   }
 
-  async accept(input: AgentRunAcceptance): Promise<AgentAcceptanceResult> {
+  async accept(
+    input: AgentRunAcceptance,
+    signal?: AbortSignal,
+  ): Promise<AgentAcceptanceResult> {
+    signal?.throwIfAborted();
     const key = `${input.context.userId}\0${input.clientRequestId}`;
     const existing = this.#byIdempotencyKey.get(key);
     if (existing) {
       if (existing.requestDigest !== input.requestDigest) {
-        throw new Error("agent_acceptance_conflict");
+        throw new AgentAcceptanceRepositoryError("conflict");
       }
       return { created: false, runId: existing.context.runId };
     }
 
     const stored: StoredAcceptance = {
       clientRequestId: input.clientRequestId,
+      ...(input.model ? { model: input.model } : {}),
       requestDigest: input.requestDigest,
       context: input.context,
       attempt: {
@@ -193,6 +230,23 @@ export class MemoryAgentExecutionRepository
     this.#byRun.set(input.context.runId, stored);
     this.#byIdempotencyKey.set(key, stored);
     return { created: true, runId: input.context.runId };
+  }
+
+  async findAcceptance(input: {
+    readonly clientRequestId: string;
+    readonly signal?: AbortSignal;
+    readonly userId: string;
+  }): Promise<PersistedAgentAcceptance | null> {
+    input.signal?.throwIfAborted();
+    const stored = this.#byIdempotencyKey.get(
+      `${input.userId}\0${input.clientRequestId}`,
+    );
+    if (!stored) return null;
+    return {
+      ...(stored.model ? { model: stored.model } : {}),
+      requestDigest: stored.requestDigest,
+      runId: stored.context.runId,
+    };
   }
 
   async claimAttempt(input: AttemptClaim): Promise<AttemptLease> {
@@ -381,14 +435,9 @@ export function createAgentExecutionRepository(options: {
   getAdminClient: () => AdminSupabaseClient;
 }): AgentExecutionRepository {
   return {
-    async accept(input) {
-      const client = options.getAdminClient() as unknown as {
-        rpc(
-          name: string,
-          args: Record<string, unknown>,
-        ): Promise<{ data: unknown; error: { message?: string } | null }>;
-      };
-      const { data, error } = await client.rpc("accept_agent_run", {
+    async accept(input, signal) {
+      const client = options.getAdminClient() as unknown as AcceptanceClient;
+      let query = client.rpc("accept_agent_run", {
         p_attempt_id: input.context.attemptId,
         p_canvas_id: input.context.canvasId,
         p_capabilities: input.context.capabilities,
@@ -405,17 +454,51 @@ export function createAgentExecutionRepository(options: {
         p_workspace_id: input.context.workspaceId,
         p_model: input.model ?? null,
       });
+      if (signal) query = query.abortSignal(signal);
+
+      let result: AcceptanceRpcResult;
+      try {
+        result = await query;
+      } catch {
+        throw new AgentAcceptanceRepositoryError("indeterminate");
+      }
+      const { data, error } = result;
       if (error) {
-        if (error.message?.includes("agent_acceptance_conflict")) {
-          throw new Error("agent_acceptance_conflict");
-        }
-        throw new Error("agent_acceptance_persistence_failed");
+        throw classifyAcceptanceError(error);
       }
       const row = Array.isArray(data) ? data[0] : data;
       if (!isAcceptanceResult(row)) {
-        throw new Error("agent_acceptance_persistence_failed");
+        throw new AgentAcceptanceRepositoryError("indeterminate");
       }
       return { created: row.created, runId: row.run_id };
+    },
+    async findAcceptance(input) {
+      const client = options.getAdminClient() as unknown as AcceptanceClient;
+      let query = client
+        .from("agent_runs")
+        .select("id, request_digest, model")
+        .eq("user_id", input.userId)
+        .eq("client_request_id", input.clientRequestId);
+      if (input.signal) query = query.abortSignal(input.signal);
+
+      let result: AcceptanceLookupResult;
+      try {
+        result = await query.maybeSingle();
+      } catch {
+        throw new AgentAcceptanceRepositoryError("lookup_unavailable");
+      }
+      if (result.error) {
+        throw new AgentAcceptanceRepositoryError("lookup_unavailable");
+      }
+      if (result.data === null) return null;
+      if (!isPersistedAcceptanceRow(result.data)) {
+        throw new AgentAcceptanceRepositoryError("lookup_unavailable");
+      }
+      return {
+        ...(result.data.model ? { model: result.data.model } : {}),
+        requestDigest: result.data.request_digest,
+        runId: result.data.id,
+      };
     },
     async claimAttempt(input) {
       const row = await callAgentExecutionRpc(options, "claim_agent_attempt", {
@@ -602,6 +685,94 @@ export function createAgentExecutionRepository(options: {
       };
     },
   };
+}
+
+type AcceptanceRpcResult = {
+  data: unknown;
+  error: unknown;
+};
+
+type AcceptanceLookupResult = {
+  data: unknown;
+  error: unknown;
+};
+
+interface AbortableAcceptanceRpc extends PromiseLike<AcceptanceRpcResult> {
+  abortSignal(signal: AbortSignal): AbortableAcceptanceRpc;
+}
+
+interface AcceptanceLookupQuery {
+  abortSignal(signal: AbortSignal): AcceptanceLookupQuery;
+  eq(column: string, value: string): AcceptanceLookupQuery;
+  maybeSingle(): PromiseLike<AcceptanceLookupResult>;
+  select(columns: string): AcceptanceLookupQuery;
+}
+
+interface AcceptanceClient {
+  from(name: string): AcceptanceLookupQuery;
+  rpc(name: string, args: Record<string, unknown>): AbortableAcceptanceRpc;
+}
+
+const DEFINITIVE_RETRYABLE_DATABASE_CODES = new Set([
+  "40001",
+  "40P01",
+  "55P03",
+  "57014",
+]);
+
+function classifyAcceptanceError(
+  error: unknown,
+): AgentAcceptanceRepositoryError {
+  const message = safeStringField(error, "message");
+  if (message?.includes("agent_acceptance_conflict")) {
+    return new AgentAcceptanceRepositoryError("conflict");
+  }
+  const code = safeStringField(error, "code");
+  if (code && DEFINITIVE_RETRYABLE_DATABASE_CODES.has(code)) {
+    return new AgentAcceptanceRepositoryError("definitive_unavailable");
+  }
+  return new AgentAcceptanceRepositoryError("definitive_failed");
+}
+
+function repositoryFailureCode(
+  kind: AgentAcceptanceRepositoryFailureKind,
+): string {
+  switch (kind) {
+    case "conflict":
+      return "agent_acceptance_conflict";
+    case "definitive_unavailable":
+      return "agent_acceptance_unavailable";
+    case "definitive_failed":
+      return "agent_acceptance_failed";
+    case "indeterminate":
+      return "agent_acceptance_indeterminate";
+    case "lookup_unavailable":
+      return "agent_acceptance_lookup_failed";
+  }
+}
+
+function safeStringField(value: unknown, key: string): string | undefined {
+  try {
+    if (typeof value !== "object" || value === null) return undefined;
+    const field = (value as Record<string, unknown>)[key];
+    return typeof field === "string" ? field : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isPersistedAcceptanceRow(value: unknown): value is {
+  id: string;
+  model: string | null;
+  request_digest: string;
+} {
+  if (typeof value !== "object" || value === null) return false;
+  const row = value as Record<string, unknown>;
+  return (
+    typeof row.id === "string" &&
+    typeof row.request_digest === "string" &&
+    (row.model === null || typeof row.model === "string")
+  );
 }
 
 interface SkillCursorQueryClient {

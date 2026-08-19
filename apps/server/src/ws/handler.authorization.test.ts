@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 
+import { AgentRunError } from "../application/agent/agent-run-errors.js";
 import {
   type ResourceAuthorization,
   ResourceAuthorizationError,
@@ -106,7 +107,10 @@ describe("WebSocket resource commands", () => {
     expect(
       socket.messages.map((message) => JSON.parse(message)),
     ).toContainEqual(
-      expect.objectContaining({ type: "error", code: "forbidden" }),
+      expect.objectContaining({
+        type: "error",
+        error: expect.objectContaining({ code: "forbidden" }),
+      }),
     );
     socket.emit("close");
   });
@@ -141,7 +145,10 @@ describe("WebSocket resource commands", () => {
     expect(
       socket.messages.map((message) => JSON.parse(message)),
     ).toContainEqual(
-      expect.objectContaining({ type: "error", code: "forbidden" }),
+      expect.objectContaining({
+        type: "error",
+        error: expect.objectContaining({ code: "forbidden" }),
+      }),
     );
     socket.emit("close");
   });
@@ -193,6 +200,14 @@ describe("WebSocket resource commands", () => {
         authorization: rejectingAuthorization(),
         auth: { authenticate: async () => user },
         connectionManager: new ConnectionManager(),
+        prepareAgentRun: async () => {
+          throw new AgentRunError({
+            code: "agent_context_forbidden",
+            message: "You do not have access to this Agent context.",
+            retryable: false,
+            statusCode: 403,
+          });
+        },
       },
     );
 
@@ -212,11 +227,17 @@ describe("WebSocket resource commands", () => {
     );
     await nextTurn();
 
-    expect(agentRuns.createRun).not.toHaveBeenCalled();
+    expect(agentRuns.registerRun).not.toHaveBeenCalled();
     expect(
       socket.messages.map((message) => JSON.parse(message)),
     ).toContainEqual(
-      expect.objectContaining({ type: "error", code: "forbidden" }),
+      expect.objectContaining({
+        action: "agent.run",
+        clientRequestId: "request-1",
+        error: expect.objectContaining({ code: "agent_context_forbidden" }),
+        retryable: false,
+        type: "error",
+      }),
     );
     socket.emit("close");
   });
@@ -259,6 +280,7 @@ function fakeAgentRuns() {
   return {
     cancelRun: vi.fn(),
     createRun: vi.fn(),
+    registerRun: vi.fn(),
     streamRun: vi.fn(),
   };
 }
