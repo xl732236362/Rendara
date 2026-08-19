@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(28);
+select plan(30);
 
 select has_table('public', 'generated_asset_attachment_intents',
   'generated asset attachment intents are durable');
@@ -272,6 +272,35 @@ select is(public.settle_generated_asset_attachment_intent(
 select is((select state from public.generated_asset_recovery_audits
   where intent_id = '32000000-0000-4000-8000-000000000015'), 'failed',
   'terminal recovery failure also completes its audit');
+
+insert into public.background_jobs(
+  id, workspace_id, project_id, canvas_id, session_id, thread_id,
+  queue_name, job_type, status, payload, created_by,
+  idempotency_key, request_fingerprint, credits_cost
+)
+select '32000000-0000-4000-8000-000000000016', workspace_id, project_id,
+  canvas_id, session_id, 'attachment-thread', 'image_generation_jobs',
+  'image_generation', 'queued', '{}'::jsonb,
+  '32000000-0000-4000-8000-000000000001', 'attachment-queued-job',
+  'attachment-queued-fingerprint', 0
+from attachment_fixture;
+insert into public.generated_asset_attachment_intents(
+  id, job_id, effect_kind, workspace_id, project_id, canvas_id,
+  session_id, user_id, media_type, placement_policy
+)
+select '32000000-0000-4000-8000-000000000017',
+  '32000000-0000-4000-8000-000000000016',
+  'generated_asset_attached', workspace_id, project_id, canvas_id, session_id,
+  '32000000-0000-4000-8000-000000000001', 'image',
+  '{"kind":"auto_right"}'::jsonb
+from attachment_fixture;
+select is((select count(*)::integer from
+  public.claim_generated_asset_attachment_intents(
+    'nonterminal-worker', 10, 30, now())), 0,
+  'a nonterminal generation job does not consume attachment attempts');
+select is((select state from public.generated_asset_attachment_intents
+  where id = '32000000-0000-4000-8000-000000000017'), 'pending',
+  'a nonterminal generation intent remains pending');
 
 select * from finish();
 rollback;

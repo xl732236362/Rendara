@@ -12,6 +12,9 @@ if (process.env.GLOBAL_AGENT_HTTP_PROXY) {
 
 import { randomUUID } from "node:crypto";
 import { loadServerEnv } from "./config/env.js";
+import { createGeneratedAssetAttachmentTemplateAdapter } from "./features/canvas/generated-asset-application-adapter.js";
+import { createGeneratedAssetAttachmentReconciler } from "./features/canvas/generated-asset-attachment-reconciler.js";
+import { createGeneratedAssetAttachmentRepository } from "./features/canvas/generated-asset-attachment-repository.js";
 import { registerAllExecutors } from "./features/jobs/executors/register-all.js";
 import type {
   ExecutorCatalog,
@@ -96,6 +99,22 @@ async function main() {
   );
   const workerId = env.workerId ?? randomUUID().slice(0, 8);
   const tag = `[worker:${workerId}]`;
+  const logger = {
+    info: (event: string, fields: Record<string, unknown>) =>
+      console.log(JSON.stringify({ level: "info", event, ...fields })),
+    warn: (event: string, fields: Record<string, unknown>) =>
+      console.warn(JSON.stringify({ level: "warn", event, ...fields })),
+    error: (event: string, fields: Record<string, unknown>) =>
+      console.error(JSON.stringify({ level: "error", event, ...fields })),
+  };
+  const attachmentReconciler = createGeneratedAssetAttachmentReconciler({
+    repository: createGeneratedAssetAttachmentRepository({ getAdminClient }),
+    templates: createGeneratedAssetAttachmentTemplateAdapter({
+      getAdminClient,
+    }),
+    workerId,
+    logger,
+  });
 
   let running = true;
 
@@ -113,6 +132,7 @@ async function main() {
     if (allTasks.length > 0) {
       await Promise.allSettled(allTasks);
     }
+    await attachmentReconciler.stop();
     await pgmq.shutdown();
     console.log(`${tag} Shutdown complete.`);
     process.exit(0);
@@ -123,6 +143,7 @@ async function main() {
   const concurrencyDesc = QUEUES.map(
     (q) => `${q}=${CONCURRENCY_BY_QUEUE[q] ?? 1}`,
   ).join(", ");
+  await attachmentReconciler.start();
   console.log(
     `${tag} Started. concurrency={${concurrencyDesc}}, longPollTimeout=${pollTimeoutSeconds}s`,
   );
@@ -166,6 +187,7 @@ async function main() {
             tag,
             workerId,
             vt,
+            attachmentReconciler,
           ).finally(() => inFlight.delete(task));
           inFlight.add(task);
         }
@@ -185,6 +207,9 @@ async function processMessage(
   tag: string,
   workerId: string,
   leaseSeconds: number,
+  attachmentReconciler: ReturnType<
+    typeof createGeneratedAssetAttachmentReconciler
+  >,
 ) {
   const resolution = await resolveGenerationQueueMessage({
     queue,
@@ -212,6 +237,7 @@ async function processMessage(
           leaseSeconds,
           code,
           message,
+          attachmentReconciler,
         ),
       archive: () => ctx.pgmq.archive(queue, msg.msg_id),
     });
@@ -232,6 +258,7 @@ async function processMessage(
     workerId,
     leaseSeconds,
     logger,
+    attachmentReconciler,
     queue: {
       deleteMessage: (name, messageId) => ctx.pgmq.deleteMsg(name, messageId),
       archiveMessage: (name, messageId) => ctx.pgmq.archive(name, messageId),
@@ -264,6 +291,9 @@ async function settleRejectedJob(
   leaseSeconds: number,
   errorCode: string,
   errorMessage: string,
+  attachmentReconciler: ReturnType<
+    typeof createGeneratedAssetAttachmentReconciler
+  >,
 ) {
   const claim = await jobs.claim(jobId, workerId, leaseSeconds);
   if (claim.kind === "missing" || claim.kind === "terminal") return;
@@ -279,6 +309,7 @@ async function settleRejectedJob(
     errorCode,
     errorMessage,
   });
+  attachmentReconciler.wake();
 }
 
 main().catch((err) => {

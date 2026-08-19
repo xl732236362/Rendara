@@ -260,7 +260,11 @@ begin
   where i.id in (
     select candidate.id
     from public.generated_asset_attachment_intents candidate
-    where (
+    where exists (
+      select 1 from public.background_jobs terminal_job
+      where terminal_job.id = candidate.job_id
+        and terminal_job.status in ('succeeded', 'canceled', 'dead_letter')
+    ) and (
       candidate.state in ('pending', 'retry_wait')
         and candidate.next_attempt_at <= p_now
         and candidate.attempt_count < 8

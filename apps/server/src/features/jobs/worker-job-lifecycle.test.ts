@@ -14,6 +14,7 @@ function setup(
   claim: unknown,
   executor = vi.fn(async () => ({ url: "result" })),
 ) {
+  const attachmentReconciler = { wake: vi.fn() };
   const jobs = {
     claim: vi.fn(async () => claim),
     beginEffect: vi.fn(async () => ({ kind: "started" })),
@@ -35,8 +36,9 @@ function setup(
     workerId: "worker-1",
     leaseSeconds: 30,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    attachmentReconciler,
   });
-  return { lifecycle, jobs, queue, executor };
+  return { lifecycle, jobs, queue, executor, attachmentReconciler };
 }
 
 describe("worker job lifecycle", () => {
@@ -63,7 +65,7 @@ describe("worker job lifecycle", () => {
   });
 
   it("settles success before deleting the queue message", async () => {
-    const { lifecycle, jobs, queue } = setup({
+    const { lifecycle, jobs, queue, attachmentReconciler } = setup({
       kind: "claimed",
       lease_token: "77777777-7777-4777-8777-777777777777",
       job: { attempt_count: 1, max_attempts: 3 },
@@ -85,6 +87,7 @@ describe("worker job lifecycle", () => {
       message.jobId,
       "77777777-7777-4777-8777-777777777777",
     );
+    expect(attachmentReconciler.wake).toHaveBeenCalledOnce();
   });
 
   it("does not repeat an external provider call after an ambiguous prior attempt", async () => {
@@ -148,7 +151,7 @@ describe("worker job lifecycle", () => {
     const executor = vi.fn(async () => {
       throw Object.assign(new Error("temporary"), { code: "provider_busy" });
     });
-    const { lifecycle, jobs, queue } = setup(
+    const { lifecycle, jobs, queue, attachmentReconciler } = setup(
       {
         kind: "claimed",
         lease_token: "77777777-7777-4777-8777-777777777777",
@@ -164,6 +167,7 @@ describe("worker job lifecycle", () => {
     );
     expect(queue.deleteMessage).not.toHaveBeenCalled();
     expect(queue.archiveMessage).not.toHaveBeenCalled();
+    expect(attachmentReconciler.wake).not.toHaveBeenCalled();
   });
 
   it("archives when the database promotes an attempted external effect to dead letter", async () => {
@@ -195,7 +199,7 @@ describe("worker job lifecycle", () => {
     const executor = vi.fn(async () => {
       throw Object.assign(new Error("bad input"), { code: "invalid_input" });
     });
-    const { lifecycle, jobs, queue } = setup(
+    const { lifecycle, jobs, queue, attachmentReconciler } = setup(
       {
         kind: "claimed",
         lease_token: "77777777-7777-4777-8777-777777777777",
@@ -210,10 +214,11 @@ describe("worker job lifecycle", () => {
       expect.objectContaining({ outcome: "dead_letter" }),
     );
     expect(queue.archiveMessage).toHaveBeenCalledOnce();
+    expect(attachmentReconciler.wake).toHaveBeenCalledOnce();
   });
 
   it("deletes a cancellation confirmed by settlement", async () => {
-    const { lifecycle, jobs, queue } = setup({
+    const { lifecycle, jobs, queue, attachmentReconciler } = setup({
       kind: "claimed",
       lease_token: "77777777-7777-4777-8777-777777777777",
       job: { attempt_count: 1, max_attempts: 3 },
@@ -226,6 +231,7 @@ describe("worker job lifecycle", () => {
       disposition: "canceled",
     });
     expect(queue.deleteMessage).toHaveBeenCalledOnce();
+    expect(attachmentReconciler.wake).toHaveBeenCalledOnce();
   });
 
   it("does not rewrite a succeeded job when queue deletion fails", async () => {
