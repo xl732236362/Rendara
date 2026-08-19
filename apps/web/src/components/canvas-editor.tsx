@@ -14,9 +14,11 @@ import { normalizeCanvasElements } from "../lib/canvas-normalize";
 import {
   type CanvasContent,
   type DurableSceneMutation,
+  canonicalJson,
   createCanvasDirtySignatureFactory,
   createCanvasPersistenceCoordinator,
   createDurableSceneMutation,
+  normalizeDurableCanvasContent,
   serializeCanvasFiles,
 } from "../lib/canvas-persistence";
 import { getServerBaseUrl } from "../lib/env";
@@ -157,7 +159,7 @@ export function CanvasEditor({
   const canvasIdRef = useRef(canvasId);
   canvasIdRef.current = canvasId;
   const conflictPausedRef = useRef(false);
-  const suppressNextAutosaveRef = useRef(false);
+  const suppressedSceneSignatureRef = useRef<string | null>(null);
   const persistenceCoordinatorRef = useRef<ReturnType<
     typeof createCanvasPersistenceCoordinator
   > | null>(null);
@@ -169,6 +171,7 @@ export function CanvasEditor({
   useEffect(() => {
     conflictPausedRef.current = false;
     persistenceCoordinatorRef.current = null;
+    suppressedSceneSignatureRef.current = null;
     lastDirtySignatureRef.current = null;
     dirtyGenerationRef.current = 0;
     pendingDurableChangeRef.current = false;
@@ -351,7 +354,9 @@ export function CanvasEditor({
         if (Object.keys(runtimeFiles).length > 0) {
           excalidrawApi.addFiles(Object.values(runtimeFiles));
         }
-        suppressNextAutosaveRef.current = true;
+        suppressedSceneSignatureRef.current = canonicalJson(
+          normalizeDurableCanvasContent(content),
+        );
         excalidrawApi.updateScene({
           elements: content.elements,
           appState: content.appState,
@@ -445,9 +450,21 @@ export function CanvasEditor({
       // selection and viewport callbacks never serialize legacy base64 files.
       if (persistenceCoordinatorRef.current?.snapshot().stopped) {
         pendingDurableChangeRef.current = false;
-      } else if (suppressNextAutosaveRef.current) {
-        suppressNextAutosaveRef.current = false;
       } else {
+        const suppressedSignature = suppressedSceneSignatureRef.current;
+        if (suppressedSignature !== null) {
+          suppressedSceneSignatureRef.current = null;
+          const callbackContent = readDurableCanvasContent(
+            excalidrawApi,
+            elements,
+          );
+          if (
+            canonicalJson(normalizeDurableCanvasContent(callbackContent)) ===
+            suppressedSignature
+          ) {
+            return;
+          }
+        }
         const signature = dirtySignatureRef.current({
           elements: elements as Record<string, unknown>[],
           appState,
@@ -559,7 +576,11 @@ export function CanvasEditor({
       },
       getSceneElements: () => excalidrawApi.getSceneElements(),
       updateScene(elements) {
-        suppressNextAutosaveRef.current = true;
+        suppressedSceneSignatureRef.current = canonicalJson(
+          normalizeDurableCanvasContent(
+            readDurableCanvasContent(excalidrawApi, elements),
+          ),
+        );
         excalidrawApi.updateScene({
           elements,
           captureUpdate: "IMMEDIATELY",

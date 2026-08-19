@@ -17,6 +17,7 @@ const harness = vi.hoisted(() => ({
   fetchCanvas: vi.fn(),
   uploadThumbnail: vi.fn(),
   exportToBlob: vi.fn(),
+  persistenceHandle: null as Record<string, any> | null,
 }));
 
 vi.mock("next/dynamic", async () => {
@@ -80,6 +81,9 @@ function renderEditor() {
         appState: harness.appState,
         files: harness.files,
       }}
+      onPersistenceReady={(handle) => {
+        harness.persistenceHandle = handle;
+      }}
     />,
   );
 }
@@ -98,6 +102,7 @@ describe("CanvasEditor persistence coordinator", () => {
       selectedElementIds: {},
     };
     harness.files = {};
+    harness.persistenceHandle = null;
   });
 
   it("does not save or upload thumbnails for transient callbacks", async () => {
@@ -165,6 +170,59 @@ describe("CanvasEditor persistence coordinator", () => {
     });
     await vi.waitFor(() =>
       expect(harness.uploadThumbnail).toHaveBeenCalledOnce(),
+    );
+    view.unmount();
+  });
+
+  it("persists a user edit that arrives before the remote update callback", async () => {
+    vi.useFakeTimers();
+    const remoteImage = {
+      id: "generated",
+      type: "image",
+      fileId: "generated-file",
+      version: 1,
+      versionNonce: 33,
+    };
+    harness.fetchCanvas.mockResolvedValue({
+      canvas: {
+        revision: 2,
+        content: {
+          elements: [...harness.elements, remoteImage],
+          appState: harness.appState,
+          files: {},
+        },
+      },
+    });
+    harness.saveCanvas.mockResolvedValue({ revision: 3 });
+    const view = renderEditor();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2);
+    });
+
+    await act(async () => {
+      await harness.persistenceHandle?.sync({ revision: 2 });
+    });
+    const localEllipse = {
+      id: "local-ellipse",
+      type: "ellipse",
+      version: 1,
+      versionNonce: 44,
+    };
+    harness.elements = [...harness.elements, localEllipse];
+    act(() => {
+      harness.excalidrawProps?.onChange(harness.elements, harness.appState);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+
+    expect(harness.saveCanvas).toHaveBeenCalledWith(
+      "token",
+      "11111111-1111-4111-8111-111111111111",
+      2,
+      expect.objectContaining({
+        elements: expect.arrayContaining([localEllipse, remoteImage]),
+      }),
     );
     view.unmount();
   });
