@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(14);
+select plan(27);
 
 select ok(
   (select relrowsecurity from pg_class where oid = 'public.canvases'::regclass),
@@ -200,6 +200,71 @@ select ok(
     'execute'
   ),
   'service role retains access to worker attempt counters'
+);
+
+select ok(
+  has_table_privilege('service_role', 'public.profiles', 'select'),
+  'service role can read the profile returned by bootstrap_viewer'
+);
+
+select ok(
+  has_table_privilege('service_role', 'public.workspaces', 'select'),
+  'service role can read the workspace returned by bootstrap_viewer'
+);
+
+select ok(
+  has_table_privilege('service_role', 'public.workspace_members', 'select'),
+  'service role can read the membership returned by bootstrap_viewer'
+);
+
+select ok(
+  has_table_privilege('authenticated', 'public.workspaces', 'select'),
+  'authenticated users can resolve RLS-scoped workspaces'
+);
+
+select ok(
+  has_table_privilege('authenticated', 'public.profiles', 'select'),
+  'authenticated users can read their RLS-scoped profile'
+);
+
+select ok(
+  has_table_privilege('authenticated', 'public.profiles', 'update'),
+  'authenticated users can update their RLS-scoped profile'
+);
+
+select ok(
+  has_table_privilege('authenticated', 'public.projects', 'update'),
+  'authenticated users can archive projects allowed by project RLS'
+);
+
+select ok(
+  has_table_privilege('authenticated', 'public.chat_sessions', 'insert'),
+  'authenticated users can create RLS-scoped chat sessions'
+);
+
+select ok(
+  has_table_privilege('authenticated', 'public.chat_sessions', 'update'),
+  'authenticated users can update RLS-scoped chat sessions'
+);
+
+select ok(
+  has_table_privilege('authenticated', 'public.chat_sessions', 'delete'),
+  'authenticated users can delete RLS-scoped chat sessions'
+);
+
+select ok(
+  has_table_privilege('authenticated', 'public.chat_messages', 'select'),
+  'authenticated users can read messages in RLS-scoped sessions'
+);
+
+select ok(
+  has_table_privilege('authenticated', 'public.chat_messages', 'insert'),
+  'authenticated users can create messages in RLS-scoped sessions'
+);
+
+select ok(
+  has_table_privilege('authenticated', 'public.chat_messages', 'delete'),
+  'authenticated users can delete messages in RLS-scoped sessions'
 );
 
 select * from finish();
