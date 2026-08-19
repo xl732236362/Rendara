@@ -34,10 +34,6 @@ enable_confirmations = false
 enabled = true
 file_size_limit = "50MiB"
 
-[storage.buckets.project-assets]
-public = false
-file_size_limit = "50MiB"
-
 [storage.buckets.user-avatars]
 public = false
 file_size_limit = "5MiB"

@@ -101,6 +101,19 @@ test("workspace includes apps and packages globs", async () => {
   assert.match(workspace, /packages\/\*/);
 });
 
+test("project asset storage configuration matches public URL generation", async () => {
+  const config = await readText("supabase/config.toml");
+  const migration = await readText(
+    "supabase/migrations/20260326000001_public_project_assets_bucket.sql",
+  );
+
+  assert.doesNotMatch(config, /\[storage\.buckets\.project-assets\]/);
+  assert.match(
+    migration,
+    /update\s+storage\.buckets\s+set\s+public\s*=\s*true\s+where\s+id\s*=\s*'project-assets'/i,
+  );
+});
+
 test("dynamic Skill product and execution paths are removed", async () => {
   const forbiddenPaths = [
     "apps/server/src/application/skills",
