@@ -748,6 +748,7 @@ describe("@loomic/shared contracts", () => {
       "message.delta",
       "tool.started",
       "tool.completed",
+      "tool.failed",
       "run.canceled",
       "run.completed",
       "run.failed",
@@ -790,6 +791,20 @@ describe("@loomic/shared contracts", () => {
               toolCallId: "tool_123",
               toolName: "example_tool",
               outputSummary: "done",
+              timestamp: "2026-03-23T12:00:00.000Z",
+            });
+            break;
+          case "tool.failed":
+            streamEventSchema.parse({
+              type,
+              runId: "run_123",
+              toolCallId: "tool_123",
+              toolName: "example_tool",
+              error: {
+                code: "invalid_arguments",
+                message: "Check the arguments.",
+                correlationId: "correlation_123",
+              },
               timestamp: "2026-03-23T12:00:00.000Z",
             });
             break;
@@ -853,6 +868,35 @@ describe("@loomic/shared contracts", () => {
 
     expect(messageEvent.messageId).toBe("message_123");
     expect(toolEvent.toolCallId).toBe("tool_123");
+  });
+
+  it("requires authoritative canvas event identity and revision", () => {
+    const event = streamEventSchema.parse({
+      type: "canvas.sync",
+      eventId: "event_123",
+      canvasId: "canvas_123",
+      revision: 2,
+      timestamp: "2026-03-23T12:00:00.000Z",
+    });
+
+    if (event.type !== "canvas.sync") {
+      throw new Error("Expected canvas.sync event.");
+    }
+
+    expect(event).toEqual({
+      type: "canvas.sync",
+      eventId: "event_123",
+      canvasId: "canvas_123",
+      revision: 2,
+      timestamp: "2026-03-23T12:00:00.000Z",
+    });
+    expect(() =>
+      streamEventSchema.parse({
+        type: "canvas.sync",
+        runId: "run_123",
+        timestamp: "2026-03-23T12:00:00.000Z",
+      }),
+    ).toThrow();
   });
 
   it("requires correlation fields for message and tool lifecycle events", () => {

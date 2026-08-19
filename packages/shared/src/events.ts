@@ -2,7 +2,9 @@ import { z } from "zod";
 
 import { toolArtifactSchema } from "./artifacts.js";
 import {
+  canvasIdSchema,
   conversationIdSchema,
+  identifierSchema,
   messageIdSchema,
   runIdSchema,
   sessionIdSchema,
@@ -60,6 +62,23 @@ export const toolCompletedEventSchema = z.object({
   timestamp: timestampSchema,
 });
 
+export const publicToolErrorSchema = z
+  .object({
+    code: z.string().min(1).max(64),
+    message: z.string().min(1).max(512),
+    correlationId: identifierSchema,
+  })
+  .strict();
+
+export const toolFailedEventSchema = z.object({
+  type: z.literal("tool.failed"),
+  runId: runIdSchema,
+  toolCallId: toolCallIdSchema,
+  toolName: z.string().min(1),
+  error: publicToolErrorSchema,
+  timestamp: timestampSchema,
+});
+
 export const runCompletedEventSchema = z.object({
   type: z.literal("run.completed"),
   runId: runIdSchema,
@@ -89,7 +108,9 @@ export const thinkingDeltaEventSchema = z.object({
 
 export const canvasSyncEventSchema = z.object({
   type: z.literal("canvas.sync"),
-  runId: runIdSchema,
+  eventId: identifierSchema,
+  canvasId: canvasIdSchema,
+  revision: z.number().int().positive().safe(),
   timestamp: timestampSchema,
 });
 
@@ -121,6 +142,7 @@ export const streamEventSchema = z.discriminatedUnion("type", [
   thinkingDeltaEventSchema,
   toolStartedEventSchema,
   toolCompletedEventSchema,
+  toolFailedEventSchema,
   runCanceledEventSchema,
   runCompletedEventSchema,
   runFailedEventSchema,
