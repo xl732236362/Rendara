@@ -49,6 +49,92 @@ describe("WebSocket run authorization", () => {
 });
 
 describe("WebSocket resource commands", () => {
+  it("acknowledges an active replay without consuming or clearing its stream", async () => {
+    const socket = new FakeSocket();
+    const agentRuns = fakeAgentRuns();
+    agentRuns.registerRun.mockReturnValue({
+      ownership: "existing_active",
+      response: {
+        conversationId: "conversation-1",
+        runId: "run-1",
+        sessionId: "session-1",
+        status: "accepted",
+      },
+    });
+    const connectionManager = new ConnectionManager();
+    const clearActiveRun = vi.spyOn(connectionManager, "clearActiveRun");
+
+    await bindAuthenticatedSocket(
+      socket as never,
+      "token",
+      { url: "/api/ws", headers: { host: "localhost" } } as never,
+      {
+        agentRuns: agentRuns as never,
+        authorization: fakeAuthorization("canvas-1"),
+        auth: { authenticate: async () => user },
+        connectionManager,
+        prepareAgentRun: async () => preparedRun(false),
+      },
+    );
+    socket.emit("message", runCommand());
+    await nextTurn();
+
+    expect(agentRuns.streamRun).not.toHaveBeenCalled();
+    expect(clearActiveRun).not.toHaveBeenCalled();
+    expect(
+      socket.messages.map((message) => JSON.parse(message)),
+    ).toContainEqual(
+      expect.objectContaining({
+        action: "agent.run",
+        payload: expect.objectContaining({
+          clientRequestId: "request-1",
+          runId: "run-1",
+        }),
+        type: "command.ack",
+      }),
+    );
+    socket.emit("close");
+  });
+
+  it("marks a newly owned run active before sending its acknowledgement", async () => {
+    const socket = new FakeSocket();
+    const agentRuns = fakeAgentRuns();
+    agentRuns.registerRun.mockReturnValue({
+      ownership: "created",
+      response: {
+        conversationId: "conversation-1",
+        runId: "run-1",
+        sessionId: "session-1",
+        status: "accepted",
+      },
+    });
+    agentRuns.streamRun.mockReturnValue((async function* () {})());
+    const connectionManager = new ConnectionManager();
+    const setActiveRun = vi.spyOn(connectionManager, "setActiveRun");
+    const sendTo = vi.spyOn(connectionManager, "sendTo");
+
+    await bindAuthenticatedSocket(
+      socket as never,
+      "token",
+      { url: "/api/ws", headers: { host: "localhost" } } as never,
+      {
+        agentRuns: agentRuns as never,
+        authorization: fakeAuthorization("canvas-1"),
+        auth: { authenticate: async () => user },
+        connectionManager,
+        prepareAgentRun: async () => preparedRun(true),
+      },
+    );
+    socket.emit("message", runCommand());
+    await nextTurn();
+
+    expect(setActiveRun.mock.invocationCallOrder[0]).toBeLessThan(
+      sendTo.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(agentRuns.streamRun).toHaveBeenCalledOnce();
+    socket.emit("close");
+  });
+
   it("authorizes canvas resume before replay work begins", async () => {
     let authorizedCanvas: string | undefined;
     const authorization = fakeAuthorization("canvas-1", {
@@ -282,6 +368,42 @@ function fakeAgentRuns() {
     createRun: vi.fn(),
     registerRun: vi.fn(),
     streamRun: vi.fn(),
+  };
+}
+
+function runCommand() {
+  return JSON.stringify({
+    type: "command",
+    action: "agent.run",
+    payload: {
+      canvasId: "canvas-1",
+      clientRequestId: "request-1",
+      conversationId: "conversation-1",
+      sessionId: "session-1",
+      prompt: "test",
+    },
+  });
+}
+
+function preparedRun(created: boolean) {
+  return {
+    accepted: {
+      created,
+      requestDigest: "digest-1",
+      runId: "run-1",
+      status: "accepted" as const,
+    },
+    context: {
+      accessToken: "token",
+      canvasId: "canvas-1",
+      conversationId: "conversation-1",
+      projectId: "project-1",
+      sessionId: "session-1",
+      threadId: "thread-1",
+      userId: "user-1",
+      workspaceId: "workspace-1",
+    },
+    model: "openai:test",
   };
 }
 
