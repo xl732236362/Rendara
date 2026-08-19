@@ -60,6 +60,7 @@ Introduce an immutable `AuthorizedAgentRunContext` with these fields:
 - `userId`
 - `sessionId`
 - `threadId`
+- `conversationId`
 - `canvasId`
 - `projectId`
 - `workspaceId`
@@ -68,13 +69,18 @@ Introduce an immutable `AuthorizedAgentRunContext` with these fields:
 The context resolver accepts the authenticated principal and run request. It
 must obtain the session and its related canvas/project/workspace scope through
 a single user-scoped query. It rejects missing resources and any mismatch
-between the request's `canvasId`, `conversationId`, and the session's canvas.
-The access token is carried only in memory and must never be serialized or
-logged.
+between the request's `canvasId` and the session's canvas. `conversationId`
+remains an independent conversation/event correlation identifier; it is
+validated by the public request schema but is not treated as a Canvas authority
+identifier. The access token is carried only in memory and must never be
+serialized or logged.
 
-Workspace model resolution may run in parallel with context resolution. A
-workspace settings failure continues to fall back to the configured server
-model, but it is logged with a stable stage and error code.
+Workspace model resolution runs after context resolution and reads settings for
+the canonical `context.workspaceId`. It must not use the viewer's default
+workspace as a substitute. A workspace settings failure continues to fall back
+to the configured server model, but it is logged with a stable stage and error
+code. A client-selected model retains its current precedence and skips the
+workspace settings lookup.
 
 ### Shared entry-point behavior
 
@@ -100,26 +106,81 @@ Idempotency remains keyed by user and client request identity. A repeated
 request with the same digest returns the existing run; a digest mismatch
 returns `agent_acceptance_conflict`.
 
-No acknowledgement is sent before this transaction succeeds. This guarantees
-that every acknowledged run has durable canonical authority and an execution
-attempt. Model streaming begins only after acknowledgement delivery has been
-attempted and the active run has been registered.
+`clientRequestId` identifies one user submission, not one transport attempt.
+The browser generates it once when the user submits a message and retains the
+normalized request until acceptance has a definitive outcome. Connection
+retries and acceptance-timeout retries resend the same request with the same
+`clientRequestId`. A deliberate retry after a terminal Agent/model failure is a
+new submission and receives a new identifier. The retained request excludes
+`accessToken`; each transport attempt obtains and attaches the current token so
+replay does not reuse expired credentials.
+
+The request digest covers the normalized request (excluding `accessToken`) and
+the canonical user/session/Canvas scope. Reconciliation compares this digest
+before an existing run can be reused.
+
+An acceptance transport timeout is an indeterminate result, not proof that the
+database transaction rolled back. After such a timeout, the server performs a
+bounded lookup by `(userId, clientRequestId)`:
+
+- a matching digest returns the existing accepted run;
+- a different digest returns `agent_acceptance_conflict`;
+- no visible row returns `agent_acceptance_indeterminate` and instructs the
+  client to retry only with the same `clientRequestId`.
+
+The same identifier makes a late commit safe: a subsequent acceptance call is
+serialized by the existing advisory lock and returns the original run instead
+of creating a duplicate.
+
+No acknowledgement is sent before the transaction succeeds or reconciliation
+finds the matching durable run. The server then registers or rehydrates that
+run in the in-memory runtime and marks it active for the Canvas before sending
+the acknowledgement. Model streaming begins after the acknowledgement attempt.
+If acknowledgement delivery is lost, reconnect can discover the active run; if
+the process exits before or after acknowledgement, replaying the retained
+request with the same `clientRequestId` rehydrates the durable run.
+
+Runtime registration returns one of three explicit outcomes:
+
+- `created`: this handler owns the new stream execution;
+- `existing_active`: an in-memory execution already owns the stream, so this
+  handler only acknowledges the existing `runId` and never calls `streamRun` or
+  clears its active-run registration;
+- `rehydrated`: no in-memory execution exists, so this handler rebuilds it from
+  the replayed normalized request and becomes the sole stream owner.
+
+Only the handler that owns execution may start, cancel, or clear that active
+runtime entry. This prevents a reconnect or acceptance retry from consuming the
+same async stream twice or clearing another handler's active state.
+
+`agent.run.accepted` remains a lifecycle outbox event, not the execution
+trigger. The domain-event publisher must explicitly support and acknowledge
+this event so it cannot become a permanently retrying poison event. Runtime
+recovery is driven by idempotent request replay because the outbox intentionally
+does not contain prompts, credentials, or attachment content. A failure between
+durable acceptance and runtime registration leaves the row in `accepted`; the
+next same-identifier replay registers it and creates no additional run or
+attempt.
 
 ## Timeouts and Failure Semantics
 
 Apply explicit deadlines at dependency boundaries rather than one opaque
 deadline around the entire handler:
 
-- authorized context resolution: 5 seconds;
-- workspace model/settings enrichment: 5 seconds;
-- acceptance RPC: 5 seconds;
+- authorized context resolution: 4 seconds;
+- workspace model/settings enrichment: 2 seconds, with server-model fallback;
+- acceptance RPC: 4 seconds;
+- acceptance reconciliation after an indeterminate result: 2 seconds;
 - Agent persistence initialization: 10 seconds;
-- first model event: 30 seconds.
+- first model response event: 30 seconds after acknowledgement.
 
 The WebSocket client ACK deadline becomes 15 seconds. This is an outer safety
-limit, not the primary latency mechanism; the two pre-ACK server stages must
-normally complete well within it. Timeouts abort their underlying request when
-the client supports cancellation and must not leave an unobserved promise.
+limit, not the primary latency mechanism. The worst bounded pre-ACK path is 12
+seconds (context, settings, acceptance, then reconciliation), leaving 3 seconds
+for runtime registration and transport delivery. Timeouts abort their
+underlying request when the client supports cancellation and must not leave an
+unobserved promise. Aborting a transport does not change acceptance into a
+known rollback; reconciliation and stable-id replay remain mandatory.
 
 Stable server error codes:
 
@@ -127,17 +188,21 @@ Stable server error codes:
 | --- | --- | --- |
 | `agent_context_timeout` | Scope lookup exceeded its deadline | Yes |
 | `agent_context_forbidden` | Session or canvas is inaccessible or mismatched | No |
-| `agent_acceptance_timeout` | Atomic acceptance did not finish in time | Yes |
+| `agent_acceptance_indeterminate` | Acceptance timed out and reconciliation found no visible result | Yes, same `clientRequestId` only |
 | `agent_acceptance_conflict` | Idempotency key was reused with different input | No |
-| `agent_acceptance_failed` | Acceptance returned an unexpected database error | Conditional |
+| `agent_acceptance_unavailable` | Acceptance returned a definitive transient database error | Yes, same `clientRequestId` only |
+| `agent_acceptance_failed` | Acceptance returned a definitive non-transient database error | No |
+| `agent_runtime_registration_failed` | Durable acceptance exists but runtime registration failed | Yes, same `clientRequestId` only |
 | `agent_persistence_timeout` | LangGraph persistence initialization stalled | Yes |
 | `agent_first_event_timeout` | Model produced no event before its deadline | Yes |
 
 HTTP entry points map these codes to the existing structured application error
-envelope. WebSocket failures use a terminal `run.failed` event when a durable
-run exists and a `command.error` response when acceptance did not create a run.
-The response includes the stable code, a safe user-facing message, and
-`retryable`; it never includes raw upstream errors.
+envelope. WebSocket failures use a terminal `run.failed` event after execution
+has started. Pre-ACK failures use the existing `type: "error"` envelope extended
+with `action: "agent.run"`, `clientRequestId`, `retryable`, and a safe
+`requestId`. The client correlates this envelope to its pending Agent command
+and rejects the ACK wait immediately. The response never includes raw upstream
+errors.
 
 ## Observability
 
@@ -177,7 +242,10 @@ messages selected by stable error code. The UI distinguishes:
 - Agent service or model temporarily unavailable.
 
 Retryable failures expose the existing resend/retry action without duplicating
-the user's message. Non-retryable failures do not offer blind retry. Unknown
+the user's message. Acceptance retries resend the retained normalized request
+with its original `clientRequestId`; they do not append another user message.
+Retries after a terminal Agent/model failure create a new logical submission
+and a new identifier. Non-retryable failures do not offer blind retry. Unknown
 errors retain a localized generic fallback and include a short request ID for
 support correlation.
 
@@ -186,11 +254,13 @@ support correlation.
 ### Unit tests
 
 - The context resolver performs one scope query and rejects every identifier
-  mismatch.
+  mismatch while allowing `conversationId` to differ from `canvasId`.
 - `createAcceptAgentRun` performs no authorization queries and passes the
   canonical context to the repository.
 - Each dependency deadline maps to the correct stable error code and aborts
   pending work.
+- Acceptance reconciliation returns a matching late commit, rejects a digest
+  conflict, and keeps an unresolved result bound to the original identifier.
 - Log serialization removes credentials in headers, query strings, and nested
   objects.
 - Client error mapping renders localized text and the correct retry state.
@@ -200,10 +270,16 @@ support correlation.
 - WebSocket and HTTP entry points produce equivalent acceptance inputs.
 - A deliberately slow scope repository fails within the context deadline.
 - A deliberately slow acceptance repository fails before the client ACK
-  deadline and does not begin model streaming.
+  deadline, reconciles its outcome, and does not create a duplicate run.
 - A successful acceptance sends one ACK, creates one attempt, and begins one
   stream even when the client retries the same request ID.
+- A commit followed by runtime-registration failure is rehydrated by the next
+  same-identifier request without creating another run or attempt.
+- `agent.run.accepted` is acknowledged by the domain-event publisher and does
+  not remain in the retry queue.
 - Reconnection after acknowledgement can recover the active run.
+- A correlated pre-ACK error rejects the matching client wait without waiting
+  for the outer timeout.
 - Full logs from a WebSocket handshake containing sentinel credentials contain
   no sentinel values.
 
@@ -216,9 +292,10 @@ support correlation.
 
 ## Rollout and Verification
 
-1. Land context resolver and acceptance changes behind existing entry points;
-   no feature flag is required because contracts remain backward compatible at
-   the public API boundary.
+1. Land context resolver and acceptance changes behind existing entry points.
+   The request/response HTTP contract remains unchanged. The WebSocket error
+   envelope receives additive correlation fields and therefore requires shared
+   schema, server, and web changes in the same release.
 2. Deploy server and web changes together so new error codes have client
    mappings at launch.
 3. Monitor acceptance stage latency, timeout count, ACK delivery failures, and
@@ -232,13 +309,21 @@ support correlation.
 - Agent ACK latency is below 3 seconds at P95 in the normal local/staging
   environment.
 - Scope resolution performs one user-scoped data query per run request.
-- Acceptance invokes `accept_agent_run` once per logical client request.
-- A database stall produces a stable retryable failure within the configured
-  deadline instead of an indefinite spinner or generic English message.
+- Each transport attempt invokes `accept_agent_run` at most once; repeated
+  attempts with the same logical `clientRequestId` resolve to one durable run
+  and one active execution.
+- Every transport retry for one user submission reuses its original
+  `clientRequestId` and cannot create a second run or attempt.
+- A database stall is reconciled or produces
+  `agent_acceptance_indeterminate` within the configured deadline instead of an
+  indefinite spinner or generic English message.
+- A durable accepted run can be rehydrated after runtime-registration or
+  process failure by replaying the same request identifier.
+- `agent.run.accepted` outbox events are acknowledged rather than repeatedly
+  failing as unsupported aggregates.
 - No complete JWT, bearer token, Supabase key, or provider API key appears in
   application logs.
 - WebSocket and HTTP acceptance paths enforce the same scope and idempotency
   rules.
 - Existing Agent authority, tool-boundary, persistence, and canvas-operation
   test suites continue to pass.
-
