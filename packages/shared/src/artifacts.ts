@@ -12,8 +12,7 @@ const safeArtifactUrlSchema = z
   .min(1)
   .max(4096)
   .refine(
-    (value) =>
-      value.startsWith("https://") || value.startsWith("/api/assets/"),
+    (value) => value.startsWith("https://") || value.startsWith("/api/assets/"),
     { message: "Artifact URL must use HTTPS or an authenticated asset route." },
   );
 

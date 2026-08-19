@@ -280,7 +280,9 @@ export function createCanvasPersistenceCoordinator(
     };
   }
 
-  async function toPending(content: CanvasContent): Promise<PendingCanvasSnapshot> {
+  async function toPending(
+    content: CanvasContent,
+  ): Promise<PendingCanvasSnapshot> {
     const normalized = normalizeDurableCanvasContent(content);
     return {
       content: normalized,
@@ -326,10 +328,7 @@ export function createCanvasPersistenceCoordinator(
         content: pending.content,
         fingerprint: pending.fingerprint,
       });
-      acceptBase(
-        { ...pending, revision: saved.revision },
-        "local",
-      );
+      acceptBase({ ...pending, revision: saved.revision }, "local");
     } catch (error) {
       if (isAmbiguousSaveError(error)) {
         const authoritative = await readAuthoritative();

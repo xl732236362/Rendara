@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createCanvasSyncCoordinator } from "../src/lib/canvas-sync-coordinator";
 import {
   createCanvasPersistenceCoordinator,
   mergeAppendOnlyRemoteContent,
 } from "../src/lib/canvas-persistence";
+import { createCanvasSyncCoordinator } from "../src/lib/canvas-sync-coordinator";
 
 const base = {
   elements: [{ id: "base", version: 1 }],
@@ -16,7 +16,10 @@ describe("canvas sync coordinator", () => {
   it("merges remote-only generated elements with unsaved local edits", () => {
     const local = {
       ...base,
-      elements: [{ id: "base", version: 2 }, { id: "local", version: 1 }],
+      elements: [
+        { id: "base", version: 2 },
+        { id: "local", version: 1 },
+      ],
     };
     const remote = {
       ...base,
