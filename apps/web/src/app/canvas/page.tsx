@@ -6,7 +6,10 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { ImageArtifact, StreamEvent, VideoArtifact } from "@loomic/shared";
 import { BrandKitSelector } from "../../components/brand-kit-selector";
 import { CanvasBottomBar } from "../../components/canvas-bottom-bar";
-import type { CanvasSelectedElement } from "../../components/canvas-editor";
+import type {
+  CanvasPersistenceHandle,
+  CanvasSelectedElement,
+} from "../../components/canvas-editor";
 import { CanvasEditor } from "../../components/canvas-editor";
 import { CanvasEmptyHint } from "../../components/canvas-empty-hint";
 import { CanvasFilesPanel } from "../../components/canvas-files-panel";
@@ -24,7 +27,6 @@ import {
   insertImageOnCanvas,
   insertVideoOnCanvas,
 } from "../../lib/canvas-elements";
-import { createCanvasSyncCoordinator } from "../../lib/canvas-sync-coordinator";
 import { ApiAuthError, fetchCanvas, fetchProject } from "../../lib/server-api";
 
 function CanvasPageContent() {
@@ -66,9 +68,7 @@ function CanvasPageContent() {
   >([]);
 
   const excalidrawApiRef = useRef<any>(null);
-  const canvasSyncCoordinatorRef = useRef<ReturnType<
-    typeof createCanvasSyncCoordinator
-  > | null>(null);
+  const canvasPersistenceRef = useRef<CanvasPersistenceHandle | null>(null);
   const [excalidrawApi, setExcalidrawApi] = useState<any>(null);
 
   const signOutRef = useRef(signOut);
@@ -118,6 +118,13 @@ function CanvasPageContent() {
     setExcalidrawApi(api);
   }, []);
 
+  const handlePersistenceReady = useCallback(
+    (handle: CanvasPersistenceHandle | null) => {
+      canvasPersistenceRef.current = handle;
+    },
+    [],
+  );
+
   const handleImageGenerated = useCallback((artifact: ImageArtifact) => {
     const api = excalidrawApiRef.current;
     const token = accessTokenRef.current;
@@ -138,42 +145,15 @@ function CanvasPageContent() {
   // Must be defined BEFORE useJobFallbackPolling which references it
   const handleCanvasSync = useCallback(
     async (event: Extract<StreamEvent, { type: "canvas.sync" }>) => {
-      const api = excalidrawApiRef.current;
-      const token = accessTokenRef.current;
-      if (!api || !token || !canvasData || event.canvasId !== canvasData.id)
-        return;
+      if (!canvasData || event.canvasId !== canvasData.id) return;
       try {
-        if (!canvasSyncCoordinatorRef.current) {
-          canvasSyncCoordinatorRef.current = createCanvasSyncCoordinator({
-            appliedRevision: canvasData.revision,
-            fetchAndApply: async () => {
-              const { canvas } = await fetchCanvas(token, canvasData.id);
-              const elements = canvas.content.elements ?? [];
-              const files = (canvas.content as Record<string, unknown>).files as
-                | Record<
-                    string,
-                    {
-                      id: string;
-                      dataURL: string;
-                      mimeType: string;
-                      created: number;
-                    }
-                  >
-                | undefined;
-              if (files && Object.keys(files).length > 0) {
-                api.addFiles(Object.values(files));
-              }
-              api.updateScene({ elements, captureUpdate: "IMMEDIATELY" });
-              setCanvasData((current) =>
-                current ? { ...current, revision: canvas.revision } : current,
-              );
-              return canvas.revision;
-            },
-          });
-        }
-        await canvasSyncCoordinatorRef.current.request(event);
+        await canvasPersistenceRef.current?.sync(event);
       } catch (err) {
-        console.warn("Failed to sync canvas:", err);
+        console.warn("[canvas.persistence] sync_failed", {
+          canvasId: event.canvasId,
+          revision: event.revision,
+          errorName: err instanceof Error ? err.name : "UnknownError",
+        });
       }
     },
     [canvasData],
@@ -254,7 +234,7 @@ function CanvasPageContent() {
             files: (c.content as any).files ?? {},
           },
         });
-        canvasSyncCoordinatorRef.current = null;
+        canvasPersistenceRef.current = null;
         setPageLoading(false);
         // Fetch project to get brand_kit_id and name
         fetchProject(token, c.projectId)
@@ -279,6 +259,36 @@ function CanvasPageContent() {
     // canvasId changes. Token refresh (e.g. tab switch) must NOT trigger a reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, userId, canvasId, handleAuthExpired]);
+
+  useEffect(() => {
+    const reconcileOnFocus = () => {
+      void canvasPersistenceRef.current?.reconcile("focus");
+    };
+    window.addEventListener("focus", reconcileOnFocus);
+    return () => window.removeEventListener("focus", reconcileOnFocus);
+  }, []);
+
+  const previouslyConnectedRef = useRef(false);
+  useEffect(() => {
+    if (ws.connected && !previouslyConnectedRef.current) {
+      void canvasPersistenceRef.current?.reconcile("reconnect");
+    }
+    previouslyConnectedRef.current = ws.connected;
+  }, [ws.connected]);
+
+  const handleStreamEvent = useCallback(
+    (event: StreamEvent) => {
+      checkForTimedOutJobs(event);
+      if (
+        event.type === "run.completed" ||
+        event.type === "run.failed" ||
+        event.type === "run.canceled"
+      ) {
+        void canvasPersistenceRef.current?.reconcile("run_terminal");
+      }
+    },
+    [checkForTimedOutJobs],
+  );
 
   if (!canvasId) {
     return (
@@ -338,6 +348,7 @@ function CanvasPageContent() {
           initialRevision={canvasData.revision}
           initialContent={canvasData.content}
           onApiReady={handleApiReady}
+          onPersistenceReady={handlePersistenceReady}
           ws={ws}
           leftPanelOpen={layersOpen || filesOpen}
           onSelectionChange={setSelectedCanvasElements}
@@ -373,7 +384,7 @@ function CanvasPageContent() {
         onImageGenerated={handleImageGenerated}
         onVideoGenerated={handleVideoGenerated}
         onCanvasSync={handleCanvasSync}
-        onStreamEvent={checkForTimedOutJobs}
+        onStreamEvent={handleStreamEvent}
         initialPrompt={initialPrompt}
         initialSessionId={initialSessionId}
         onSessionChange={handleSessionChange}
