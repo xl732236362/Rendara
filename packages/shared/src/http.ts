@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { agentErrorCodeValues } from "./errors.js";
 
 import {
   assetObjectSchema,
@@ -125,6 +126,7 @@ export const applicationErrorCodeSchema = z.enum([
   "subscription_update_failed",
   "webhook_processing_failed",
   "generation_failed",
+  ...agentErrorCodeValues,
 ]);
 
 export const boundaryErrorCodeSchema = z.union([

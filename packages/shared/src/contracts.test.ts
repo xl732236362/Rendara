@@ -5,12 +5,15 @@ import type { ZodType } from "zod";
 
 import {
   type Database,
+  boundaryErrorCodeSchema,
+  errorCodeSchema,
   errorCodeValues,
   healthResponseSchema,
   runCancelResponseSchema,
   runCreateRequestSchema,
   runCreateResponseSchema,
   streamEventSchema,
+  wsErrorMessageSchema,
 } from "./index.js";
 import * as sharedExports from "./index.js";
 
@@ -76,6 +79,52 @@ describe("@loomic/shared contracts", () => {
       },
     ]) {
       expect(schema.parse({ error })).toEqual({ error });
+    }
+  });
+
+  it("accepts Agent acceptance boundary codes", () => {
+    for (const code of [
+      "agent_context_timeout",
+      "agent_context_unavailable",
+      "agent_context_forbidden",
+      "agent_acceptance_indeterminate",
+      "agent_acceptance_conflict",
+      "agent_acceptance_unavailable",
+      "agent_acceptance_failed",
+      "agent_runtime_registration_failed",
+      "agent_persistence_timeout",
+      "agent_first_event_timeout",
+    ] as const) {
+      expect(boundaryErrorCodeSchema.parse(code)).toBe(code);
+    }
+  });
+
+  it("parses a correlated pre-ACK Agent error", () => {
+    expect(
+      wsErrorMessageSchema.parse({
+        type: "error",
+        action: "agent.run",
+        clientRequestId: "request-1",
+        requestId: "req-1",
+        retryable: true,
+        error: {
+          code: "agent_acceptance_indeterminate",
+          message: "Agent acceptance is still being confirmed.",
+        },
+      }),
+    ).toMatchObject({
+      action: "agent.run",
+      clientRequestId: "request-1",
+      retryable: true,
+    });
+  });
+
+  it("accepts stable terminal Agent timeout codes", () => {
+    for (const code of [
+      "agent_persistence_timeout",
+      "agent_first_event_timeout",
+    ] as const) {
+      expect(errorCodeSchema.parse(code)).toBe(code);
     }
   });
 
@@ -834,6 +883,16 @@ describe("@loomic/shared contracts", () => {
       "run_conflict",
       "run_failed",
       "tool_failed",
+      "agent_context_timeout",
+      "agent_context_unavailable",
+      "agent_context_forbidden",
+      "agent_acceptance_indeterminate",
+      "agent_acceptance_conflict",
+      "agent_acceptance_unavailable",
+      "agent_acceptance_failed",
+      "agent_runtime_registration_failed",
+      "agent_persistence_timeout",
+      "agent_first_event_timeout",
     ]);
     expect(JSON.parse(JSON.stringify(errorCodeValues))).toEqual(
       errorCodeValues,
