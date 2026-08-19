@@ -1,6 +1,9 @@
 import { z } from "zod";
 
-import { toolArtifactSchema } from "./artifacts.js";
+import {
+  generatedAssetRecoverySchema,
+  toolArtifactSchema,
+} from "./artifacts.js";
 import { brandKitAssetTypeSchema } from "./brand-kit-contracts.js";
 
 export const identifierSchema = z.string().min(1);
@@ -157,11 +160,20 @@ export const chatSessionIdSchema = identifierSchema;
 export const chatToolActivitySchema = z.object({
   toolCallId: z.string().min(1),
   toolName: z.string().min(1),
-  status: z.enum(["running", "completed"]),
+  status: z.enum(["running", "completed", "failed"]),
   input: z.record(z.string(), z.unknown()).optional(),
   output: z.record(z.string(), z.unknown()).optional(),
   outputSummary: z.string().optional(),
-  artifacts: z.array(toolArtifactSchema).optional(),
+  artifacts: z.array(toolArtifactSchema).max(10).optional(),
+  error: z
+    .object({
+      code: z.string().min(1).max(64),
+      message: z.string().min(1).max(512),
+      correlationId: identifierSchema,
+    })
+    .strict()
+    .optional(),
+  recovery: generatedAssetRecoverySchema.optional(),
 });
 
 export const chatSessionSummarySchema = z.object({
@@ -184,11 +196,20 @@ export const toolBlockSchema = z.object({
   type: z.literal("tool"),
   toolCallId: z.string().min(1),
   toolName: z.string().min(1),
-  status: z.enum(["running", "completed"]),
+  status: z.enum(["running", "completed", "failed"]),
   input: z.record(z.string(), z.unknown()).optional(),
   output: z.record(z.string(), z.unknown()).optional(),
   outputSummary: z.string().optional(),
-  artifacts: z.array(toolArtifactSchema).optional(),
+  artifacts: z.array(toolArtifactSchema).max(10).optional(),
+  error: z
+    .object({
+      code: z.string().min(1).max(64),
+      message: z.string().min(1).max(512),
+      correlationId: identifierSchema,
+    })
+    .strict()
+    .optional(),
+  recovery: generatedAssetRecoverySchema.optional(),
 });
 
 export const imageBlockSchema = z.object({

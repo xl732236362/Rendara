@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { generatedAssetAttachmentStatusSchema } from "./artifacts.js";
+
 // --- Enums ---
 
 export const backgroundJobStatusSchema = z.enum([
@@ -223,3 +225,34 @@ export const jobListResponseSchema = z.object({
   jobs: z.array(backgroundJobSchema),
 });
 export type JobListResponse = z.infer<typeof jobListResponseSchema>;
+
+export const generatedAssetAttachmentStatusResponseSchema = z
+  .object({
+    attachment: generatedAssetAttachmentStatusSchema,
+  })
+  .strict();
+export type GeneratedAssetAttachmentStatusResponse = z.infer<
+  typeof generatedAssetAttachmentStatusResponseSchema
+>;
+
+export const generatedAssetAttachmentListResponseSchema = z
+  .object({
+    attachments: z.array(generatedAssetAttachmentStatusSchema).max(100),
+  })
+  .strict();
+export type GeneratedAssetAttachmentListResponse = z.infer<
+  typeof generatedAssetAttachmentListResponseSchema
+>;
+
+export const retryGeneratedAssetAttachmentRequestSchema = z
+  .object({ canvasId: z.string().uuid() })
+  .strict();
+export type RetryGeneratedAssetAttachmentRequest = z.infer<
+  typeof retryGeneratedAssetAttachmentRequestSchema
+>;
+
+export const retryGeneratedAssetAttachmentResponseSchema =
+  generatedAssetAttachmentStatusResponseSchema;
+export type RetryGeneratedAssetAttachmentResponse = z.infer<
+  typeof retryGeneratedAssetAttachmentResponseSchema
+>;

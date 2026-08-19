@@ -1,6 +1,9 @@
 import { z } from "zod";
 
-import { toolArtifactSchema } from "./artifacts.js";
+import {
+  generatedAssetRecoverySchema,
+  toolArtifactSchema,
+} from "./artifacts.js";
 import {
   canvasIdSchema,
   conversationIdSchema,
@@ -17,9 +20,15 @@ export {
   imageArtifactSchema,
   videoArtifactSchema,
   placementSchema,
+  generatedAssetAttachmentStatusSchema,
+  generatedAssetErrorSchema,
+  generatedAssetRecoverySchema,
   toolArtifactSchema,
 } from "./artifacts.js";
 export type {
+  GeneratedAssetAttachmentStatus,
+  GeneratedAssetError,
+  GeneratedAssetRecovery,
   ImageArtifact,
   VideoArtifact,
   Placement,
@@ -76,6 +85,8 @@ export const toolFailedEventSchema = z.object({
   toolCallId: toolCallIdSchema,
   toolName: z.string().min(1),
   error: publicToolErrorSchema,
+  recovery: generatedAssetRecoverySchema.optional(),
+  artifacts: z.array(toolArtifactSchema).max(10).optional(),
   timestamp: timestampSchema,
 });
 
