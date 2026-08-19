@@ -787,7 +787,7 @@ git commit -m "feat(web): recover unattached generated media"
 - Create or Modify: `tests/canvas-generated-asset-reliability.spec.ts`
 - Modify: `docs/superpowers/plans/2026-08-19-canvas-generated-asset-reliability.md`
 
-- [ ] **Step 1: Add the browser regression**
+- [x] **Step 1: Add the browser regression**
 
 Automate the original sequence with deterministic provider fixtures: open an idle populated canvas, wait beyond two legacy save intervals, verify revision is unchanged, start Agent image generation, inject a concurrent local edit, wait for attachment/sync/run terminal, verify one generated element plus the local edit, and immediately send a second message.
 
@@ -799,7 +799,7 @@ await expect(page.locator('[data-element-id="generated-job-id"]')).toHaveCount(1
 await expect(page.getByRole("button", { name: /send/i })).toBeEnabled();
 ```
 
-- [ ] **Step 2: Run the regression against local services**
+- [x] **Step 2: Run the regression against local services**
 
 Run: `pnpm test:e2e -- tests/canvas-generated-asset-reliability.spec.ts`
 
@@ -825,3 +825,19 @@ Confirm every acceptance criterion in `docs/superpowers/specs/2026-08-19-canvas-
 git add tests/canvas-generated-asset-reliability.spec.ts docs/superpowers/plans/2026-08-19-canvas-generated-asset-reliability.md
 git commit -m "test: verify generated asset reliability flow"
 ```
+
+#### Task 11 Execution Record
+
+- The regression lives at
+  `tests/e2e/canvas-generated-asset-reliability.spec.ts` and uses the
+  deterministic provider/worker fixture at `tests/e2e/fixtures/agent-provider.mjs`.
+- The isolated local Supabase project must map `status -o env`'s `DB_URL` to
+  `SUPABASE_DB_URL`; omitting that mapping made the worker poll a different
+  database. No additional `service_role` PGMQ grants were required because the
+  worker connects with the database URL.
+- Fresh isolated database evidence on 2026-08-20: 6 pgTAP files and 157 tests
+  passed after reset.
+- Focused browser evidence on 2026-08-20: 1 test passed, covering idle revision
+  stability, a concurrent local ellipse, exactly one generated image, readable
+  generated image bytes, preserved seed content, and an immediately accepted
+  follow-up message.
