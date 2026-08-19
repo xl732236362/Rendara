@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 
 import type { AttachGeneratedAssetCommand } from "../../application/canvas/attach-generated-asset.js";
+import type { GeneratedAssetAttachmentRecovery } from "../../application/canvas/attach-generated-asset.js";
 import type { AdminSupabaseClient } from "../../supabase/admin.js";
 import type { UserSupabaseClient } from "../../supabase/user.js";
 import {
@@ -12,6 +13,28 @@ import {
 import { createCanvasRepository } from "./canvas-repository.js";
 import type { GeneratedAssetAttachmentPreparation } from "./generated-asset-attachment-reconciler.js";
 import type { GeneratedAssetAttachmentIntent } from "./generated-asset-attachment-repository.js";
+import { createGeneratedAssetAttachmentRepository } from "./generated-asset-attachment-repository.js";
+
+export function createGeneratedAssetAttachmentRecoveryPort(options: {
+  getAdminClient(): AdminSupabaseClient;
+}): GeneratedAssetAttachmentRecovery {
+  const repository = createGeneratedAssetAttachmentRepository(options);
+  return {
+    getStatus(principal, command) {
+      return repository.getStatus({ ...principal, ...command });
+    },
+    listOutstanding(principal, command) {
+      return repository.listOutstanding({
+        ...principal,
+        ...command,
+        limit: 100,
+      });
+    },
+    retry(principal, command) {
+      return repository.retry({ ...principal, ...command });
+    },
+  };
+}
 
 const sourceJobSchema = z.object({
   id: z.string().uuid(),

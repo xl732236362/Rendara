@@ -5,8 +5,11 @@ import {
   ApiApplicationError,
   createProject,
   createRun,
+  fetchGeneratedAssetAttachment,
+  fetchOutstandingGeneratedAssetAttachments,
   fetchProjects,
   fetchViewer,
+  retryGeneratedAssetAttachment,
   saveCanvas,
 } from "../src/lib/server-api";
 
@@ -237,5 +240,62 @@ describe("authenticated server API", () => {
     });
 
     await expect(fetchProjects("expired")).rejects.toThrow("unauthorized");
+  });
+
+  it("reads, lists and retries generated asset attachments with bearer auth", async () => {
+    const jobId = "33333333-3333-4333-8333-333333333333";
+    const canvasId = "44444444-4444-4444-8444-444444444444";
+    const sessionId = "55555555-5555-4555-8555-555555555555";
+    const attachment = {
+      attachmentStatus: "pending",
+      jobId,
+      recovery: { kind: "watch_generated_asset", jobId, canvasId },
+      error: {
+        code: "generated_asset_pending",
+        message: "Generated media is still being attached.",
+        retryable: true,
+      },
+    };
+    mockFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ attachment }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ attachments: [attachment] }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ attachment }),
+      });
+
+    await fetchGeneratedAssetAttachment("token_abc", canvasId, jobId);
+    await fetchOutstandingGeneratedAssetAttachments(
+      "token_abc",
+      canvasId,
+      sessionId,
+    );
+    await retryGeneratedAssetAttachment("token_abc", canvasId, jobId);
+
+    expect(mockFetch.mock.calls.map(([url]) => url)).toEqual([
+      `http://localhost:3001/api/jobs/${jobId}/attachment?canvasId=${canvasId}`,
+      `http://localhost:3001/api/canvases/${canvasId}/generated-asset-attachments?sessionId=${sessionId}`,
+      `http://localhost:3001/api/jobs/${jobId}/attachment/retry`,
+    ]);
+    expect(mockFetch.mock.calls[2]?.[1]).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ canvasId }),
+      }),
+    );
+    for (const call of mockFetch.mock.calls) {
+      expect(new Headers(call[1]?.headers).get("authorization")).toBe(
+        "Bearer token_abc",
+      );
+    }
   });
 });

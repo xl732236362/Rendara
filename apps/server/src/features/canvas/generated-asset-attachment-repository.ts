@@ -1,3 +1,7 @@
+import {
+  type GeneratedAssetAttachmentStatus,
+  generatedAssetAttachmentStatusSchema,
+} from "@loomic/shared";
 import { z } from "zod";
 
 import { AppError, type AppErrorCode } from "../../errors/app-error.js";
@@ -86,7 +90,113 @@ type RpcError = {
 export function createGeneratedAssetAttachmentRepository(options: {
   getAdminClient(): AdminSupabaseClient;
 }) {
+  async function getStatus(command: {
+    userId: string;
+    workspaceId: string;
+    canvasId: string;
+    jobId: string;
+  }): Promise<GeneratedAssetAttachmentStatus> {
+    const { data, error } = await callRpc(
+      options.getAdminClient(),
+      "get_generated_asset_attachment_status",
+      {
+        p_user_id: command.userId,
+        p_workspace_id: command.workspaceId,
+        p_canvas_id: command.canvasId,
+        p_job_id: command.jobId,
+      },
+    );
+    if (error) throw mapRpcError(error);
+    return parseRpcResult(
+      generatedAssetAttachmentStatusSchema,
+      data,
+      "attachment status",
+    );
+  }
+
   return {
+    getStatus,
+
+    async heartbeat(command: { workerId: string; now: Date }): Promise<void> {
+      const { data, error } = await callRpc(
+        options.getAdminClient(),
+        "heartbeat_generated_asset_attachment_worker",
+        {
+          p_worker_id: command.workerId,
+          p_now: command.now.toISOString(),
+        },
+      );
+      if (error) throw mapRpcError(error);
+      parseRpcResult(z.literal(true), data, "attachment worker heartbeat");
+    },
+
+    async isInfrastructureReady(command: {
+      now: Date;
+      maxHeartbeatAgeSeconds: number;
+    }): Promise<boolean> {
+      const { data, error } = await callRpc(
+        options.getAdminClient(),
+        "generated_asset_attachment_infrastructure_ready",
+        {
+          p_now: command.now.toISOString(),
+          p_max_heartbeat_age_seconds: command.maxHeartbeatAgeSeconds,
+        },
+      );
+      if (error) throw mapRpcError(error);
+      return parseRpcResult(
+        z.boolean(),
+        data,
+        "attachment infrastructure readiness",
+      );
+    },
+
+    async listOutstanding(command: {
+      userId: string;
+      workspaceId: string;
+      canvasId: string;
+      sessionId: string;
+      limit: number;
+    }): Promise<GeneratedAssetAttachmentStatus[]> {
+      const { data, error } = await callRpc(
+        options.getAdminClient(),
+        "list_generated_asset_attachment_statuses",
+        {
+          p_user_id: command.userId,
+          p_workspace_id: command.workspaceId,
+          p_canvas_id: command.canvasId,
+          p_session_id: command.sessionId,
+          p_limit: command.limit,
+        },
+      );
+      if (error) throw mapRpcError(error);
+      return parseRpcResult(
+        z.array(generatedAssetAttachmentStatusSchema).max(100),
+        data,
+        "attachment status list",
+      );
+    },
+
+    async retry(command: {
+      userId: string;
+      workspaceId: string;
+      canvasId: string;
+      jobId: string;
+    }): Promise<GeneratedAssetAttachmentStatus> {
+      const current = await getStatus(command);
+      if (current.attachmentStatus === "attached") return current;
+      const { error } = await callRpc(
+        options.getAdminClient(),
+        "retry_generated_asset_attachment",
+        {
+          p_user_id: command.userId,
+          p_canvas_id: command.canvasId,
+          p_job_id: command.jobId,
+        },
+      );
+      if (error) throw mapRpcError(error);
+      return getStatus(command);
+    },
+
     async claim(command: {
       workerId: string;
       limit: number;

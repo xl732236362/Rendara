@@ -937,16 +937,12 @@ describe("Agent runtime application wiring", () => {
         },
       });
       let submitImageJob: SubmitImageJobFn | undefined;
-      const attachGeneratedAsset = vi.fn(async () => ({
-        elementId: "element-1",
-      }));
       const service = createAgentRunService({
         agentExecutionRepository: repository,
         agentFactory: ((options: { submitImageJob?: SubmitImageJobFn }) => {
           submitImageJob = options.submitImageJob;
           return { async *streamEvents() {}, async *stream() {} };
         }) as never,
-        attachGeneratedAsset: attachGeneratedAsset as never,
         builtinSkillCatalog: { digest: "catalog-1", list: () => [] } as never,
         createUserClient: (() =>
           canvasWorkspaceClient({
@@ -999,7 +995,6 @@ describe("Agent runtime application wiring", () => {
           aspectRatio: "1:1",
         }),
       ).rejects.toThrow("run_not_active");
-      expect(attachGeneratedAsset).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

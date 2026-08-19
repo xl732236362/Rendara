@@ -41,6 +41,7 @@ function setup(
   } = {},
 ) {
   const repository = {
+    heartbeat: vi.fn(async () => undefined),
     claim: vi.fn(overrides.claim ?? (async () => [intent])),
     fulfill: vi.fn(async () => ({
       attachmentStatus: "attached" as const,
@@ -94,6 +95,13 @@ describe("generated asset attachment reconciler", () => {
     });
     expect(repository.claim).toHaveBeenCalledWith(
       expect.objectContaining({ leaseSeconds: 30 }),
+    );
+    expect(repository.heartbeat).toHaveBeenCalledWith({
+      workerId: "worker-1",
+      now: new Date("2026-08-20T01:00:00.000Z"),
+    });
+    expect(repository.heartbeat.mock.invocationCallOrder[0]).toBeLessThan(
+      repository.claim.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
     );
     expect(repository.fulfill).toHaveBeenCalledWith(
       expect.objectContaining({

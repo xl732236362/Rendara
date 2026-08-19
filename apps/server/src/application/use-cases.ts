@@ -1,5 +1,8 @@
 import type { ApplyCanvasOperations } from "./canvas/apply-canvas-operations.js";
-import type { AttachGeneratedAsset } from "./canvas/attach-generated-asset.js";
+import type {
+  AttachGeneratedAsset,
+  GeneratedAssetAttachmentRecovery,
+} from "./canvas/attach-generated-asset.js";
 import type { CancelGeneration } from "./generation/cancel-generation.js";
 import type { SubmitGeneration } from "./generation/submit-generation.js";
 
@@ -8,6 +11,7 @@ export interface UseCases {
   readonly canvas: Readonly<{
     applyOperations: ApplyCanvasOperations;
     attachGeneratedAsset: AttachGeneratedAsset;
+    generatedAssetAttachments?: GeneratedAssetAttachmentRecovery;
   }>;
   readonly generation?: Readonly<{
     cancel: CancelGeneration;

@@ -31,7 +31,7 @@ type ReconcilerLogger = {
 export function createGeneratedAssetAttachmentReconciler(options: {
   repository: Pick<
     GeneratedAssetAttachmentRepository,
-    "claim" | "fulfill" | "settle"
+    "claim" | "fulfill" | "heartbeat" | "settle"
   >;
   templates: {
     prepare(
@@ -84,11 +84,16 @@ export function createGeneratedAssetAttachmentReconciler(options: {
   };
 
   async function runScan(): Promise<ReconciliationSummary> {
+    const scanNow = now();
+    await options.repository.heartbeat({
+      workerId: options.workerId,
+      now: scanNow,
+    });
     const claimed = await options.repository.claim({
       workerId: options.workerId,
       limit: batchSize,
       leaseSeconds: claimLeaseSeconds,
-      now: now(),
+      now: scanNow,
     });
     const summary: ReconciliationSummary = {
       claimed: claimed.length,

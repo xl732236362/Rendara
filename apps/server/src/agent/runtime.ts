@@ -25,7 +25,7 @@ import {
   runWithDeadline,
 } from "../application/agent/agent-run-errors.js";
 import type { ApplyCanvasOperations } from "../application/canvas/apply-canvas-operations.js";
-import type { AttachGeneratedAsset } from "../application/canvas/attach-generated-asset.js";
+import type { GeneratedAssetAttachmentRecovery } from "../application/canvas/attach-generated-asset.js";
 import type {
   AgentAttachmentContext,
   AgentAttachmentPlacement,
@@ -260,7 +260,7 @@ type CreateAgentRuntimeOptions = {
   builtinSkillCatalog?: BuiltinSkillCatalog;
   agentPersistenceService?: AgentPersistenceService;
   applyCanvasOperations?: ApplyCanvasOperations;
-  attachGeneratedAsset?: AttachGeneratedAsset;
+  generatedAssetAttachments?: GeneratedAssetAttachmentRecovery;
   agentFactory?: LoomicAgentFactory;
   agentRunMetadataService?: AgentRunMetadataService;
   connectionManager?: ConnectionManager;
@@ -765,22 +765,15 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               };
               const completed =
                 canMutateCanvas && canvasId
-                  ? {
-                      attachmentStatus: "pending" as const,
-                      jobId: job.id,
-                      artifact,
-                      recovery: {
-                        kind: "watch_generated_asset" as const,
-                        jobId: job.id,
-                        canvasId,
-                      },
-                      error: {
-                        code: "generated_asset_pending",
-                        message:
-                          "Generated media is still being attached to the canvas.",
-                        retryable: true,
-                      },
-                    }
+                  ? options.generatedAssetAttachments
+                    ? {
+                        ...(await options.generatedAssetAttachments.getStatus(
+                          { userId, workspaceId, accessToken },
+                          { canvasId, jobId: job.id },
+                        )),
+                        artifact,
+                      }
+                    : pendingAttachmentResult(job.id, canvasId, artifact)
                   : {
                       attachmentStatus: "not_requested" as const,
                       jobId: job.id,
@@ -943,22 +936,15 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               };
               const completed =
                 canMutateCanvas && canvasId
-                  ? {
-                      attachmentStatus: "pending" as const,
-                      jobId: job.id,
-                      artifact,
-                      recovery: {
-                        kind: "watch_generated_asset" as const,
-                        jobId: job.id,
-                        canvasId,
-                      },
-                      error: {
-                        code: "generated_asset_pending",
-                        message:
-                          "Generated media is still being attached to the canvas.",
-                        retryable: true,
-                      },
-                    }
+                  ? options.generatedAssetAttachments
+                    ? {
+                        ...(await options.generatedAssetAttachments.getStatus(
+                          { userId, workspaceId, accessToken },
+                          { canvasId, jobId: job.id },
+                        )),
+                        artifact,
+                      }
+                    : pendingAttachmentResult(job.id, canvasId, artifact)
                   : {
                       attachmentStatus: "not_requested" as const,
                       jobId: job.id,
@@ -1398,6 +1384,28 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         );
         return;
       }
+    },
+  };
+}
+
+function pendingAttachmentResult<T extends Record<string, unknown>>(
+  jobId: string,
+  canvasId: string,
+  artifact: T,
+) {
+  return {
+    attachmentStatus: "pending" as const,
+    jobId,
+    artifact,
+    recovery: {
+      kind: "watch_generated_asset" as const,
+      jobId,
+      canvasId,
+    },
+    error: {
+      code: "generated_asset_pending",
+      message: "Generated media is still being attached to the canvas.",
+      retryable: true,
     },
   };
 }

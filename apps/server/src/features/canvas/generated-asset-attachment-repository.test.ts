@@ -46,7 +46,9 @@ const claimedIntent = {
 };
 
 function setup(results: Array<{ data: unknown; error: unknown }>) {
-  const rpc = vi.fn(async () => results.shift());
+  const rpc = vi.fn(async (_name: string, _args: Record<string, unknown>) =>
+    results.shift(),
+  );
   return {
     rpc,
     repository: createGeneratedAssetAttachmentRepository({
@@ -156,4 +158,147 @@ describe("generated asset attachment repository", () => {
       }),
     ).rejects.toMatchObject({ code: "application_error", expose: false });
   });
+
+  it("reads status through a fully scoped authorization RPC", async () => {
+    const pending = pendingStatus();
+    const { repository, rpc } = setup([{ data: pending, error: null }]);
+
+    await expect(repository.getStatus(scope())).resolves.toEqual(pending);
+    expect(rpc).toHaveBeenCalledWith("get_generated_asset_attachment_status", {
+      p_user_id: ids.user,
+      p_workspace_id: ids.workspace,
+      p_canvas_id: ids.canvas,
+      p_job_id: ids.job,
+    });
+  });
+
+  it("lists bounded outstanding statuses for one authorized session", async () => {
+    const pending = pendingStatus();
+    const { repository, rpc } = setup([{ data: [pending], error: null }]);
+
+    await expect(
+      repository.listOutstanding({
+        userId: ids.user,
+        workspaceId: ids.workspace,
+        canvasId: ids.canvas,
+        sessionId: ids.session,
+        limit: 100,
+      }),
+    ).resolves.toEqual([pending]);
+    expect(rpc).toHaveBeenCalledWith(
+      "list_generated_asset_attachment_statuses",
+      {
+        p_user_id: ids.user,
+        p_workspace_id: ids.workspace,
+        p_canvas_id: ids.canvas,
+        p_session_id: ids.session,
+        p_limit: 100,
+      },
+    );
+  });
+
+  it("retries a failed intent after scope authorization and re-reads status", async () => {
+    const failed = {
+      attachmentStatus: "not_attached",
+      jobId: ids.job,
+      recovery: {
+        kind: "attach_generated_asset",
+        jobId: ids.job,
+        canvasId: ids.canvas,
+      },
+      error: {
+        code: "attachment_failed",
+        message: "Generated media was not attached.",
+        retryable: true,
+      },
+    };
+    const pending = pendingStatus();
+    const { repository, rpc } = setup([
+      { data: failed, error: null },
+      { data: { state: "pending" }, error: null },
+      { data: pending, error: null },
+    ]);
+
+    await expect(repository.retry(scope())).resolves.toEqual(pending);
+    expect(rpc.mock.calls.map(([name]) => name)).toEqual([
+      "get_generated_asset_attachment_status",
+      "retry_generated_asset_attachment",
+      "get_generated_asset_attachment_status",
+    ]);
+  });
+
+  it("replays an attached result without scheduling another retry", async () => {
+    const attached = {
+      attachmentStatus: "attached",
+      jobId: ids.job,
+      elementId: ids.job,
+      canvasRevision: 9,
+    };
+    const { repository, rpc } = setup([{ data: attached, error: null }]);
+
+    await expect(repository.retry(scope())).resolves.toEqual(attached);
+    expect(rpc).toHaveBeenCalledTimes(1);
+  });
+
+  it("registers worker heartbeats and probes infrastructure readiness", async () => {
+    const { repository, rpc } = setup([
+      { data: true, error: null },
+      { data: true, error: null },
+    ]);
+
+    await expect(
+      repository.heartbeat({
+        workerId: "worker-1",
+        now: new Date("2026-08-20T01:00:00.000Z"),
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      repository.isInfrastructureReady({
+        now: new Date("2026-08-20T01:00:00.000Z"),
+        maxHeartbeatAgeSeconds: 30,
+      }),
+    ).resolves.toBe(true);
+    expect(rpc.mock.calls).toEqual([
+      [
+        "heartbeat_generated_asset_attachment_worker",
+        {
+          p_worker_id: "worker-1",
+          p_now: "2026-08-20T01:00:00.000Z",
+        },
+      ],
+      [
+        "generated_asset_attachment_infrastructure_ready",
+        {
+          p_now: "2026-08-20T01:00:00.000Z",
+          p_max_heartbeat_age_seconds: 30,
+        },
+      ],
+    ]);
+  });
 });
+
+function scope() {
+  return {
+    userId: ids.user,
+    workspaceId: ids.workspace,
+    canvasId: ids.canvas,
+    jobId: ids.job,
+  };
+}
+
+function pendingStatus() {
+  return {
+    attachmentStatus: "pending" as const,
+    jobId: ids.job,
+    recovery: {
+      kind: "watch_generated_asset" as const,
+      jobId: ids.job,
+      canvasId: ids.canvas,
+    },
+    error: {
+      code: "generated_asset_pending",
+      message: "Generated media is still being attached.",
+      retryable: true,
+    },
+  };
+}
