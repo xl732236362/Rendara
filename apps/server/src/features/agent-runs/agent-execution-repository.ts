@@ -49,6 +49,7 @@ export interface AgentExecutionRepository {
     readonly userId: string;
   }): Promise<PersistedAgentAcceptance | null>;
   claimAttempt(input: AttemptClaim): Promise<AttemptLease>;
+  finalizeRun(input: FinalizeAgentRun): Promise<FinalizedAgentRun>;
   beginEffect(input: AgentEffectRequest): Promise<AgentEffectReservation>;
   completeEffect(
     input: AgentEffectRequest & { result: unknown },
@@ -67,6 +68,21 @@ export interface AgentExecutionRepository {
   reserveSkillRead(
     input: SkillReadReservation,
   ): Promise<SkillReadReservationResult>;
+}
+
+export type AgentTerminalStatus = "completed" | "failed" | "canceled";
+
+export interface FinalizeAgentRun {
+  readonly runId: string;
+  readonly attemptId: string;
+  readonly fencingToken: number;
+  readonly status: AgentTerminalStatus;
+  readonly metadata: Readonly<Record<string, unknown>>;
+}
+
+export interface FinalizedAgentRun {
+  readonly status: AgentTerminalStatus;
+  readonly completedAt: Date;
 }
 
 export interface AttemptClaim {
@@ -136,11 +152,14 @@ interface StoredAcceptance {
   readonly model?: string;
   readonly requestDigest: string;
   context: Readonly<AgentExecutionContext>;
+  runStatus: "accepted" | "running" | AgentTerminalStatus;
+  completedAt?: Date;
   attempt: {
     readonly attemptId: string;
-    status: "accepted" | "running" | "cancelled";
+    status: "accepted" | "running" | "cancelled" | AgentTerminalStatus;
     leaseOwner?: string;
     leaseExpiresAt?: Date;
+    completedAt?: Date;
     fencingToken: number;
   };
   readonly outbox: readonly {
@@ -179,14 +198,22 @@ export class MemoryAgentExecutionRepository
     runId: string,
   ): Promise<Readonly<AgentExecutionContext> | null> {
     const stored = this.#byRun.get(runId);
-    return stored && stored.attempt.status !== "cancelled"
+    return stored &&
+      (stored.attempt.status === "accepted" ||
+        stored.attempt.status === "running")
       ? stored.context
       : null;
   }
 
   async getAttemptState(runId: string): Promise<AttemptState | null> {
     const stored = this.#byRun.get(runId);
-    if (!stored || stored.attempt.status === "cancelled") return null;
+    if (
+      !stored ||
+      (stored.attempt.status !== "accepted" &&
+        stored.attempt.status !== "running")
+    ) {
+      return null;
+    }
     return {
       attemptId: stored.attempt.attemptId,
       status: stored.attempt.status,
@@ -215,6 +242,7 @@ export class MemoryAgentExecutionRepository
       ...(input.model ? { model: input.model } : {}),
       requestDigest: input.requestDigest,
       context: input.context,
+      runStatus: "accepted",
       attempt: {
         attemptId: input.context.attemptId,
         status: "accepted" as const,
@@ -272,7 +300,38 @@ export class MemoryAgentExecutionRepository
       leaseExpiresAt,
       fencingToken,
     };
+    stored.runStatus = "running";
     return { attemptId: input.attemptId, fencingToken, leaseExpiresAt };
+  }
+
+  async finalizeRun(input: FinalizeAgentRun): Promise<FinalizedAgentRun> {
+    const stored = this.#byRun.get(input.runId);
+    if (!stored || stored.attempt.attemptId !== input.attemptId) {
+      throw new Error("agent_attempt_not_current");
+    }
+    if (stored.completedAt && isAgentTerminalStatus(stored.runStatus)) {
+      return {
+        status: stored.runStatus,
+        completedAt: new Date(stored.completedAt),
+      };
+    }
+    if (
+      stored.attempt.status !== "running" ||
+      stored.attempt.fencingToken !== input.fencingToken
+    ) {
+      throw new Error("run_not_active");
+    }
+
+    const completedAt = new Date();
+    stored.runStatus = input.status;
+    stored.completedAt = completedAt;
+    stored.attempt = {
+      attemptId: input.attemptId,
+      status: input.status,
+      fencingToken: input.fencingToken,
+      completedAt,
+    };
+    return { status: input.status, completedAt: new Date(completedAt) };
   }
 
   async beginEffect(
@@ -514,6 +573,22 @@ export function createAgentExecutionRepository(options: {
         attemptId: row.attempt_id,
         fencingToken: row.fencing_token,
         leaseExpiresAt: new Date(row.lease_expires_at),
+      };
+    },
+    async finalizeRun(input) {
+      const row = await callAgentExecutionRpc(options, "finalize_agent_run", {
+        p_attempt_id: input.attemptId,
+        p_fencing_token: input.fencingToken,
+        p_metadata: input.metadata,
+        p_run_id: input.runId,
+        p_status: input.status,
+      });
+      if (!isFinalizedAgentRunRow(row)) {
+        throw new Error("agent_execution_persistence_failed");
+      }
+      return {
+        status: row.status,
+        completedAt: new Date(row.completedAt),
       };
     },
     async beginEffect(input) {
@@ -844,6 +919,7 @@ async function callAgentExecutionRpc(
     const knownErrors = [
       "attempt_lease_unavailable",
       "run_not_active",
+      "agent_attempt_not_current",
       "agent_effect_conflict",
       "skill_catalog_changed",
       "run_not_found",
@@ -933,6 +1009,23 @@ function isEffectReservationRow(value: unknown): value is {
   if (typeof value !== "object" || value === null) return false;
   const status = (value as { status?: unknown }).status;
   return status === "reserved" || status === "completed";
+}
+
+function isAgentTerminalStatus(value: unknown): value is AgentTerminalStatus {
+  return value === "completed" || value === "failed" || value === "canceled";
+}
+
+function isFinalizedAgentRunRow(value: unknown): value is {
+  status: AgentTerminalStatus;
+  completedAt: string;
+} {
+  if (typeof value !== "object" || value === null) return false;
+  const row = value as Record<string, unknown>;
+  return (
+    isAgentTerminalStatus(row.status) &&
+    typeof row.completedAt === "string" &&
+    !Number.isNaN(Date.parse(row.completedAt))
+  );
 }
 
 function isExecutionContextRow(value: unknown): value is {

@@ -81,11 +81,12 @@ select throws_ok(
   $$select public.begin_agent_effect('30000000-0000-4000-8000-000000000006','30000000-0000-4000-8000-000000000007',2,'tool-1','input-other')$$,
   'P0001', 'agent_effect_conflict', 'changed effect input conflicts');
 
-select public.cancel_agent_attempt(
-  '30000000-0000-4000-8000-000000000007', 2);
+update public.agent_run_attempts
+set lease_expires_at = now() - interval '1 second'
+where attempt_id = '30000000-0000-4000-8000-000000000007';
 select throws_ok(
   $$select public.begin_agent_effect('30000000-0000-4000-8000-000000000006','30000000-0000-4000-8000-000000000007',2,'tool-2','input-2')$$,
-  'P0001', 'run_not_active', 'cancellation fences subsequent effects');
+  'P0001', 'run_not_active', 'an expired attempt fences subsequent effects');
 select throws_ok(
   $$select public.resume_agent_attempt('30000000-0000-4000-8000-000000000006','30000000-0000-4000-8000-000000000008','catalog-other','["image.generate"]','policy-2','[]')$$,
   'P0001', 'skill_catalog_changed', 'resume rejects a changed catalog');

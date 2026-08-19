@@ -1,4 +1,11 @@
+import { randomUUID } from "node:crypto";
+
 import type { AdminSupabaseClient } from "../../supabase/admin.js";
+import type {
+  AgentExecutionRepository,
+  FinalizeAgentRun,
+  FinalizedAgentRun,
+} from "./agent-execution-repository.js";
 import type {
   CreateAcceptedAgentRunInput,
   UpdateAgentRunInput,
@@ -13,6 +20,40 @@ export class AgentRunPersistenceError extends Error {
     this.code = "application_error";
     this.statusCode = statusCode;
   }
+}
+
+export class AgentFinalizationUnconfirmedError extends Error {
+  readonly code = "run_finalization_unconfirmed";
+  readonly correlationId: string;
+
+  constructor(correlationId: string) {
+    super("Agent run finalization could not be confirmed.");
+    this.name = "AgentFinalizationUnconfirmedError";
+    this.correlationId = correlationId;
+  }
+}
+
+export async function finalizeAgentRun(options: {
+  readonly repository: Pick<AgentExecutionRepository, "finalizeRun">;
+  readonly input: FinalizeAgentRun;
+  readonly retryDelayMs?: number;
+  readonly correlationId?: string;
+}): Promise<FinalizedAgentRun> {
+  const retryDelayMs = options.retryDelayMs ?? 100;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await options.repository.finalizeRun(options.input);
+    } catch {
+      if (attempt < 3 && retryDelayMs > 0) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, retryDelayMs * attempt),
+        );
+      }
+    }
+  }
+  throw new AgentFinalizationUnconfirmedError(
+    options.correlationId ?? randomUUID(),
+  );
 }
 
 export type AgentRunMetadataService = {

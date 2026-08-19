@@ -160,6 +160,79 @@ describe("AgentExecutionRepository", () => {
     ).rejects.toThrow("run_not_active");
   });
 
+  it("atomically finalizes the run and current attempt once", async () => {
+    const repository = new MemoryAgentExecutionRepository();
+    await repository.accept(acceptance);
+    const lease = await repository.claimAttempt({
+      attemptId: "attempt-1",
+      leaseOwner: "worker-1",
+      leaseMs: 10_000,
+      now: new Date("2026-08-19T00:00:00.000Z"),
+    });
+
+    const completed = await repository.finalizeRun({
+      attemptId: "attempt-1",
+      fencingToken: lease.fencingToken,
+      metadata: {},
+      runId: "run-1",
+      status: "completed",
+    });
+    const repeated = await repository.finalizeRun({
+      attemptId: "attempt-1",
+      fencingToken: lease.fencingToken,
+      metadata: {},
+      runId: "run-1",
+      status: "completed",
+    });
+    const losingCancel = await repository.finalizeRun({
+      attemptId: "attempt-1",
+      fencingToken: lease.fencingToken,
+      metadata: {},
+      runId: "run-1",
+      status: "canceled",
+    });
+
+    expect(repeated).toEqual(completed);
+    expect(losingCancel).toEqual(completed);
+    expect(repository.get("run-1")).toMatchObject({
+      runStatus: "completed",
+      attempt: {
+        status: "completed",
+        completedAt: completed.completedAt,
+      },
+    });
+  });
+
+  it("rejects stale or non-current finalization", async () => {
+    const repository = new MemoryAgentExecutionRepository();
+    await repository.accept(acceptance);
+    const lease = await repository.claimAttempt({
+      attemptId: "attempt-1",
+      leaseOwner: "worker-1",
+      leaseMs: 10_000,
+      now: new Date("2026-08-19T00:00:00.000Z"),
+    });
+
+    await expect(
+      repository.finalizeRun({
+        attemptId: "attempt-other",
+        fencingToken: lease.fencingToken,
+        metadata: {},
+        runId: "run-1",
+        status: "failed",
+      }),
+    ).rejects.toThrow("agent_attempt_not_current");
+    await expect(
+      repository.finalizeRun({
+        attemptId: "attempt-1",
+        fencingToken: lease.fencingToken + 1,
+        metadata: {},
+        runId: "run-1",
+        status: "failed",
+      }),
+    ).rejects.toThrow("run_not_active");
+  });
+
   it("resumes only with the active catalog and reduced capabilities", async () => {
     const repository = new MemoryAgentExecutionRepository();
     await repository.accept(acceptance);
@@ -312,6 +385,39 @@ describe("Supabase Agent acceptance adapter", () => {
       "request-1",
     );
     expect(query.abortSignal).toHaveBeenCalledWith(controller.signal);
+  });
+
+  it("passes atomic finalization to the canonical RPC", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: {
+        completedAt: "2026-08-19T00:00:03.000Z",
+        status: "failed",
+      },
+      error: null,
+    });
+    const repository = createAgentExecutionRepository({
+      getAdminClient: () => ({ rpc }) as never,
+    });
+
+    await expect(
+      repository.finalizeRun({
+        attemptId: "attempt-1",
+        fencingToken: 3,
+        metadata: { errorCode: "tool_failed" },
+        runId: "run-1",
+        status: "failed",
+      }),
+    ).resolves.toEqual({
+      completedAt: new Date("2026-08-19T00:00:03.000Z"),
+      status: "failed",
+    });
+    expect(rpc).toHaveBeenCalledWith("finalize_agent_run", {
+      p_attempt_id: "attempt-1",
+      p_fencing_token: 3,
+      p_metadata: { errorCode: "tool_failed" },
+      p_run_id: "run-1",
+      p_status: "failed",
+    });
   });
 });
 
