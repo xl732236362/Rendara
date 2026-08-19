@@ -419,6 +419,72 @@ describe("Supabase Agent acceptance adapter", () => {
     expect(query.abortSignal).toHaveBeenCalledWith(controller.signal);
   });
 
+  it("disambiguates the attempt ownership relationship in context reads", async () => {
+    const contextResult = {
+      data: {
+        id: "run-1",
+        user_id: "user-1",
+        workspace_id: "workspace-1",
+        project_id: "project-1",
+        canvas_id: "canvas-1",
+        capabilities: ["image.generate"],
+        capability_policy_version: "policy-1",
+        skill_catalog_digest: "catalog-1",
+        effective_skill_names: ["json-image-prompt"],
+        agent_run_attempts: [
+          {
+            attempt_id: "attempt-1",
+            status: "accepted",
+            created_at: "2026-08-19T00:00:00.000Z",
+          },
+        ],
+      },
+      error: null,
+    };
+    const attemptResult = {
+      data: {
+        id: "run-1",
+        agent_run_attempts: [
+          {
+            attempt_id: "attempt-1",
+            status: "accepted",
+            lease_expires_at: null,
+            created_at: "2026-08-19T00:00:00.000Z",
+          },
+        ],
+      },
+      error: null,
+    };
+    const contextQuery = relatedQueryChain(contextResult);
+    const attemptQuery = relatedQueryChain(attemptResult);
+    const from = vi
+      .fn()
+      .mockReturnValueOnce(contextQuery)
+      .mockReturnValueOnce(attemptQuery);
+    const repository = createAgentExecutionRepository({
+      getAdminClient: () => ({ from }) as never,
+    });
+
+    await expect(
+      repository.getExecutionContext("run-1"),
+    ).resolves.toMatchObject({ attemptId: "attempt-1", runId: "run-1" });
+    await expect(repository.getAttemptState("run-1")).resolves.toMatchObject({
+      attemptId: "attempt-1",
+      status: "accepted",
+    });
+
+    expect(contextQuery.select).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "agent_run_attempts!agent_run_attempts_run_id_fkey!inner(",
+      ),
+    );
+    expect(attemptQuery.select).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "agent_run_attempts!agent_run_attempts_run_id_fkey!inner(",
+      ),
+    );
+  });
+
   it("passes atomic finalization to the canonical RPC", async () => {
     const rpc = vi.fn().mockResolvedValue({
       data: {
@@ -563,6 +629,24 @@ function queryChain(terminal: unknown) {
   query.select.mockReturnValue(query);
   query.eq.mockReturnValue(query);
   query.abortSignal.mockReturnValue(query);
+  query.maybeSingle.mockReturnValue(terminal);
+  return query;
+}
+
+function relatedQueryChain(terminal: unknown) {
+  const query = {
+    eq: vi.fn(),
+    in: vi.fn(),
+    limit: vi.fn(),
+    maybeSingle: vi.fn(),
+    order: vi.fn(),
+    select: vi.fn(),
+  };
+  query.select.mockReturnValue(query);
+  query.eq.mockReturnValue(query);
+  query.in.mockReturnValue(query);
+  query.order.mockReturnValue(query);
+  query.limit.mockReturnValue(query);
   query.maybeSingle.mockReturnValue(terminal);
   return query;
 }

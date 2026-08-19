@@ -753,7 +753,7 @@ export function createAgentExecutionRepository(options: {
       const { data, error } = await client
         .from("agent_runs")
         .select(
-          "id, user_id, workspace_id, project_id, canvas_id, capabilities, capability_policy_version, skill_catalog_digest, effective_skill_names, agent_run_attempts!inner(attempt_id,status,created_at)",
+          "id, user_id, workspace_id, project_id, canvas_id, capabilities, capability_policy_version, skill_catalog_digest, effective_skill_names, agent_run_attempts!agent_run_attempts_run_id_fkey!inner(attempt_id,status,created_at)",
         )
         .eq("id", runId)
         .in("agent_run_attempts.status", ["accepted", "running"])
@@ -772,7 +772,7 @@ export function createAgentExecutionRepository(options: {
       const { data, error } = await client
         .from("agent_runs")
         .select(
-          "id, agent_run_attempts!inner(attempt_id,status,lease_expires_at,created_at)",
+          "id, agent_run_attempts!agent_run_attempts_run_id_fkey!inner(attempt_id,status,lease_expires_at,created_at)",
         )
         .eq("id", runId)
         .in("agent_run_attempts.status", ["accepted", "running"])
