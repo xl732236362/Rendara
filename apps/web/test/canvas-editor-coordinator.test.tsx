@@ -196,11 +196,12 @@ describe("CanvasEditor persistence coordinator", () => {
     harness.saveCanvas.mockResolvedValue({ revision: 3 });
     const view = renderEditor();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(2);
+      await vi.advanceTimersByTimeAsync(10);
     });
+    await vi.waitFor(() => expect(harness.persistenceHandle).not.toBeNull());
 
     await act(async () => {
-      await harness.persistenceHandle?.sync({ revision: 2 });
+      await harness.persistenceHandle!.sync({ revision: 2 });
     });
     const localEllipse = {
       id: "local-ellipse",
@@ -214,15 +215,18 @@ describe("CanvasEditor persistence coordinator", () => {
     });
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(0);
     });
 
-    expect(harness.saveCanvas).toHaveBeenCalledWith(
-      "token",
-      "11111111-1111-4111-8111-111111111111",
-      2,
-      expect.objectContaining({
-        elements: expect.arrayContaining([localEllipse, remoteImage]),
-      }),
+    await vi.waitFor(() =>
+      expect(harness.saveCanvas).toHaveBeenCalledWith(
+        "token",
+        "11111111-1111-4111-8111-111111111111",
+        2,
+        expect.objectContaining({
+          elements: expect.arrayContaining([localEllipse, remoteImage]),
+        }),
+      ),
     );
     view.unmount();
   });
