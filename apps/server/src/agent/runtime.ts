@@ -1368,6 +1368,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         sessionId: run.sessionId,
         signal: run.controller.signal,
         stream,
+        supervisor: agent.toolSupervisor,
       })[Symbol.asyncIterator]();
       let receivedModelEvent = false;
       const modelStartedAt = Date.now();

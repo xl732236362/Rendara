@@ -49,6 +49,7 @@ export interface ToolExecutionSupervisor {
     error: FailedPayload,
   ): CanonicalToolFailed;
   acknowledge(record: CanonicalToolRecord): "projected" | "duplicate";
+  projectionStatus(record: CanonicalToolRecord): "pending" | "projected";
   waitForAcknowledgement(
     record: CanonicalToolRecord,
     options?: { readonly signal?: AbortSignal; readonly timeoutMs?: number },
@@ -223,6 +224,16 @@ export function createToolExecutionSupervisor(
         call.state = "terminal";
       }
       return "projected";
+    },
+
+    projectionStatus(candidate) {
+      const stored = staged.find(
+        ({ record }) => record.sequence === candidate.sequence,
+      );
+      if (!stored || !canonicalRecordsEqual(stored.record, candidate)) {
+        throw new Error("tool_lifecycle_record_conflict");
+      }
+      return stored.projected ? "projected" : "pending";
     },
 
     async waitForAcknowledgement(record, waitOptions = {}) {
