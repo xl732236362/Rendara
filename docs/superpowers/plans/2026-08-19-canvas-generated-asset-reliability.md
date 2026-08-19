@@ -50,7 +50,7 @@
 - Test: `packages/shared/src/artifacts.test.ts`
 - Test: `packages/shared/src/contracts.test.ts`
 
-- [ ] **Step 1: Write failing schema tests**
+- [x] **Step 1: Write failing schema tests**
 
 Add tests proving the public contract accepts only the two recovery kinds, requires UUID-like job/canvas identity, bounds error text and artifact arrays, rejects data/file URLs, and persists failed tool activities:
 
@@ -76,13 +76,13 @@ expect(toolBlockSchema.parse({
 })).toMatchObject({ status: "failed" });
 ```
 
-- [ ] **Step 2: Run the shared tests and verify RED**
+- [x] **Step 2: Run the shared tests and verify RED**
 
 Run: `pnpm --filter @loomic/shared test`
 
 Expected: FAIL because failed tool status and recovery fields are not defined.
 
-- [ ] **Step 3: Implement strict additive contracts**
+- [x] **Step 3: Implement strict additive contracts**
 
 Export these exact schema families and inferred types:
 
@@ -102,13 +102,13 @@ export const generatedAssetAttachmentStatusSchema = z.discriminatedUnion("attach
 
 Use `.url().refine(url => url.startsWith("https://") || url.startsWith("/api/assets/"))` for display URLs. Add optional `recovery` and max-10 `artifacts` to failed events and persisted tool blocks; add `status: "failed"` plus bounded public `error`. Define status/list/retry HTTP response schemas in `job-contracts.ts` and export them from `index.ts`.
 
-- [ ] **Step 4: Run shared tests and typecheck**
+- [x] **Step 4: Run shared tests and typecheck**
 
 Run: `pnpm --filter @loomic/shared test && pnpm --filter @loomic/shared typecheck`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/shared/src
@@ -123,7 +123,7 @@ git commit -m "feat(shared): add generated asset recovery contracts"
 - Test: `apps/web/test/canvas-editor-persistence.test.tsx`
 - Test: `apps/web/test/canvas-sync-coordinator.test.ts`
 
-- [ ] **Step 1: Write failing coordinator tests**
+- [x] **Step 1: Write failing coordinator tests**
 
 Cover canonical object-key ordering, omitted `undefined`, array-order preservation, persisted app-state filtering, no-op suppression, mutation during an in-flight save, ambiguous-outcome readback, unload behavior, duplicate/out-of-order sync, and append-only merge:
 
@@ -151,13 +151,13 @@ await second;
 
 Add merge tests where a remote-only generated element/file is appended to dirty local content, and where a changed/reordered base element or ID collision calls `onConflict` without applying or saving.
 
-- [ ] **Step 2: Run focused Web tests and verify RED**
+- [x] **Step 2: Run focused Web tests and verify RED**
 
 Run: `pnpm --filter @loomic/web exec vitest run test/canvas-editor-persistence.test.tsx test/canvas-sync-coordinator.test.ts`
 
 Expected: FAIL because canonical fingerprints and unified save/sync states do not exist.
 
-- [ ] **Step 3: Implement canonicalization and coordinator state**
+- [x] **Step 3: Implement canonicalization and coordinator state**
 
 Add `normalizeDurableCanvasContent`, `canonicalJson`, `fingerprintCanvasContent`, `createCanvasDirtySignature`, `mergeAppendOnlyRemoteContent`, and `createCanvasPersistenceCoordinator`. Its state is exact and immutable:
 
@@ -173,13 +173,13 @@ type CoordinatorState = {
 
 Serialize `observe`, save acknowledgements, remote sync, and ambiguous readback through one promise queue. The save call always receives the revision paired with `base.content`; `syncToRevision` fetches current authoritative content and either applies it or performs only the design-approved append merge. Keep `createCanvasSyncCoordinator` as a small adapter so current callers compile while Task 3 migrates them.
 
-- [ ] **Step 4: Run focused Web tests and verify GREEN**
+- [x] **Step 4: Run focused Web tests and verify GREEN**
 
 Run: `pnpm --filter @loomic/web exec vitest run test/canvas-editor-persistence.test.tsx test/canvas-sync-coordinator.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/lib/canvas-persistence.ts apps/web/src/lib/canvas-sync-coordinator.ts apps/web/test/canvas-editor-persistence.test.tsx apps/web/test/canvas-sync-coordinator.test.ts
@@ -194,7 +194,7 @@ git commit -m "feat(web): coordinate durable canvas persistence"
 - Test: `apps/web/test/canvas-editor-persistence.test.tsx`
 - Test: `apps/web/test/canvas-image-generation.test.tsx`
 
-- [ ] **Step 1: Add failing integration-style component tests**
+- [x] **Step 1: Add failing integration-style component tests**
 
 Assert that repeated identical `onChange`, selection, viewport, and remote echo callbacks produce zero saves/thumbnail uploads; one durable change produces one save and then one thumbnail; sync preserves unsaved local edits; and unload sends nothing without a real pending fingerprint.
 
@@ -206,13 +206,13 @@ expect(saveCanvas).not.toHaveBeenCalled();
 expect(uploadThumbnail).not.toHaveBeenCalled();
 ```
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run: `pnpm --filter @loomic/web exec vitest run test/canvas-editor-persistence.test.tsx test/canvas-image-generation.test.tsx`
 
 Expected: FAIL because `onChange` currently creates placeholder pending payloads and schedules every save/thumbnail.
 
-- [ ] **Step 3: Replace editor-local revision/save state**
+- [x] **Step 3: Replace editor-local revision/save state**
 
 Instantiate one coordinator per canvas after hydration. `handleChange` updates selection immediately but only passes a dirty hint to the coordinator after debounce. The coordinator owns revision, suppression, pending payload, save serialization, conflict transition, and remote application. Schedule thumbnail generation exclusively from `onCommitted`. Expose this handle:
 
@@ -226,13 +226,13 @@ export type CanvasPersistenceHandle = {
 
 Update `page.tsx` to forward `canvas.sync`, focus, reconnect, and terminal-run triggers to the handle. Remove direct `fetchCanvas` plus `api.updateScene` synchronization. Register remote files before scene update under autosave suppression. Keep the existing visible conflict banner and add structured `console` fields without canvas content or URLs.
 
-- [ ] **Step 4: Verify Web persistence behavior**
+- [x] **Step 4: Verify Web persistence behavior**
 
 Run: `pnpm --filter @loomic/web test`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/components/canvas-editor.tsx apps/web/src/app/canvas/page.tsx apps/web/test
@@ -246,7 +246,7 @@ git commit -m "fix(web): suppress no-op canvas saves and merge sync"
 - Create: `supabase/tests/canvas_generated_asset_reliability.test.sql`
 - Modify: `.github/workflows/ci.yml`
 
-- [ ] **Step 1: Write failing pgTAP tests**
+- [x] **Step 1: Write failing pgTAP tests**
 
 Create tests for table constraints/RLS/grants, atomic job+intent submission, claim fencing, retry backoff/exhaustion, cancellation/dead-letter settlement, authenticated recovery, exact-once fulfillment, browser-save concurrency, replay after movement/deletion, ID collision, scope/media/asset mismatch, stale Agent fence, expired run recovery, and resume/recovery races.
 
@@ -260,13 +260,13 @@ select is((select revision from public.canvases where id = :'canvas_id'), 2::big
 select is((select count(*) from public.domain_event_outbox where aggregate_id = :'canvas_id' and event_type = 'canvas.generated_asset_attached'), 1::bigint, 'one outbox event');
 ```
 
-- [ ] **Step 2: Run database tests and verify RED**
+- [x] **Step 2: Run database tests and verify RED**
 
 Run: `supabase test db supabase/tests/canvas_generated_asset_reliability.test.sql`
 
 Expected: FAIL because the tables and RPCs do not exist.
 
-- [ ] **Step 3: Implement schema and RPCs**
+- [x] **Step 3: Implement schema and RPCs**
 
 Create `generated_asset_attachment_intents` with states `pending`, `running`, `retry_wait`, `attached`, `failed`, `canceled`; unique `(job_id, effect_kind)`; immutable scope fields; placement policy; claim owner/expiry/fence; max eight attempts; bounded public error code; and attached result. Create `generated_asset_recovery_audits` unique on `(user_id, canvas_id, job_id, effect_kind)`.
 
@@ -284,13 +284,13 @@ recover_expired_agent_runs(p_now timestamptz, p_grace_ms integer, p_limit intege
 
 `fulfill_generated_asset_attachment` locks job, intent, canvas, receipt/effect/audit in that order; derives final `auto_right` coordinates against locked content; appends one deterministic job-ID element and optional `${job_id}-file`; increments revision once; inserts receipt/outbox; completes intent/audit; and completes the Agent effect only if its optional fence remains active. Receipt replay returns its stored original result without inspecting current element/file existence.
 
-- [ ] **Step 4: Run database tests from clean and upgraded states**
+- [x] **Step 4: Run database tests from clean and upgraded states**
 
 Run: `supabase db reset && supabase test db supabase/tests/canvas_generated_asset_reliability.test.sql && supabase test db`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add supabase/migrations/20260819000003_canvas_generated_asset_reliability.sql supabase/tests/canvas_generated_asset_reliability.test.sql .github/workflows/ci.yml
@@ -310,7 +310,7 @@ git commit -m "feat(db): add durable generated asset attachment"
 - Test: `apps/web/test/canvas-editor-persistence.test.tsx`
 - Test: `apps/web/test/canvas-editor-coordinator.test.tsx`
 
-- [ ] **Step 1: Write failing API-boundary and coordinator tests**
+- [x] **Step 1: Write failing API-boundary and coordinator tests**
 
 Prove that two concurrent REST 401 responses notify one page-owned handler whose
 idempotency guard calls `signOut` and redirects once; the redirect preserves only
@@ -340,14 +340,14 @@ expect(coordinator.snapshot()).toMatchObject({
 });
 ```
 
-- [ ] **Step 2: Run focused Web tests and verify RED**
+- [x] **Step 2: Run focused Web tests and verify RED**
 
 Run: `pnpm --filter @loomic/web exec vitest run test/auth-expiry.test.ts test/api-client.test.ts test/canvas-editor-persistence.test.tsx test/canvas-editor-coordinator.test.tsx`
 
 Expected: FAIL because REST 401 has no registered auth-expiry boundary and the
 coordinator restores failed snapshots to `pending`.
 
-- [ ] **Step 3: Implement one injected auth-expiry boundary**
+- [x] **Step 3: Implement one injected auth-expiry boundary**
 
 `auth-expiry.ts` owns `registerApiAuthExpiryHandler`, a synchronous notifier,
 safe `returnTo` construction, and `createAuthExpiryHandler`. `apiFetch` invokes
@@ -361,14 +361,14 @@ inside queued save, fetch, remote file resolution, sync, or reconcile work sets
 no-ops. `CanvasEditor` skips debounce and unload/unmount flush work after this
 terminal state, so no stale token can keep advancing the save loop.
 
-- [ ] **Step 4: Verify focused and full Web behavior**
+- [x] **Step 4: Verify focused and full Web behavior**
 
 Run: `pnpm --filter @loomic/web exec vitest run test/auth-expiry.test.ts test/api-client.test.ts test/canvas-editor-persistence.test.tsx test/canvas-editor-coordinator.test.tsx && pnpm --filter @loomic/web test && pnpm --filter @loomic/web typecheck`
 
 Expected: PASS; consecutive 401s clear the session and redirect once, while
 403/5xx do not enter auth expiry and no save occurs after the first 401.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/lib/auth-expiry.ts apps/web/src/lib/api-client.ts apps/web/src/lib/canvas-persistence.ts apps/web/src/components/canvas-editor.tsx apps/web/src/app/canvas/page.tsx apps/web/test
@@ -390,7 +390,7 @@ git commit -m "fix(web): terminate canvas persistence on auth expiry"
 - Test: `apps/web/test/api-client.test.ts`
 - Test: `apps/web/test/canvas-editor-coordinator.test.tsx`
 
-- [ ] **Step 1: Write failing correlation and secrecy tests**
+- [x] **Step 1: Write failing correlation and secrecy tests**
 
 Extend the shared error-envelope test with bounded optional `correlationId`.
 Make canvas save throw an internal error containing sentinel token/message/full
@@ -416,14 +416,14 @@ expect(response.headers["x-correlation-id"]).toBe(
 expect(JSON.stringify(canvasFailureLog)).not.toContain(secret);
 ```
 
-- [ ] **Step 2: Run focused shared/server/Web tests and verify RED**
+- [x] **Step 2: Run focused shared/server/Web tests and verify RED**
 
 Run: `pnpm --filter @loomic/shared test && pnpm --filter @loomic/server exec vitest run src/http/error-handler.test.ts src/http/canvases.revision.test.ts && pnpm --filter @loomic/web exec vitest run test/api-client.test.ts test/canvas-editor-coordinator.test.tsx`
 
 Expected: FAIL because HTTP envelopes and `ApiApplicationError` do not carry a
 correlation ID and the canvas route lacks stage-specific failure logs.
 
-- [ ] **Step 3: Implement the correlation boundary and safe logs**
+- [x] **Step 3: Implement the correlation boundary and safe logs**
 
 Add optional `correlationId` to the canonical shared error envelope. The global
 Fastify error handler uses the server-generated `request.id`, emits it in both
@@ -438,14 +438,14 @@ error messages.
 `correlationId` plus canvas/revision context. A 5xx remains an ambiguous save
 outcome and must never be mapped to `canvas_revision_conflict`.
 
-- [ ] **Step 4: Run tests, typechecks, and regression suites**
+- [x] **Step 4: Run tests, typechecks, and regression suites**
 
 Run: `pnpm --filter @loomic/shared test && pnpm --filter @loomic/server exec vitest run src/http/error-handler.test.ts src/http/canvases.revision.test.ts && pnpm --filter @loomic/web exec vitest run test/api-client.test.ts test/canvas-editor-coordinator.test.tsx && pnpm typecheck && pnpm --filter @loomic/server test && pnpm --filter @loomic/web test`
 
 Expected: PASS with safe 5xx envelopes, matching correlation IDs, searchable
 server logs, and unchanged 409 conflict behavior.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add packages/shared/src/http.ts packages/shared/src/contracts.test.ts apps/server/src/http/error-handler.ts apps/server/src/http/error-handler.test.ts apps/server/src/http/canvases.ts apps/server/src/http/canvases.revision.test.ts apps/web/src/lib/api-client.ts apps/web/src/components/canvas-editor.tsx apps/web/src/app/canvas/page.tsx apps/web/test
@@ -465,7 +465,7 @@ git commit -m "fix(canvas): correlate REST save failures"
 - Test: `apps/server/src/features/jobs/generation-application-adapter.test.ts`
 - Test: `apps/server/src/agent/runtime.application-wiring.test.ts`
 
-- [ ] **Step 1: Add failing submission tests**
+- [x] **Step 1: Add failing submission tests**
 
 Define a private `AgentAttachmentContext` accepted only by the internal `SubmitGeneration` call and assert it reaches the single database submission RPC:
 
@@ -485,13 +485,13 @@ expect(jobPort.submit).toHaveBeenCalledWith(expect.objectContaining({ attachment
 
 Assert a canvas-mutating request fails before `jobs.submit` when intent infrastructure readiness is false, while public/direct generation submits without an Agent intent.
 
-- [ ] **Step 2: Run focused server tests and verify RED**
+- [x] **Step 2: Run focused server tests and verify RED**
 
 Run: `pnpm --filter @loomic/server exec vitest run src/application/generation/submit-generation.test.ts src/features/jobs/job-state-repository.test.ts src/features/jobs/generation-application-adapter.test.ts src/agent/runtime.application-wiring.test.ts`
 
 Expected: FAIL because submission has no private intent context.
 
-- [ ] **Step 3: Implement internal intent propagation**
+- [x] **Step 3: Implement internal intent propagation**
 
 Change the function type to:
 
@@ -505,13 +505,13 @@ export type SubmitGeneration = (
 
 Validate allowlisted effect kind, media type, current attempt fence, and explicit placement before calling the adapter. Add the bounded intent JSON to `submit_generation_job`; never add these fields to `generationSubmissionRequestSchema` or HTTP bodies. Runtime reserves the Agent effect first and supplies the current attempt context. Readiness failure maps to a private 503 and occurs before billing/job creation.
 
-- [ ] **Step 4: Run focused tests and server typecheck**
+- [x] **Step 4: Run focused tests and server typecheck**
 
 Run: `pnpm --filter @loomic/server exec vitest run src/application/generation/submit-generation.test.ts src/features/jobs/job-state-repository.test.ts src/features/jobs/generation-application-adapter.test.ts src/agent/runtime.application-wiring.test.ts && pnpm --filter @loomic/server typecheck`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/server/src/application/generation apps/server/src/features/jobs apps/server/src/agent/runtime.ts
@@ -532,7 +532,7 @@ git commit -m "feat(server): persist attachment intent with generation"
 - Test: `apps/server/src/application/canvas/attach-generated-asset.test.ts`
 - Test: `apps/server/src/features/jobs/worker-job-lifecycle.test.ts`
 
-- [ ] **Step 1: Write failing repository/reconciler tests**
+- [x] **Step 1: Write failing repository/reconciler tests**
 
 Test startup scan, 5-second fallback scan, generation-settlement wakeup, 30-second lease, stale claimant rejection, retry schedule `[1,2,4,8,16,32,60,60]`, attempt exhaustion, canceled/dead-letter mapping, trusted element/file templates, and immediate replay:
 
@@ -547,25 +547,25 @@ expect(repository.fulfill).toHaveBeenCalledWith(expect.objectContaining({
 expect(result).toEqual({ claimed: 1, attached: 1, retried: 0, failed: 0 });
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 Run: `pnpm --filter @loomic/server exec vitest run src/features/canvas/generated-asset-attachment-repository.test.ts src/features/canvas/generated-asset-attachment-reconciler.test.ts src/features/jobs/worker-job-lifecycle.test.ts`
 
 Expected: FAIL because reconciler modules do not exist.
 
-- [ ] **Step 3: Implement repository, trusted templates, and worker loop**
+- [x] **Step 3: Implement repository, trusted templates, and worker loop**
 
 The repository parses every RPC result with Zod and maps stable details to `AppError`. The adapter reads the claimed job and exact-scope `asset_objects` row, requires `asset_id`, builds schema-validated Excalidraw image/video templates using the job ID, and calls `fulfill`. It never downloads image bytes or persists signed URLs. The reconciler classifies deterministic integrity errors as `failed`, retryable infrastructure errors as `retry_wait`, and emits structured identifiers only.
 
 Expose `start()`, `stop()`, `wake()`, and `reconcileOnce()`; call `wake()` after successful/canceled/dead-letter job settlement and run an immediate startup scan. Graceful worker shutdown waits for an active scan.
 
-- [ ] **Step 4: Run focused and full server tests**
+- [x] **Step 4: Run focused and full server tests**
 
 Run: `pnpm --filter @loomic/server test`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/server/src/features/canvas apps/server/src/application/canvas apps/server/src/features/jobs/worker-job-lifecycle.ts apps/server/src/worker.ts
@@ -586,7 +586,7 @@ git commit -m "feat(worker): reconcile generated asset attachments"
 - Test: `apps/server/src/agent/tool-governance-middleware.test.ts`
 - Test: `apps/server/src/agent/stream-adapter.test.ts`
 
-- [ ] **Step 1: Add failing tool contract tests**
+- [x] **Step 1: Add failing tool contract tests**
 
 Assert attached output requires `elementId`/revision; generate-only returns `not_requested`; wait timeout returns error `ToolMessage` with `pending`; failed intent throws `GeneratedAssetAttachmentError`; arbitrary artifacts/data URLs are rejected; and canonical failure retains only validated recovery/artifacts.
 
@@ -599,13 +599,13 @@ expect(result).toMatchObject({ status: "error", artifact: {
 expect(published).toContainEqual(expect.objectContaining({ type: "loomic.tool.failed" }));
 ```
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run: `pnpm --filter @loomic/server exec vitest run src/agent/tools/tool-boundary.test.ts src/agent/tool-governance-middleware.test.ts src/agent/stream-adapter.test.ts`
 
 Expected: FAIL because success output can omit attachment proof and failure projection drops recovery.
 
-- [ ] **Step 3: Implement `content_and_artifact` and typed failures**
+- [x] **Step 3: Implement `content_and_artifact` and typed failures**
 
 Use the installed LangChain contract:
 
@@ -621,13 +621,13 @@ return [modelVisibleSummary(result), generatedMediaToolResultSchema.parse(result
 
 Model-visible content says “attached” only for `attachmentStatus: "attached"`; pending tells the model background work continues and must not be regenerated. `GeneratedAssetAttachmentError` carries parsed private recovery/artifact data. Governance converts it to one error `ToolMessage` and one `loomic.tool.failed`; projection permits only safe fields and never raw tool output, prompt, object path, bytes, or signed URL identity.
 
-- [ ] **Step 4: Run Agent tests and typecheck**
+- [x] **Step 4: Run Agent tests and typecheck**
 
 Run: `pnpm --filter @loomic/server exec vitest run src/agent && pnpm --filter @loomic/server typecheck`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/server/src/agent
@@ -644,7 +644,7 @@ git commit -m "fix(agent): report durable media attachment outcomes"
 - Test: `apps/server/src/http/jobs.application-wiring.test.ts`
 - Test: `apps/web/test/server-api.test.ts`
 
-- [ ] **Step 1: Write failing authorization and response tests**
+- [x] **Step 1: Write failing authorization and response tests**
 
 Cover:
 
@@ -656,23 +656,23 @@ POST /api/jobs/:jobId/attachment/retry   { canvasId }
 
 Assert user/workspace/canvas/session scope, cross-session exclusion, bounded response schemas, idempotent retry, terminal attached replay, and no acceptance of placement/effect/object-path overrides.
 
-- [ ] **Step 2: Run route/client tests and verify RED**
+- [x] **Step 2: Run route/client tests and verify RED**
 
 Run: `pnpm --filter @loomic/server exec vitest run src/http/jobs.application-wiring.test.ts && pnpm --filter @loomic/web exec vitest run test/server-api.test.ts`
 
 Expected: FAIL with missing routes/client functions.
 
-- [ ] **Step 3: Implement authenticated use cases and routes**
+- [x] **Step 3: Implement authenticated use cases and routes**
 
 Authenticate first, authorize the canvas/job through repository joins, parse every response through shared schemas, and requeue only an existing failed intent (or create a deduplicated legacy recovery audit/intent). Add startup readiness that verifies required RPC availability and worker reconciler registration; canvas-mutating Agent generation remains fail-closed if unavailable.
 
-- [ ] **Step 4: Run tests and typechecks**
+- [x] **Step 4: Run tests and typechecks**
 
 Run: `pnpm --filter @loomic/server exec vitest run src/http/jobs.application-wiring.test.ts && pnpm --filter @loomic/web exec vitest run test/server-api.test.ts && pnpm typecheck`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/server/src/application/canvas apps/server/src/http/jobs.ts apps/server/src/app.ts apps/web/src/lib/server-api.ts apps/server/src/http/jobs.application-wiring.test.ts apps/web/test/server-api.test.ts
@@ -694,7 +694,7 @@ git commit -m "feat(api): expose generated asset recovery"
 - Modify: `packages/config/src/server.ts`
 - Modify: `.env.example`
 
-- [ ] **Step 1: Write failing deadline and lease tests**
+- [x] **Step 1: Write failing deadline and lease tests**
 
 Use fake timers to prove a silent model after a completed tool fails at model inactivity, an open tool survives that interval and fails only at its tool deadline, overall deadline always wins, all deadline paths abort and close the iterator once, leases renew every 15 seconds to 60 seconds, renewal failure fences subsequent effects, and expired recovery emits one terminal outbox event.
 
@@ -711,25 +711,25 @@ await vi.advanceTimersByTimeAsync(30_001);
 expect(guard.state()).toMatchObject({ phase: "tool", terminal: false });
 ```
 
-- [ ] **Step 2: Run focused tests and verify RED**
+- [x] **Step 2: Run focused tests and verify RED**
 
 Run: `pnpm --filter @loomic/server exec vitest run src/agent/run-deadlines.test.ts src/features/agent-runs/agent-execution-repository.test.ts src/agent/runtime.application-wiring.test.ts src/events/domain-event-publisher.test.ts`
 
 Expected: FAIL because only first-event timeout and fixed 15-minute lease exist.
 
-- [ ] **Step 3: Implement deadlines, renewal, and recovery**
+- [x] **Step 3: Implement deadlines, renewal, and recovery**
 
 `run-deadlines.ts` tracks model/tool phase and resets model inactivity on each model event. Tool start pauses model inactivity; tool completion/failure resumes it. Runtime aborts and calls iterator `return()` on terminal deadlines. Claim attempts for 60 seconds, renew every 15 seconds with the same owner/fence, and stop the renewal timer in `finally`; a failed renewal marks the fence invalid before any later effect/finalization.
 
 The worker invokes `recover_expired_agent_runs(now, 30_000, limit)` on startup and every 5 seconds. The RPC locks eligible runs/attempts, marks them failed once, writes the terminal outbox event, and cannot race a valid resume. Publisher validates and delivers recovered `agent.run.failed` events. Add validated environment values with these defaults and structured phase/deadline/lease logs.
 
-- [ ] **Step 4: Run server tests and typecheck**
+- [x] **Step 4: Run server tests and typecheck**
 
 Run: `pnpm --filter @loomic/server test && pnpm --filter @loomic/server typecheck`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/server/src/agent apps/server/src/features/agent-runs apps/server/src/events apps/server/src/worker.ts packages/config/src .env.example
@@ -747,7 +747,7 @@ git commit -m "fix(agent): bound runs with renewable leases"
 - Test: `apps/web/test/chat-sidebar.test.tsx`
 - Test: `apps/web/test/canvas-generation-ui.test.tsx`
 
-- [ ] **Step 1: Write failing UI/session tests**
+- [x] **Step 1: Write failing UI/session tests**
 
 Assert failed attachment blocks retain error/recovery/artifact after save/reload, pending/attached/failed state is refreshed from authenticated status, outstanding session intents surface one notice after a process crash, retry reuses the same job, and Agent image/video events never invoke browser insertion callbacks.
 
@@ -758,23 +758,23 @@ expect(retryGeneratedAssetAttachment).toHaveBeenCalledWith(token, ids.canvas, id
 expect(onImageGenerated).not.toHaveBeenCalled();
 ```
 
-- [ ] **Step 2: Run focused Web tests and verify RED**
+- [x] **Step 2: Run focused Web tests and verify RED**
 
 Run: `pnpm --filter @loomic/web exec vitest run test/chat-sidebar.test.tsx test/canvas-generation-ui.test.tsx`
 
 Expected: FAIL because failed activities are not persisted/rendered and Agent artifacts still call browser insertion callbacks.
 
-- [ ] **Step 3: Implement recovery state and UI**
+- [x] **Step 3: Implement recovery state and UI**
 
 Map `tool.failed` into a `status: "failed"` tool block including only parsed `error`, `recovery`, and `artifacts`; preserve those fields in session serialization. On load and run terminal events query status plus outstanding session intents. Render a compact generated-media preview with state text and a `RefreshCw` icon button labelled “Retry attachment” only for `attach_generated_asset`. Disable it while retry is pending and route successful attachment through canvas sync. Remove `onImageGenerated`/`onVideoGenerated` processing for Agent events from `chat-sidebar.tsx` and `page.tsx`; retain direct canvas toolbar generation behavior.
 
-- [ ] **Step 4: Run full Web tests and typecheck**
+- [x] **Step 4: Run full Web tests and typecheck**
 
 Run: `pnpm --filter @loomic/web test && pnpm --filter @loomic/web typecheck`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/hooks apps/web/src/components/chat apps/web/src/components/chat-sidebar.tsx apps/web/src/app/canvas/page.tsx apps/web/test
@@ -805,7 +805,7 @@ Run: `pnpm test:e2e -- tests/canvas-generated-asset-reliability.spec.ts`
 
 Expected: PASS with one attachment and no stuck run.
 
-- [ ] **Step 3: Run all quality gates with fresh output**
+- [x] **Step 3: Run all quality gates with fresh output**
 
 Run: `pnpm lint && pnpm typecheck && pnpm test && pnpm build`
 
@@ -813,13 +813,13 @@ Run: `supabase db reset && supabase test db`
 
 Expected: every command exits 0 with no failed tests.
 
-- [ ] **Step 4: Inspect the production diff and acceptance checklist**
+- [x] **Step 4: Inspect the production diff and acceptance checklist**
 
 Run: `git diff --check && git status --short && git log --oneline --decorate -12`
 
 Confirm every acceptance criterion in `docs/superpowers/specs/2026-08-19-canvas-generated-asset-reliability-design.md` has implementation and test evidence. Record any environment-only test gap explicitly; do not claim it passed.
 
-- [ ] **Step 5: Commit final regression/docs updates**
+- [x] **Step 5: Commit final regression/docs updates**
 
 ```bash
 git add tests/canvas-generated-asset-reliability.spec.ts docs/superpowers/plans/2026-08-19-canvas-generated-asset-reliability.md
@@ -841,3 +841,10 @@ git commit -m "test: verify generated asset reliability flow"
   stability, a concurrent local ellipse, exactly one generated image, readable
   generated image bytes, preserved seed content, and an immediately accepted
   follow-up message.
+- Full quality gates on 2026-08-20: lint exited 0 with the repository's existing
+  warning baseline, typecheck completed 8/8 tasks, workspace tests passed 88/88,
+  Web tests passed 128/128, Server tests passed 431 with 7 explicit skips, and
+  production build completed 5/5 tasks.
+- Upgrade-path evidence on 2026-08-20: reset to migration `20260819000002`,
+  applied the five pending reliability migrations through `20260820000004`,
+  then passed all 157 pgTAP tests.
