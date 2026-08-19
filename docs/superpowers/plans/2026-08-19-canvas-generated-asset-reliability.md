@@ -297,6 +297,161 @@ git add supabase/migrations/20260819000003_canvas_generated_asset_reliability.sq
 git commit -m "feat(db): add durable generated asset attachment"
 ```
 
+### Task 4A: Terminate Canvas REST Work on Session Expiry
+
+**Files:**
+- Create: `apps/web/src/lib/auth-expiry.ts`
+- Modify: `apps/web/src/lib/api-client.ts`
+- Modify: `apps/web/src/lib/canvas-persistence.ts`
+- Modify: `apps/web/src/components/canvas-editor.tsx`
+- Modify: `apps/web/src/app/canvas/page.tsx`
+- Test: `apps/web/test/auth-expiry.test.ts`
+- Test: `apps/web/test/api-client.test.ts`
+- Test: `apps/web/test/canvas-editor-persistence.test.tsx`
+- Test: `apps/web/test/canvas-editor-coordinator.test.tsx`
+
+- [ ] **Step 1: Write failing API-boundary and coordinator tests**
+
+Prove that two concurrent REST 401 responses notify one page-owned handler whose
+idempotency guard calls `signOut` and redirects once; the redirect preserves only
+the current same-origin path/query/hash. Prove 403 and 5xx do not notify it. Add
+a coordinator test where a save throws `ApiAuthError`, then assert `pending` and
+`inFlight` are cleared, `pendingUnload()` returns null, and later observe/sync/
+reconcile calls issue no REST requests.
+
+```ts
+const handler = createAuthExpiryHandler({
+  signOut,
+  navigateToLogin,
+  getReturnTo: () => "/canvas?id=canvas-1#selection",
+});
+const unregister = registerApiAuthExpiryHandler(handler);
+await Promise.allSettled([fetchViewer("expired"), fetchCanvas("expired", canvasId)]);
+expect(signOut).toHaveBeenCalledOnce();
+expect(navigateToLogin).toHaveBeenCalledWith(
+  "/login?error=session_expired&returnTo=%2Fcanvas%3Fid%3Dcanvas-1%23selection",
+);
+unregister();
+
+expect(coordinator.snapshot()).toMatchObject({
+  stopped: true,
+  pending: null,
+  inFlight: null,
+});
+```
+
+- [ ] **Step 2: Run focused Web tests and verify RED**
+
+Run: `pnpm --filter @loomic/web exec vitest run test/auth-expiry.test.ts test/api-client.test.ts test/canvas-editor-persistence.test.tsx test/canvas-editor-coordinator.test.tsx`
+
+Expected: FAIL because REST 401 has no registered auth-expiry boundary and the
+coordinator restores failed snapshots to `pending`.
+
+- [ ] **Step 3: Implement one injected auth-expiry boundary**
+
+`auth-expiry.ts` owns `registerApiAuthExpiryHandler`, a synchronous notifier,
+safe `returnTo` construction, and `createAuthExpiryHandler`. `apiFetch` invokes
+the current handler only for HTTP 401 before throwing `ApiAuthError`; ordinary
+403 and 5xx remain application errors. `CanvasPage` registers its existing
+WebSocket/REST handler once and keeps the sign-out/navigation guard idempotent.
+
+Add `stopped: boolean` to the persistence state. Any `ApiAuthError` encountered
+inside queued save, fetch, remote file resolution, sync, or reconcile work sets
+`stopped`, discards `pending`/`inFlight`, and makes later coordinator operations
+no-ops. `CanvasEditor` skips debounce and unload/unmount flush work after this
+terminal state, so no stale token can keep advancing the save loop.
+
+- [ ] **Step 4: Verify focused and full Web behavior**
+
+Run: `pnpm --filter @loomic/web exec vitest run test/auth-expiry.test.ts test/api-client.test.ts test/canvas-editor-persistence.test.tsx test/canvas-editor-coordinator.test.tsx && pnpm --filter @loomic/web test && pnpm --filter @loomic/web typecheck`
+
+Expected: PASS; consecutive 401s clear the session and redirect once, while
+403/5xx do not enter auth expiry and no save occurs after the first 401.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add apps/web/src/lib/auth-expiry.ts apps/web/src/lib/api-client.ts apps/web/src/lib/canvas-persistence.ts apps/web/src/components/canvas-editor.tsx apps/web/src/app/canvas/page.tsx apps/web/test
+git commit -m "fix(web): terminate canvas persistence on auth expiry"
+```
+
+### Task 4B: Correlate Canvas Save Failures Without Leaking Payloads
+
+**Files:**
+- Modify: `packages/shared/src/http.ts`
+- Modify: `packages/shared/src/contracts.test.ts`
+- Modify: `apps/server/src/http/error-handler.ts`
+- Modify: `apps/server/src/http/error-handler.test.ts`
+- Modify: `apps/server/src/http/canvases.ts`
+- Modify: `apps/server/src/http/canvases.revision.test.ts`
+- Modify: `apps/web/src/lib/api-client.ts`
+- Modify: `apps/web/src/components/canvas-editor.tsx`
+- Modify: `apps/web/src/app/canvas/page.tsx`
+- Test: `apps/web/test/api-client.test.ts`
+- Test: `apps/web/test/canvas-editor-coordinator.test.tsx`
+
+- [ ] **Step 1: Write failing correlation and secrecy tests**
+
+Extend the shared error-envelope test with bounded optional `correlationId`.
+Make canvas save throw an internal error containing sentinel token/message/full
+canvas data, then assert the 500 body stays exactly `application_error / An
+unexpected error occurred`, the body and `x-correlation-id` header expose the
+same request correlation ID, and captured structured logs contain only
+`canvasId`, `expectedRevision`, `stage`, `errorClassification`, and
+`correlationId` from the canvas boundary. Add an API-client test proving the
+typed 5xx error retains `code`, `status`, and `correlationId` without exposing
+the private server message.
+
+```ts
+expect(response.json()).toEqual({
+  error: {
+    code: "application_error",
+    message: "An unexpected error occurred",
+    correlationId: expect.any(String),
+  },
+});
+expect(response.headers["x-correlation-id"]).toBe(
+  response.json().error.correlationId,
+);
+expect(JSON.stringify(canvasFailureLog)).not.toContain(secret);
+```
+
+- [ ] **Step 2: Run focused shared/server/Web tests and verify RED**
+
+Run: `pnpm --filter @loomic/shared test && pnpm --filter @loomic/server exec vitest run src/http/error-handler.test.ts src/http/canvases.revision.test.ts && pnpm --filter @loomic/web exec vitest run test/api-client.test.ts test/canvas-editor-coordinator.test.tsx`
+
+Expected: FAIL because HTTP envelopes and `ApiApplicationError` do not carry a
+correlation ID and the canvas route lacks stage-specific failure logs.
+
+- [ ] **Step 3: Implement the correlation boundary and safe logs**
+
+Add optional `correlationId` to the canonical shared error envelope. The global
+Fastify error handler uses the server-generated `request.id`, emits it in both
+`x-correlation-id` and the error envelope, and continues sanitizing/hiding all
+internal 5xx messages. The canvas PUT route catches and rethrows commit errors
+after one structured event with safe identifiers and classification only; it
+never logs bearer headers, request body, Canvas content, signed URLs, or raw
+error messages.
+
+`throwResponseError` reads the validated envelope/header correlation value into
+`ApiApplicationError`. Canvas save/sync logs emit only `code`, `status`, and
+`correlationId` plus canvas/revision context. A 5xx remains an ambiguous save
+outcome and must never be mapped to `canvas_revision_conflict`.
+
+- [ ] **Step 4: Run tests, typechecks, and regression suites**
+
+Run: `pnpm --filter @loomic/shared test && pnpm --filter @loomic/server exec vitest run src/http/error-handler.test.ts src/http/canvases.revision.test.ts && pnpm --filter @loomic/web exec vitest run test/api-client.test.ts test/canvas-editor-coordinator.test.tsx && pnpm typecheck && pnpm --filter @loomic/server test && pnpm --filter @loomic/web test`
+
+Expected: PASS with safe 5xx envelopes, matching correlation IDs, searchable
+server logs, and unchanged 409 conflict behavior.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/shared/src/http.ts packages/shared/src/contracts.test.ts apps/server/src/http/error-handler.ts apps/server/src/http/error-handler.test.ts apps/server/src/http/canvases.ts apps/server/src/http/canvases.revision.test.ts apps/web/src/lib/api-client.ts apps/web/src/components/canvas-editor.tsx apps/web/src/app/canvas/page.tsx apps/web/test
+git commit -m "fix(canvas): correlate REST save failures"
+```
+
 ### Task 5: Make Agent Generation Submission Create Intent Atomically
 
 **Files:**
@@ -670,4 +825,3 @@ Confirm every acceptance criterion in `docs/superpowers/specs/2026-08-19-canvas-
 git add tests/canvas-generated-asset-reliability.spec.ts docs/superpowers/plans/2026-08-19-canvas-generated-asset-reliability.md
 git commit -m "test: verify generated asset reliability flow"
 ```
-
