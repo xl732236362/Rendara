@@ -160,8 +160,13 @@ export function useChatStream(updateSessionMessages: MessageUpdater) {
                   block.type === "tool" && block.toolCallId === event.toolCallId
                     ? {
                         ...block,
-                        status: "completed" as const,
+                        status: "failed" as const,
                         outputSummary: event.error.message,
+                        error: event.error,
+                        ...(event.recovery ? { recovery: event.recovery } : {}),
+                        ...(event.artifacts
+                          ? { artifacts: event.artifacts }
+                          : {}),
                       }
                     : block,
                 ),

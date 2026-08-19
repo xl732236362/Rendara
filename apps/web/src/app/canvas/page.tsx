@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 
-import type { ImageArtifact, StreamEvent, VideoArtifact } from "@loomic/shared";
+import type { StreamEvent } from "@loomic/shared";
 import { BrandKitSelector } from "../../components/brand-kit-selector";
 import { CanvasBottomBar } from "../../components/canvas-bottom-bar";
 import type {
@@ -34,10 +34,6 @@ import {
   createAuthExpiryHandler,
   registerApiAuthExpiryHandler,
 } from "../../lib/auth-expiry";
-import {
-  insertImageOnCanvas,
-  insertVideoOnCanvas,
-} from "../../lib/canvas-elements";
 import {
   ApiApplicationError,
   ApiAuthError,
@@ -139,23 +135,6 @@ function CanvasPageContent() {
     },
     [],
   );
-
-  const handleImageGenerated = useCallback((artifact: ImageArtifact) => {
-    const api = excalidrawApiRef.current;
-    const token = accessTokenRef.current;
-    if (!api || !token) return;
-    insertImageOnCanvas(api, artifact, token).catch((err) => {
-      console.warn("Failed to insert image on canvas:", err);
-    });
-  }, []);
-
-  const handleVideoGenerated = useCallback((artifact: VideoArtifact) => {
-    const api = excalidrawApiRef.current;
-    if (!api) return;
-    insertVideoOnCanvas(api, artifact).catch((err) => {
-      console.warn("Failed to insert video on canvas:", err);
-    });
-  }, []);
 
   // Must be defined BEFORE useJobFallbackPolling which references it
   const handleCanvasSync = useCallback(
@@ -406,8 +385,6 @@ function CanvasPageContent() {
         canvasId={canvasData.id}
         open={chatOpen}
         onToggle={handleToggleChat}
-        onImageGenerated={handleImageGenerated}
-        onVideoGenerated={handleVideoGenerated}
         onCanvasSync={handleCanvasSync}
         onStreamEvent={handleStreamEvent}
         initialPrompt={initialPrompt}
