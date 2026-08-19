@@ -11,6 +11,9 @@ export const agentErrorCodeValues = [
   "agent_runtime_registration_failed",
   "agent_persistence_timeout",
   "agent_first_event_timeout",
+  "agent_model_inactivity_timeout",
+  "agent_tool_deadline_exceeded",
+  "agent_overall_deadline_exceeded",
 ] as const;
 
 export const errorCodeValues = [

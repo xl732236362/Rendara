@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { AgentExecutionContext } from "../../agent/execution-context.js";
 import type { AdminSupabaseClient } from "../../supabase/admin.js";
 
@@ -49,6 +50,10 @@ export interface AgentExecutionRepository {
     readonly userId: string;
   }): Promise<PersistedAgentAcceptance | null>;
   claimAttempt(input: AttemptClaim): Promise<AttemptLease>;
+  renewAttempt(input: AttemptRenewal): Promise<AttemptRenewalResult>;
+  recoverExpiredRuns(
+    input: ExpiredRunRecoveryRequest,
+  ): Promise<readonly ExpiredRunRecoveryResult[]>;
   finalizeRun(input: FinalizeAgentRun): Promise<FinalizedAgentRun>;
   beginEffect(input: AgentEffectRequest): Promise<AgentEffectReservation>;
   completeEffect(
@@ -96,6 +101,28 @@ export interface AttemptLease {
   readonly attemptId: string;
   readonly fencingToken: number;
   readonly leaseExpiresAt: Date;
+}
+
+export interface AttemptRenewal extends AttemptFence {
+  readonly leaseOwner: string;
+  readonly leaseMs: number;
+  readonly now: Date;
+}
+
+export interface AttemptRenewalResult {
+  readonly leaseExpiresAt: Date;
+}
+
+export interface ExpiredRunRecoveryRequest {
+  readonly graceMs: number;
+  readonly limit: number;
+  readonly now: Date;
+}
+
+export interface ExpiredRunRecoveryResult {
+  readonly runId: string;
+  readonly attemptId: string;
+  readonly status: "failed";
 }
 
 export interface AttemptState {
@@ -302,6 +329,33 @@ export class MemoryAgentExecutionRepository
     };
     stored.runStatus = "running";
     return { attemptId: input.attemptId, fencingToken, leaseExpiresAt };
+  }
+
+  async renewAttempt(input: AttemptRenewal): Promise<AttemptRenewalResult> {
+    const stored = this.#findByAttempt(input.attemptId);
+    const attempt = stored?.attempt;
+    if (
+      !stored ||
+      !attempt ||
+      attempt.status !== "running" ||
+      attempt.fencingToken !== input.fencingToken ||
+      attempt.leaseOwner !== input.leaseOwner ||
+      !attempt.leaseExpiresAt ||
+      attempt.leaseExpiresAt.getTime() <= input.now.getTime()
+    ) {
+      throw new Error("run_not_active");
+    }
+    const leaseExpiresAt = new Date(input.now.getTime() + input.leaseMs);
+    attempt.leaseExpiresAt = leaseExpiresAt;
+    return { leaseExpiresAt };
+  }
+
+  async recoverExpiredRuns(
+    _input: ExpiredRunRecoveryRequest,
+  ): Promise<readonly ExpiredRunRecoveryResult[]> {
+    // Process-local repositories have no crashed process to recover. Durable
+    // recovery is implemented by the Supabase repository below.
+    return [];
   }
 
   async finalizeRun(input: FinalizeAgentRun): Promise<FinalizedAgentRun> {
@@ -575,6 +629,41 @@ export function createAgentExecutionRepository(options: {
         leaseExpiresAt: new Date(row.lease_expires_at),
       };
     },
+    async renewAttempt(input) {
+      const row = await callAgentExecutionRpc(
+        options,
+        "renew_agent_run_attempt",
+        {
+          p_attempt_id: input.attemptId,
+          p_fencing_token: input.fencingToken,
+          p_lease_owner: input.leaseOwner,
+          p_lease_ms: input.leaseMs,
+        },
+      );
+      if (!isAttemptRenewalRow(row)) {
+        throw new Error("agent_execution_persistence_failed");
+      }
+      return { leaseExpiresAt: new Date(row.lease_expires_at) };
+    },
+    async recoverExpiredRuns(input) {
+      const client = options.getAdminClient() as unknown as {
+        rpc(
+          name: string,
+          args: Record<string, unknown>,
+        ): Promise<{ data: unknown; error: unknown }>;
+      };
+      const { data, error } = await client.rpc("recover_expired_agent_runs", {
+        p_grace_ms: input.graceMs,
+        p_limit: input.limit,
+        p_now: input.now.toISOString(),
+      });
+      if (error) throw new Error("agent_execution_persistence_failed");
+      const parsed = expiredRunRecoveryRowsSchema.safeParse(data ?? []);
+      if (!parsed.success) {
+        throw new Error("agent_execution_persistence_failed");
+      }
+      return parsed.data;
+    },
     async finalizeRun(input) {
       const row = await callAgentExecutionRpc(options, "finalize_agent_run", {
         p_attempt_id: input.attemptId,
@@ -761,6 +850,16 @@ export function createAgentExecutionRepository(options: {
     },
   };
 }
+
+const expiredRunRecoveryRowsSchema = z.array(
+  z
+    .object({
+      runId: z.string().uuid(),
+      attemptId: z.string().uuid(),
+      status: z.literal("failed"),
+    })
+    .strict(),
+);
 
 type AcceptanceRpcResult = {
   data: unknown;
@@ -969,6 +1068,16 @@ function isAttemptLeaseRow(value: unknown): value is {
     typeof row.attempt_id === "string" &&
     typeof row.fencing_token === "number" &&
     typeof row.lease_expires_at === "string"
+  );
+}
+
+function isAttemptRenewalRow(value: unknown): value is {
+  lease_expires_at: string;
+} {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Record<string, unknown>).lease_expires_at === "string"
   );
 }
 

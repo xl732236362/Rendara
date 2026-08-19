@@ -1,4 +1,5 @@
 import type { StreamEvent } from "@loomic/shared";
+import { z } from "zod";
 
 import type { OutboxEvent } from "./outbox-dispatcher.js";
 
@@ -62,6 +63,23 @@ export function createDomainEventPublisher(ports: PublisherPorts) {
     }
 
     if (event.aggregate_type === "agent_run") {
+      if (event.event_type === "agent.run.failed") {
+        const parsed = recoveredAgentRunFailureSchema.safeParse(event.payload);
+        if (!parsed.success || parsed.data.runId !== event.aggregate_id) {
+          throw codedError("invalid_agent_run_event");
+        }
+        const delivered = ports.sendToUser(parsed.data.userId, {
+          type: "domain.event",
+          eventId: event.event_id,
+          eventType: event.event_type,
+          aggregateId: event.aggregate_id,
+          aggregateVersion: event.aggregate_version,
+          payload: parsed.data,
+          occurredAt: event.occurred_at,
+        });
+        if (!delivered) throw codedError("agent_run_event_not_delivered");
+        return;
+      }
       if (
         event.event_type !== "agent.run.accepted" ||
         event.payload.runId !== event.aggregate_id ||
@@ -76,6 +94,21 @@ export function createDomainEventPublisher(ports: PublisherPorts) {
     throw codedError("unsupported_outbox_aggregate");
   };
 }
+
+const recoveredAgentRunFailureSchema = z
+  .object({
+    runId: z.string().uuid(),
+    attemptId: z.string().uuid(),
+    userId: z.string().uuid(),
+    canvasId: z.string().uuid(),
+    error: z
+      .object({
+        code: z.literal("agent_attempt_lease_expired"),
+        message: z.literal("The Agent run stopped before completion."),
+      })
+      .strict(),
+  })
+  .strict();
 
 function codedError(code: string): Error & { code: string } {
   return Object.assign(new Error(code), { code });

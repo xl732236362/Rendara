@@ -219,7 +219,7 @@ describe("Agent runtime application wiring", () => {
 
       await expect(eventPromise).resolves.toMatchObject({
         value: {
-          error: { code: "agent_first_event_timeout" },
+          error: { code: "agent_model_inactivity_timeout" },
           type: "run.failed",
         },
       });
@@ -345,6 +345,7 @@ describe("Agent runtime application wiring", () => {
         effectiveSkillNames: [],
       },
     });
+    const claimAttempt = vi.spyOn(repository, "claimAttempt");
     const constructionStates: boolean[] = [];
     const service = createAgentRunService({
       agentExecutionRepository: repository,
@@ -371,6 +372,9 @@ describe("Agent runtime application wiring", () => {
     for await (const _event of service.streamRun("run-lease")) {
     }
     expect(constructionStates).toEqual([true]);
+    expect(claimAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({ leaseMs: 60_000 }),
+    );
     await service.cancelRun("run-lease");
     expect(repository.get("run-lease")).toMatchObject({
       runStatus: "completed",

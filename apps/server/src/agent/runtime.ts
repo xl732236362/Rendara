@@ -68,6 +68,7 @@ import {
   createLoomicAgent,
 } from "./loomic-agent.js";
 import type { AgentPersistenceService } from "./persistence/index.js";
+import { createRunDeadlineGuard } from "./run-deadlines.js";
 import { adaptDeepAgentStream, toPublicToolEvent } from "./stream-adapter.js";
 import type { SubmitImageJobFn } from "./tools/image-generate.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
@@ -253,6 +254,8 @@ type RuntimeRunRecord = RunCreateRequest & {
   userId?: string;
   attemptId?: string;
   fencingToken?: number;
+  leaseValid?: boolean;
+  leaseRenewal?: { stop(): Promise<void>; isValid(): boolean };
 };
 
 type CreateAgentRuntimeOptions = {
@@ -283,11 +286,67 @@ type CreateAgentRuntimeOptions = {
 
 export type AgentRunService = ReturnType<typeof createAgentRunService>;
 
+export function startAttemptLeaseRenewal(options: {
+  repository: Pick<AgentExecutionRepository, "renewAttempt">;
+  attemptId: string;
+  fencingToken: number;
+  leaseOwner: string;
+  leaseMs: number;
+  renewEveryMs: number;
+  now?: () => Date;
+  onFenceInvalid(error: unknown): void;
+}) {
+  const now = options.now ?? (() => new Date());
+  let valid = true;
+  let stopped = false;
+  let activeRenewal: Promise<void> | undefined;
+
+  const renew = () => {
+    if (stopped || !valid || activeRenewal) return;
+    activeRenewal = options.repository
+      .renewAttempt({
+        attemptId: options.attemptId,
+        fencingToken: options.fencingToken,
+        leaseOwner: options.leaseOwner,
+        leaseMs: options.leaseMs,
+        now: now(),
+      })
+      .then(() => undefined)
+      .catch((error: unknown) => {
+        if (!valid) return;
+        valid = false;
+        clearInterval(timer);
+        options.onFenceInvalid(error);
+      })
+      .finally(() => {
+        activeRenewal = undefined;
+      });
+  };
+
+  const timer = setInterval(renew, options.renewEveryMs);
+  timer.unref();
+  return {
+    isValid: () => valid,
+    async stop() {
+      if (!stopped) {
+        stopped = true;
+        clearInterval(timer);
+      }
+      await activeRenewal;
+    },
+  };
+}
+
 export function createAgentRunService(options: CreateAgentRuntimeOptions) {
   const now = options.now ?? (() => new Date().toISOString());
   const runs = new Map<string, RuntimeRunRecord>();
   const runIdFactory = options.runIdFactory ?? (() => randomUUID());
-  const firstEventTimeoutMs = options.firstEventTimeoutMs ?? 30_000;
+  const modelInactivityMs =
+    options.firstEventTimeoutMs ?? options.env.agentModelInactivityMs;
+  const toolDeadlineMs = options.env.agentToolDeadlineMs;
+  const overallDeadlineMs = options.env.agentOverallDeadlineMs;
+  const attemptLeaseMs = options.env.agentAttemptLeaseMs;
+  const attemptRenewIntervalMs = options.env.agentAttemptRenewIntervalMs;
   const persistenceTimeoutMs = options.persistenceTimeoutMs ?? 10_000;
   const createUserClientForCanvas = options.createUserClient;
   const resolveCanvasScope = createUserClientForCanvas
@@ -568,14 +627,33 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               effectiveSkillNames: eligibleSkills,
             });
         }
+        const leaseOwner = `runtime-${randomUUID()}`;
         const lease = await options.agentExecutionRepository.claimAttempt({
           attemptId: executionContext.attemptId,
-          leaseOwner: `runtime-${randomUUID()}`,
-          leaseMs: 15 * 60_000,
+          leaseOwner,
+          leaseMs: attemptLeaseMs,
           now: new Date(now()),
         });
         run.attemptId = lease.attemptId;
         run.fencingToken = lease.fencingToken;
+        run.leaseValid = true;
+        run.leaseRenewal = startAttemptLeaseRenewal({
+          repository: options.agentExecutionRepository,
+          attemptId: lease.attemptId,
+          fencingToken: lease.fencingToken,
+          leaseOwner,
+          leaseMs: attemptLeaseMs,
+          renewEveryMs: attemptRenewIntervalMs,
+          now: () => new Date(now()),
+          onFenceInvalid: (error) => {
+            run.leaseValid = false;
+            rlog.error("agent.attempt.lease_renewal_failed", {
+              attemptId: lease.attemptId,
+              errorCode: runtimeFailureCode(error),
+            });
+            run.controller.abort(new Error("attempt_lease_renewal_failed"));
+          },
+        });
         executionContext =
           (await options.agentExecutionRepository.getExecutionContext(runId)) ??
           executionContext;
@@ -1241,26 +1319,47 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         stream,
         supervisor: agent.toolSupervisor,
       })[Symbol.asyncIterator]();
+      let adaptedStreamClosed = false;
+      const closeAdaptedStream = async () => {
+        if (adaptedStreamClosed) return;
+        adaptedStreamClosed = true;
+        await adaptedStream.return?.(undefined);
+      };
+      const deadlineGuard = createRunDeadlineGuard({
+        modelInactivityMs,
+        toolDeadlineMs,
+        overallDeadlineMs,
+        abort: () => run.controller.abort(),
+        closeIterator: closeAdaptedStream,
+      });
       let receivedModelEvent = false;
       const modelStartedAt = Date.now();
       try {
         while (true) {
-          const next = receivedModelEvent
-            ? await adaptedStream.next()
-            : await runWithDeadline({
-                operation: () => adaptedStream.next(),
-                timeoutError: () =>
-                  new AgentRunError({
-                    code: "agent_first_event_timeout",
-                    message: "Agent model did not produce an event in time.",
-                    retryable: true,
-                    statusCode: 504,
-                  }),
-                timeoutMs: firstEventTimeoutMs,
-              });
+          const next = await Promise.race([
+            adaptedStream.next(),
+            deadlineGuard.wait(),
+          ]);
           if (next.done) break;
           const event = next.value;
-          if (event.type !== "run.started" && !receivedModelEvent) {
+          if (event.type === "tool.started") {
+            deadlineGuard.onToolStarted(event.toolCallId);
+          } else if (
+            event.type === "tool.completed" ||
+            event.type === "tool.failed"
+          ) {
+            deadlineGuard.onToolFinished(event.toolCallId);
+          } else if (
+            event.type === "message.delta" ||
+            event.type === "thinking.delta"
+          ) {
+            deadlineGuard.onModelActivity();
+          }
+          if (
+            (event.type === "message.delta" ||
+              event.type === "thinking.delta") &&
+            !receivedModelEvent
+          ) {
             receivedModelEvent = true;
             rlog.info("agent.model.first_event", {
               durationMs: Date.now() - modelStartedAt,
@@ -1353,13 +1452,13 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           throw streamError;
         }
         if (streamError instanceof AgentRunError) {
-          rlog.warn("agent.model.first_event.failed", {
+          rlog.warn("agent.run.deadline_failed", {
             durationMs: Date.now() - modelStartedAt,
             errorCode: runtimeFailureCode(streamError),
             retryable: streamError.retryable,
           });
           run.controller.abort();
-          void adaptedStream.return?.(undefined).catch(() => undefined);
+          void closeAdaptedStream().catch(() => undefined);
         }
         // Catch DB / checkpoint errors that bubble up from the LangGraph stream
         // (e.g. Supabase circuit-breaker, connection pool exhaustion).
@@ -1383,6 +1482,8 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           options.finalizationRetryDelayMs,
         );
         return;
+      } finally {
+        deadlineGuard.stop();
       }
     },
   };
@@ -1428,6 +1529,7 @@ async function beginRuntimeEffect(
   logicalToolCallId: string,
   input: unknown,
 ) {
+  if (run.leaseValid === false) throw new Error("run_not_active");
   if (!repository || !run.attemptId || run.fencingToken === undefined) {
     return null;
   }
@@ -1447,6 +1549,7 @@ async function completeRuntimeEffect(
   input: unknown,
   result: unknown,
 ): Promise<void> {
+  if (run.leaseValid === false) throw new Error("run_not_active");
   if (!repository || !run.attemptId || run.fencingToken === undefined) return;
   await repository.completeEffect({
     runId: run.runId,
@@ -1667,6 +1770,11 @@ async function finalizeRuntimeRun(
   metadata: Readonly<Record<string, unknown>>,
   retryDelayMs?: number,
 ): Promise<AgentTerminalStatus | null> {
+  await run.leaseRenewal?.stop();
+  // exactOptionalPropertyTypes requires absence rather than assigning undefined.
+  // biome-ignore lint/performance/noDelete: runtime records are short-lived.
+  delete run.leaseRenewal;
+  if (run.leaseValid === false) throw new Error("run_not_active");
   if (!repository || !run.attemptId || run.fencingToken === undefined) {
     return null;
   }
@@ -1781,10 +1889,19 @@ async function updatePersistedRunStatus(
 
 function runtimeFailureCode(
   error: unknown,
-): "agent_first_event_timeout" | "agent_persistence_timeout" | "run_failed" {
+):
+  | "agent_first_event_timeout"
+  | "agent_model_inactivity_timeout"
+  | "agent_tool_deadline_exceeded"
+  | "agent_overall_deadline_exceeded"
+  | "agent_persistence_timeout"
+  | "run_failed" {
   if (
     error instanceof AgentRunError &&
     (error.code === "agent_first_event_timeout" ||
+      error.code === "agent_model_inactivity_timeout" ||
+      error.code === "agent_tool_deadline_exceeded" ||
+      error.code === "agent_overall_deadline_exceeded" ||
       error.code === "agent_persistence_timeout")
   ) {
     return error.code;

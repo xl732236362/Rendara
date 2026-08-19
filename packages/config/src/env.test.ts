@@ -117,6 +117,27 @@ describe("server environment schema", () => {
     expect(JSON.stringify(envDescriptors)).not.toContain("google-secret");
   });
 
+  it("provides bounded Agent deadline and lease defaults", () => {
+    const env = parseServerEnvironment({});
+    expect(env).toMatchObject({
+      agentModelInactivityMs: 30_000,
+      agentToolDeadlineMs: 600_000,
+      agentOverallDeadlineMs: 900_000,
+      agentAttemptLeaseMs: 60_000,
+      agentAttemptRenewIntervalMs: 15_000,
+    });
+  });
+
+  it.each([
+    ["LOOMIC_AGENT_MODEL_INACTIVITY_MS", "999"],
+    ["LOOMIC_AGENT_TOOL_DEADLINE_MS", "999"],
+    ["LOOMIC_AGENT_OVERALL_DEADLINE_MS", "999"],
+    ["LOOMIC_AGENT_ATTEMPT_LEASE_MS", "4999"],
+    ["LOOMIC_AGENT_ATTEMPT_RENEW_INTERVAL_MS", "999"],
+  ])("rejects unsafe Agent timing %s=%s", (key, value) => {
+    expect(() => parseServerEnvironment({ [key]: value })).toThrow(key);
+  });
+
   it("aggregates diagnostics and never includes secret values", () => {
     const secret = "sk-super-secret-material";
     let error: unknown;

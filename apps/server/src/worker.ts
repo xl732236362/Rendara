@@ -12,6 +12,8 @@ if (process.env.GLOBAL_AGENT_HTTP_PROXY) {
 
 import { randomUUID } from "node:crypto";
 import { loadServerEnv } from "./config/env.js";
+import { createAgentExecutionRepository } from "./features/agent-runs/agent-execution-repository.js";
+import { createExpiredAgentRunRecovery } from "./features/agent-runs/expired-agent-run-recovery.js";
 import { createGeneratedAssetAttachmentTemplateAdapter } from "./features/canvas/generated-asset-application-adapter.js";
 import { createGeneratedAssetAttachmentReconciler } from "./features/canvas/generated-asset-attachment-reconciler.js";
 import { createGeneratedAssetAttachmentRepository } from "./features/canvas/generated-asset-attachment-repository.js";
@@ -115,6 +117,10 @@ async function main() {
     workerId,
     logger,
   });
+  const expiredRunRecovery = createExpiredAgentRunRecovery({
+    repository: createAgentExecutionRepository({ getAdminClient }),
+    logger,
+  });
 
   let running = true;
 
@@ -133,6 +139,7 @@ async function main() {
       await Promise.allSettled(allTasks);
     }
     await attachmentReconciler.stop();
+    await expiredRunRecovery.stop();
     await pgmq.shutdown();
     console.log(`${tag} Shutdown complete.`);
     process.exit(0);
@@ -144,6 +151,7 @@ async function main() {
     (q) => `${q}=${CONCURRENCY_BY_QUEUE[q] ?? 1}`,
   ).join(", ");
   await attachmentReconciler.start();
+  await expiredRunRecovery.start();
   console.log(
     `${tag} Started. concurrency={${concurrencyDesc}}, longPollTimeout=${pollTimeoutSeconds}s`,
   );

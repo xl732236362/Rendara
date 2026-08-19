@@ -104,6 +104,38 @@ describe("AgentExecutionRepository", () => {
     ).resolves.toBe(true);
   });
 
+  it("renews only the current owner and fencing token", async () => {
+    const repository = new MemoryAgentExecutionRepository();
+    await repository.accept(acceptance);
+    const lease = await repository.claimAttempt({
+      attemptId: "attempt-1",
+      leaseOwner: "worker-1",
+      leaseMs: 60_000,
+      now: new Date("2026-08-19T00:00:00.000Z"),
+    });
+
+    await expect(
+      repository.renewAttempt({
+        attemptId: "attempt-1",
+        fencingToken: lease.fencingToken,
+        leaseOwner: "worker-1",
+        leaseMs: 60_000,
+        now: new Date("2026-08-19T00:00:15.000Z"),
+      }),
+    ).resolves.toEqual({
+      leaseExpiresAt: new Date("2026-08-19T00:01:15.000Z"),
+    });
+    await expect(
+      repository.renewAttempt({
+        attemptId: "attempt-1",
+        fencingToken: lease.fencingToken,
+        leaseOwner: "worker-other",
+        leaseMs: 60_000,
+        now: new Date("2026-08-19T00:00:30.000Z"),
+      }),
+    ).rejects.toThrow("run_not_active");
+  });
+
   it("deduplicates effects and rejects stale fencing or changed input", async () => {
     const repository = new MemoryAgentExecutionRepository();
     await repository.accept(acceptance);
@@ -418,6 +450,86 @@ describe("Supabase Agent acceptance adapter", () => {
       p_run_id: "run-1",
       p_status: "failed",
     });
+  });
+
+  it("renews an attempt through the fenced lease RPC", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: [{ lease_expires_at: "2026-08-19T00:01:15.000Z" }],
+      error: null,
+    });
+    const repository = createAgentExecutionRepository({
+      getAdminClient: () => ({ rpc }) as never,
+    });
+
+    await expect(
+      repository.renewAttempt({
+        attemptId: "attempt-1",
+        fencingToken: 3,
+        leaseOwner: "worker-1",
+        leaseMs: 60_000,
+        now: new Date("2026-08-19T00:00:15.000Z"),
+      }),
+    ).resolves.toEqual({
+      leaseExpiresAt: new Date("2026-08-19T00:01:15.000Z"),
+    });
+    expect(rpc).toHaveBeenCalledWith("renew_agent_run_attempt", {
+      p_attempt_id: "attempt-1",
+      p_fencing_token: 3,
+      p_lease_owner: "worker-1",
+      p_lease_ms: 60_000,
+    });
+  });
+
+  it("recovers expired runs through the bounded canonical RPC", async () => {
+    const rpc = vi.fn().mockResolvedValue({
+      data: [
+        {
+          runId: "11111111-1111-4111-8111-111111111111",
+          attemptId: "22222222-2222-4222-8222-222222222222",
+          status: "failed",
+        },
+      ],
+      error: null,
+    });
+    const repository = createAgentExecutionRepository({
+      getAdminClient: () => ({ rpc }) as never,
+    });
+    const now = new Date("2026-08-20T00:00:00.000Z");
+
+    await expect(
+      repository.recoverExpiredRuns({ graceMs: 30_000, limit: 25, now }),
+    ).resolves.toEqual([
+      {
+        runId: "11111111-1111-4111-8111-111111111111",
+        attemptId: "22222222-2222-4222-8222-222222222222",
+        status: "failed",
+      },
+    ]);
+    expect(rpc).toHaveBeenCalledWith("recover_expired_agent_runs", {
+      p_grace_ms: 30_000,
+      p_limit: 25,
+      p_now: now.toISOString(),
+    });
+  });
+
+  it("rejects malformed expired-run recovery output", async () => {
+    const repository = createAgentExecutionRepository({
+      getAdminClient: () =>
+        ({
+          rpc: vi.fn().mockResolvedValue({
+            data: [{ runId: "not-a-uuid", status: "failed" }],
+            error: null,
+          }),
+        }) as never,
+    });
+
+    await expect(
+      repository.recoverExpiredRuns({
+        graceMs: 30_000,
+        limit: 25,
+        now: new Date("2026-08-20T00:00:00.000Z"),
+      }),
+    ).rejects.toThrow("agent_execution_persistence_failed");
   });
 });
 
