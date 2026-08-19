@@ -745,99 +745,47 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
 
             if (current.status === "succeeded" && current.result) {
               const result = current.result as {
-                signed_url?: string;
-                object_path?: string;
+                asset_id?: string;
                 width?: number;
                 height?: number;
                 mime_type?: string;
               };
               jobLap("job_poll_done", { pollCount, status: "succeeded" });
-
-              // Write element directly to canvas (backend-driven insertion)
-              let elementId: string | undefined;
-              if (
-                canvasId &&
-                result.object_path &&
-                canMutateCanvas &&
-                options.attachGeneratedAsset
-              ) {
-                try {
-                  const placementInput = input as typeof input & {
-                    placementX?: number;
-                    placementY?: number;
-                    placementWidth?: number;
-                    placementHeight?: number;
-                  };
-                  const explicitPlacement =
-                    placementInput.placementX != null &&
-                    placementInput.placementY != null
-                      ? {
-                          x: placementInput.placementX,
-                          y: placementInput.placementY,
-                          width: placementInput.placementWidth ?? 512,
-                          height: placementInput.placementHeight ?? 512,
-                        }
-                      : undefined;
-                  const insertResult = await options.attachGeneratedAsset(
-                    { userId, workspaceId, accessToken },
-                    {
-                      canvasId,
-                      jobId: job.id,
-                      effectKey: "generated_asset_attached",
-                      ...(run.attemptId && run.fencingToken !== undefined
-                        ? {
-                            agentEffect: {
-                              runId,
-                              attemptId: run.attemptId,
-                              fencingToken: run.fencingToken,
-                              logicalToolCallId: input.logicalToolCallId,
-                              inputDigest: createHash("sha256")
-                                .update(stableJson(input))
-                                .digest("hex"),
-                              result: {
-                                jobId: job.id,
-                                elementId: job.id,
-                                imageUrl: result.signed_url ?? "",
-                                width: result.width ?? 1024,
-                                height: result.height ?? 1024,
-                                mimeType: result.mime_type ?? "image/png",
-                              },
-                            },
-                          }
-                        : {}),
-                      asset: {
-                        type: "image",
-                        objectPath: result.object_path,
-                        width: result.width ?? 1024,
-                        height: result.height ?? 1024,
-                        mimeType: result.mime_type ?? "image/png",
-                        title: input.title,
-                      },
-                      ...(explicitPlacement
-                        ? { placement: explicitPlacement }
-                        : {}),
-                    },
-                  );
-                  elementId = insertResult.elementId;
-
-                  jobLap("canvas_element_inserted", { elementId });
-                } catch (insertErr) {
-                  // Graceful degradation: log error but still return result
-                  console.error(
-                    "[submitImageJob] canvas insert failed:",
-                    insertErr,
-                  );
-                }
+              if (!result.asset_id) {
+                throw new Error("generation_asset_id_missing");
               }
-
-              const completed = {
-                jobId: job.id,
-                ...(elementId != null ? { elementId } : {}),
-                imageUrl: result.signed_url ?? "",
+              const artifact = {
+                type: "image" as const,
+                title: input.title,
+                url: `/api/assets/${result.asset_id}`,
                 width: result.width ?? 1024,
                 height: result.height ?? 1024,
                 mimeType: result.mime_type ?? "image/png",
+                jobId: job.id,
               };
+              const completed =
+                canMutateCanvas && canvasId
+                  ? {
+                      attachmentStatus: "pending" as const,
+                      jobId: job.id,
+                      artifact,
+                      recovery: {
+                        kind: "watch_generated_asset" as const,
+                        jobId: job.id,
+                        canvasId,
+                      },
+                      error: {
+                        code: "generated_asset_pending",
+                        message:
+                          "Generated media is still being attached to the canvas.",
+                        retryable: true,
+                      },
+                    }
+                  : {
+                      attachmentStatus: "not_requested" as const,
+                      jobId: job.id,
+                      artifact,
+                    };
               await completeRuntimeEffect(
                 options.agentExecutionRepository,
                 run,
@@ -853,10 +801,9 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               current.status === "canceled"
             ) {
               jobLap("job_poll_done", { pollCount, status: current.status });
-              return {
-                jobId: job.id,
-                error: current.error_message ?? `Job ${current.status}`,
-              };
+              throw new Error(
+                current.error_message ?? `Generation job ${current.status}`,
+              );
             }
 
             // "failed" with attempts exhausted
@@ -868,18 +815,14 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                 pollCount,
                 status: "failed_max_retries",
               });
-              return {
-                jobId: job.id,
-                error: current.error_message ?? "Job failed after max retries",
-              };
+              throw new Error(
+                current.error_message ?? "Generation job failed after retries",
+              );
             }
           }
 
           jobLap("job_poll_done", { pollCount, status: "timeout" });
-          return {
-            jobId: job.id,
-            error: `Job timed out after ${MAX_WAIT / 1000}s`,
-          };
+          throw new Error(`Generation job timed out after ${MAX_WAIT / 1000}s`);
         };
 
         submitVideoJob = async (input) => {
@@ -977,109 +920,50 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
 
             if (current.status === "succeeded" && current.result) {
               const result = current.result as {
-                signed_url?: string;
+                asset_id?: string;
                 duration_seconds?: number;
                 width?: number;
                 height?: number;
                 mime_type?: string;
               };
               jobLap("job_poll_done", { pollCount, status: "succeeded" });
-
-              // Write element directly to canvas (backend-driven insertion)
-              let elementId: string | undefined;
-              if (
-                canvasId &&
-                result.signed_url &&
-                canMutateCanvas &&
-                options.attachGeneratedAsset
-              ) {
-                try {
-                  const placementInput = input as typeof input & {
-                    placementX?: number;
-                    placementY?: number;
-                    placementWidth?: number;
-                    placementHeight?: number;
-                  };
-                  const explicitPlacement =
-                    placementInput.placementX != null &&
-                    placementInput.placementY != null
-                      ? {
-                          x: placementInput.placementX,
-                          y: placementInput.placementY,
-                          width: placementInput.placementWidth ?? 640,
-                          height: placementInput.placementHeight ?? 360,
-                        }
-                      : undefined;
-                  const insertResult = await options.attachGeneratedAsset(
-                    { userId, workspaceId, accessToken },
-                    {
-                      canvasId,
-                      jobId: job.id,
-                      effectKey: "generated_asset_attached",
-                      ...(run.attemptId && run.fencingToken !== undefined
-                        ? {
-                            agentEffect: {
-                              runId,
-                              attemptId: run.attemptId,
-                              fencingToken: run.fencingToken,
-                              logicalToolCallId: input.logicalToolCallId,
-                              inputDigest: createHash("sha256")
-                                .update(stableJson(input))
-                                .digest("hex"),
-                              result: {
-                                jobId: job.id,
-                                elementId: job.id,
-                                videoUrl: result.signed_url ?? "",
-                                width: result.width ?? 1280,
-                                height: result.height ?? 720,
-                                mimeType: result.mime_type ?? "video/mp4",
-                                ...(result.duration_seconds != null
-                                  ? {
-                                      durationSeconds: result.duration_seconds,
-                                    }
-                                  : {}),
-                              },
-                            },
-                          }
-                        : {}),
-                      asset: {
-                        type: "video",
-                        signedUrl: result.signed_url,
-                        width: result.width ?? 1280,
-                        height: result.height ?? 720,
-                        mimeType: result.mime_type ?? "video/mp4",
-                        ...(result.duration_seconds != null
-                          ? { durationSeconds: result.duration_seconds }
-                          : {}),
-                      },
-                      ...(explicitPlacement
-                        ? { placement: explicitPlacement }
-                        : {}),
-                    },
-                  );
-                  elementId = insertResult.elementId;
-
-                  jobLap("canvas_element_inserted", { elementId });
-                } catch (insertErr) {
-                  // Graceful degradation: log error but still return result
-                  console.error(
-                    "[submitVideoJob] canvas insert failed:",
-                    insertErr,
-                  );
-                }
+              if (!result.asset_id) {
+                throw new Error("generation_asset_id_missing");
               }
-
-              const completed = {
-                jobId: job.id,
-                ...(elementId != null ? { elementId } : {}),
-                videoUrl: result.signed_url ?? "",
+              const artifact = {
+                type: "video" as const,
+                url: `/api/assets/${result.asset_id}`,
                 width: result.width ?? 1280,
                 height: result.height ?? 720,
                 mimeType: result.mime_type ?? "video/mp4",
+                jobId: job.id,
                 ...(result.duration_seconds != null
                   ? { durationSeconds: result.duration_seconds }
                   : {}),
               };
+              const completed =
+                canMutateCanvas && canvasId
+                  ? {
+                      attachmentStatus: "pending" as const,
+                      jobId: job.id,
+                      artifact,
+                      recovery: {
+                        kind: "watch_generated_asset" as const,
+                        jobId: job.id,
+                        canvasId,
+                      },
+                      error: {
+                        code: "generated_asset_pending",
+                        message:
+                          "Generated media is still being attached to the canvas.",
+                        retryable: true,
+                      },
+                    }
+                  : {
+                      attachmentStatus: "not_requested" as const,
+                      jobId: job.id,
+                      artifact,
+                    };
               await completeRuntimeEffect(
                 options.agentExecutionRepository,
                 run,
@@ -1095,10 +979,9 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               current.status === "canceled"
             ) {
               jobLap("job_poll_done", { pollCount, status: current.status });
-              return {
-                jobId: job.id,
-                error: current.error_message ?? `Job ${current.status}`,
-              };
+              throw new Error(
+                current.error_message ?? `Generation job ${current.status}`,
+              );
             }
 
             if (
@@ -1109,18 +992,14 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                 pollCount,
                 status: "failed_max_retries",
               });
-              return {
-                jobId: job.id,
-                error: current.error_message ?? "Job failed after max retries",
-              };
+              throw new Error(
+                current.error_message ?? "Generation job failed after retries",
+              );
             }
           }
 
           jobLap("job_poll_done", { pollCount, status: "timeout" });
-          return {
-            jobId: job.id,
-            error: `Job timed out after ${MAX_WAIT / 1000}s`,
-          };
+          throw new Error(`Generation job timed out after ${MAX_WAIT / 1000}s`);
         };
       }
 

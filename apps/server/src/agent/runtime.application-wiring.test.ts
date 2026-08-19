@@ -790,6 +790,7 @@ describe("Agent runtime application wiring", () => {
 
   it("normalizes image and video tool submissions through the injected use case", async () => {
     const jobId = "33333333-3333-4333-8333-333333333333";
+    const assetId = "44444444-4444-4444-8444-444444444444";
     const submitGeneration = vi.fn(async () => ({
       jobId,
       status: "queued" as const,
@@ -815,8 +816,7 @@ describe("Agent runtime application wiring", () => {
         getJobAdmin: async () => ({
           status: "succeeded",
           result: {
-            signed_url: "https://example.com/result",
-            object_path: "generated/result.png",
+            asset_id: assetId,
             width: 100,
             height: 80,
             mime_type: "image/png",
@@ -853,7 +853,10 @@ describe("Agent runtime application wiring", () => {
       aspectRatio: "1:1",
       inputImages: ["https://example.com/input.png"],
     });
-    await imagePromise;
+    await expect(imagePromise).resolves.toMatchObject({
+      attachmentStatus: "not_requested",
+      artifact: { url: `/api/assets/${assetId}` },
+    });
     const videoPromise = submitVideoJob({
       logicalToolCallId: "tool-video-1",
       prompt: "video",
@@ -863,7 +866,10 @@ describe("Agent runtime application wiring", () => {
       aspectRatio: "16:9",
       enableAudio: true,
     });
-    await videoPromise;
+    await expect(videoPromise).resolves.toMatchObject({
+      attachmentStatus: "not_requested",
+      artifact: { url: `/api/assets/${assetId}` },
+    });
 
     expect(submitGeneration).toHaveBeenNthCalledWith(
       1,

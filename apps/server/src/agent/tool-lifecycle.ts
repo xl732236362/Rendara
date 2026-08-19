@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import { publicToolErrorSchema, toolArtifactSchema } from "@loomic/shared";
+import {
+  generatedAssetRecoverySchema,
+  publicToolErrorSchema,
+  toolArtifactSchema,
+} from "@loomic/shared";
 import { z } from "zod";
 
 const lifecycleBaseSchema = z.object({
@@ -33,6 +37,8 @@ export const canonicalToolFailedSchema = lifecycleBaseSchema
   .extend({
     type: z.literal("loomic.tool.failed"),
     error: publicToolErrorSchema,
+    recovery: generatedAssetRecoverySchema.optional(),
+    artifacts: z.array(toolArtifactSchema).max(10).optional(),
   })
   .strict();
 

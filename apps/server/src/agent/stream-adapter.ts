@@ -254,6 +254,8 @@ export function toPublicToolEvent(record: CanonicalToolRecord): StreamEvent {
         toolCallId: record.logicalToolCallId,
         toolName: record.toolName,
         error: record.error,
+        ...(record.recovery ? { recovery: record.recovery } : {}),
+        ...(record.artifacts ? { artifacts: record.artifacts } : {}),
         timestamp: record.timestamp,
       };
   }
