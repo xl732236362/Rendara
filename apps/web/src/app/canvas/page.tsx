@@ -95,7 +95,23 @@ function CanvasPageContent() {
   accessTokenRef.current = accessToken;
 
   const getToken = useCallback(() => accessTokenRef.current ?? null, []);
-  const ws = useWebSocket(getToken);
+  const authExpiryHandledRef = useRef(false);
+  const handleAuthExpired = useCallback(() => {
+    if (authExpiryHandledRef.current) return;
+    authExpiryHandledRef.current = true;
+
+    const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    console.warn("[auth] session expired; redirecting to login", { returnTo });
+    void signOutRef.current().finally(() => {
+      routerRef.current.replace(
+        `/login?${new URLSearchParams({
+          error: "session_expired",
+          returnTo,
+        }).toString()}`,
+      );
+    });
+  }, []);
+  const ws = useWebSocket(getToken, { onAuthExpired: handleAuthExpired });
 
   const handleApiReady = useCallback((api: any) => {
     excalidrawApiRef.current = api;
@@ -252,7 +268,7 @@ function CanvasPageContent() {
       })
       .catch((err) => {
         if (err instanceof ApiAuthError) {
-          signOutRef.current().then(() => routerRef.current.replace("/login"));
+          handleAuthExpired();
           return;
         }
         setError("Failed to load canvas.");
@@ -262,7 +278,7 @@ function CanvasPageContent() {
     // (ref wrappers) from deps — only re-run when auth resolves, user changes, or
     // canvasId changes. Token refresh (e.g. tab switch) must NOT trigger a reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, userId, canvasId]);
+  }, [authLoading, userId, canvasId, handleAuthExpired]);
 
   if (!canvasId) {
     return (

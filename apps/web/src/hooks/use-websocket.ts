@@ -30,7 +30,14 @@ export type RunCallbacks = {
   onError: (error: WsErrorMessage) => void;
 };
 
-export function useWebSocket(getToken: () => string | null): WebSocketHandle {
+type WebSocketOptions = {
+  onAuthExpired?: () => void;
+};
+
+export function useWebSocket(
+  getToken: () => string | null,
+  options: WebSocketOptions = {},
+): WebSocketHandle {
   const wsRef = useRef<WebSocket | null>(null);
   const connectionIdRef = useRef(
     (() => {
@@ -53,6 +60,8 @@ export function useWebSocket(getToken: () => string | null): WebSocketHandle {
   const reconnectAttempt = useRef(0);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const disposed = useRef(false);
+  const onAuthExpiredRef = useRef(options.onAuthExpired);
+  onAuthExpiredRef.current = options.onAuthExpired;
 
   const eventListeners = useRef<Set<EventCallback>>(new Set());
   const ackListeners = useRef<Map<string, (ack: WsCommandAck) => void>>(
@@ -167,7 +176,9 @@ export function useWebSocket(getToken: () => string | null): WebSocketHandle {
       wsRef.current = null;
 
       if (event.code === 4001) {
-        console.warn("[ws] Auth rejected, will retry with fresh token");
+        console.warn("[ws] authentication rejected; ending connection");
+        onAuthExpiredRef.current?.();
+        return;
       }
 
       if (!disposed.current) {

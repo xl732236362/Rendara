@@ -113,6 +113,22 @@ describe("Login page", () => {
     );
   });
 
+  it("shows the expired-session message", async () => {
+    mockSearchParams.mockReturnValue(
+      new URLSearchParams("error=session_expired&returnTo=%2Fcanvas%3Fid%3Dc1"),
+    );
+
+    render(
+      <AuthProvider>
+        <LoginPage />
+      </AuthProvider>,
+    );
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "登录已过期，请重新登录。",
+    );
+  });
+
   it("sends a login-only magic link", async () => {
     render(
       <AuthProvider>
@@ -129,7 +145,7 @@ describe("Login page", () => {
       expect(mockSignInWithOtp).toHaveBeenCalledWith({
         email: "user@example.com",
         options: {
-          emailRedirectTo: `${window.location.origin}/auth/callback`,
+          emailRedirectTo: `${window.location.origin}/auth/callback?returnTo=%2Fhome`,
           shouldCreateUser: false,
         },
       });
@@ -160,6 +176,58 @@ describe("Login page", () => {
         password: "password-123",
       });
       expect(mockFetchViewer).toHaveBeenCalledWith("session-token");
+      expect(mockReplace).toHaveBeenCalledWith("/home");
+    });
+  });
+
+  it("returns to a same-origin canvas after password sign-in", async () => {
+    mockSearchParams.mockReturnValue(
+      new URLSearchParams("returnTo=%2Fcanvas%3Fid%3Dcanvas-1"),
+    );
+    render(
+      <AuthProvider>
+        <LoginPage />
+      </AuthProvider>,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /use password instead/i }),
+    );
+    fireEvent.change(screen.getByLabelText(/email/i), {
+      target: { value: "user@example.com" },
+    });
+    fireEvent.change(screen.getByLabelText(/password/i), {
+      target: { value: "password-123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+    await waitFor(() => {
+      expect(mockReplace).toHaveBeenCalledWith("/canvas?id=canvas-1");
+    });
+  });
+
+  it("rejects an external return URL after password sign-in", async () => {
+    mockSearchParams.mockReturnValue(
+      new URLSearchParams("returnTo=https%3A%2F%2Fevil.example%2Fsteal"),
+    );
+    render(
+      <AuthProvider>
+        <LoginPage />
+      </AuthProvider>,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /use password instead/i }),
+    );
+    fireEvent.change(screen.getByLabelText(/email/i), {
+      target: { value: "user@example.com" },
+    });
+    fireEvent.change(screen.getByLabelText(/password/i), {
+      target: { value: "password-123" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+    await waitFor(() => {
       expect(mockReplace).toHaveBeenCalledWith("/home");
     });
   });

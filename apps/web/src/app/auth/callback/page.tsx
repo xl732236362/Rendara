@@ -4,6 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useRef } from "react";
 
 import { LoadingScreen } from "../../../components/loading-screen";
+import { safeAuthReturnUrl } from "../../../lib/auth-return-url";
 import {
   ApiApplicationError,
   ApiAuthError,
@@ -28,6 +29,7 @@ function AuthCallbackPageContent() {
 
     const code = searchParams.get("code");
     const providerError = searchParams.get("error");
+    const returnTo = safeAuthReturnUrl(searchParams.get("returnTo"));
 
     if (providerError) {
       router.replace(loginErrorUrl(providerError));
@@ -75,7 +77,7 @@ function AuthCallbackPageContent() {
         }
 
         if (!cancelled) {
-          router.replace("/home");
+          router.replace(returnTo);
         }
       } catch {
         if (!cancelled) {

@@ -24,9 +24,13 @@ const fadeIn = {
 
 interface LoginFormProps {
   initialErrorMessage?: string | null;
+  returnTo?: string;
 }
 
-export function LoginForm({ initialErrorMessage = null }: LoginFormProps) {
+export function LoginForm({
+  initialErrorMessage = null,
+  returnTo = "/home",
+}: LoginFormProps) {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -38,7 +42,7 @@ export function LoginForm({ initialErrorMessage = null }: LoginFormProps) {
   async function bootstrapWorkspace(accessToken: string) {
     try {
       await fetchViewer(accessToken);
-      router.replace("/home");
+      router.replace(returnTo);
     } catch {
       setError("Could not load your workspace. Please try again.");
     }
@@ -55,7 +59,7 @@ export function LoginForm({ initialErrorMessage = null }: LoginFormProps) {
     const { error: authError } = await supabase.auth.signInWithOtp({
       email: trimmed,
       options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
+        emailRedirectTo: `${window.location.origin}/auth/callback?${new URLSearchParams({ returnTo }).toString()}`,
         shouldCreateUser: false,
       },
     });
@@ -103,7 +107,7 @@ export function LoginForm({ initialErrorMessage = null }: LoginFormProps) {
     const { error: authError } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
+        redirectTo: `${window.location.origin}/auth/callback?${new URLSearchParams({ returnTo }).toString()}`,
       },
     });
     if (authError) {
