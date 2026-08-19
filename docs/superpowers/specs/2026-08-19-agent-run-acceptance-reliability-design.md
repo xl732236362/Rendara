@@ -116,21 +116,24 @@ new submission and receives a new identifier. The retained request excludes
 replay does not reuse expired credentials.
 
 The request digest covers the normalized request (excluding `accessToken`) and
-the canonical user/session/Canvas scope. Reconciliation compares this digest
-before an existing run can be reused.
+the canonical user/session/Canvas scope. It is computed before entering the
+acceptance deadline so the expected value remains available even when the RPC
+does not return. Reconciliation compares this digest before an existing run can
+be reused.
 
 An acceptance transport timeout is an indeterminate result, not proof that the
 database transaction rolled back. After such a timeout, the server performs a
 bounded lookup by `(userId, clientRequestId)`:
 
-- a matching digest returns the existing accepted run;
+- a matching digest returns the existing accepted run and its persisted model;
 - a different digest returns `agent_acceptance_conflict`;
 - no visible row returns `agent_acceptance_indeterminate` and instructs the
   client to retry only with the same `clientRequestId`.
 
-The same identifier makes a late commit safe: a subsequent acceptance call is
-serialized by the existing advisory lock and returns the original run instead
-of creating a duplicate.
+The persisted model, rather than a newly resolved workspace default, is used
+when an existing run is reconciled or rehydrated. The same identifier makes a
+late commit safe: a subsequent acceptance call is serialized by the existing
+advisory lock and returns the original run instead of creating a duplicate.
 
 No acknowledgement is sent before the transaction succeeds or reconciliation
 finds the matching durable run. The server then registers or rehydrates that
@@ -177,16 +180,19 @@ deadline around the entire handler:
 The WebSocket client ACK deadline becomes 15 seconds. This is an outer safety
 limit, not the primary latency mechanism. The worst bounded pre-ACK path is 12
 seconds (context, settings, acceptance, then reconciliation), leaving 3 seconds
-for runtime registration and transport delivery. Timeouts abort their
-underlying request when the client supports cancellation and must not leave an
-unobserved promise. Aborting a transport does not change acceptance into a
-known rollback; reconciliation and stable-id replay remain mandatory.
+for runtime registration and transport delivery. Timeouts race the dependency
+against an explicit rejecting timer, abort their underlying request when the
+client supports cancellation, and retain rejection handlers for any late
+settlement. A dependency that ignores cancellation must still stop blocking the
+request boundary. Aborting a transport does not change acceptance into a known
+rollback; reconciliation and stable-id replay remain mandatory.
 
 Stable server error codes:
 
 | Code | Meaning | Retryable |
 | --- | --- | --- |
 | `agent_context_timeout` | Scope lookup exceeded its deadline | Yes |
+| `agent_context_unavailable` | Scope storage returned a transient dependency failure | Yes |
 | `agent_context_forbidden` | Session or canvas is inaccessible or mismatched | No |
 | `agent_acceptance_indeterminate` | Acceptance timed out and reconciliation found no visible result | Yes, same `clientRequestId` only |
 | `agent_acceptance_conflict` | Idempotency key was reused with different input | No |
@@ -201,8 +207,9 @@ envelope. WebSocket failures use a terminal `run.failed` event after execution
 has started. Pre-ACK failures use the existing `type: "error"` envelope extended
 with `action: "agent.run"`, `clientRequestId`, `retryable`, and a safe
 `requestId`. The client correlates this envelope to its pending Agent command
-and rejects the ACK wait immediately. The response never includes raw upstream
-errors.
+and rejects the ACK wait immediately. Shared schemas accept the stable Agent
+codes in both boundary envelopes and terminal run events. The response never
+includes raw upstream errors.
 
 ## Observability
 
