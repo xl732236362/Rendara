@@ -50,6 +50,18 @@ export function createDomainEventPublisher(ports: PublisherPorts) {
       return;
     }
 
+    if (event.aggregate_type === "agent_run") {
+      if (
+        event.event_type !== "agent.run.accepted" ||
+        event.payload.runId !== event.aggregate_id ||
+        typeof event.payload.attemptId !== "string" ||
+        event.payload.attemptId.length === 0
+      ) {
+        throw codedError("invalid_agent_run_event");
+      }
+      return;
+    }
+
     throw codedError("unsupported_outbox_aggregate");
   };
 }
