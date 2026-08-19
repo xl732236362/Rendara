@@ -1,8 +1,8 @@
 import { type BoundaryErrorCode, errorEnvelopeSchema } from "@loomic/shared";
 import type { ZodType } from "zod";
 
-import { getServerBaseUrl } from "./env";
 import { notifyApiAuthExpired } from "./auth-expiry";
+import { getServerBaseUrl } from "./env";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -15,25 +15,34 @@ export class ApiProtocolError extends Error {
 
 export class ApiApplicationError extends Error {
   readonly code: string;
+  readonly correlationId: string | undefined;
   readonly details: Record<string, unknown> | undefined;
   readonly status: number;
 
   constructor(
     code: string,
     message: string,
-    options: { details?: Record<string, unknown>; status?: number } = {},
+    options: {
+      correlationId?: string;
+      details?: Record<string, unknown>;
+      status?: number;
+    } = {},
   ) {
     super(message);
     this.name = "ApiApplicationError";
     this.code = code;
+    this.correlationId = options.correlationId;
     this.details = options.details;
     this.status = options.status ?? 500;
   }
 }
 
 export class ApiAuthError extends ApiApplicationError {
-  constructor(message = "unauthorized") {
-    super("unauthorized", message, { status: 401 });
+  constructor(
+    message = "unauthorized",
+    options: { correlationId?: string } = {},
+  ) {
+    super("unauthorized", message, { ...options, status: 401 });
     this.name = "ApiAuthError";
   }
 }
@@ -168,9 +177,14 @@ function prepareRequest<TRequest>(options: ApiFetchBaseOptions<TRequest>) {
 }
 
 async function throwResponseError(response: Response): Promise<never> {
+  const headerCorrelationId = normalizeCorrelationId(
+    readResponseHeader(response, "x-correlation-id"),
+  );
   if (response.status === 401) {
     notifyApiAuthExpired();
-    throw new ApiAuthError();
+    throw new ApiAuthError("unauthorized", {
+      ...(headerCorrelationId ? { correlationId: headerCorrelationId } : {}),
+    });
   }
 
   let payload: unknown;
@@ -178,6 +192,7 @@ async function throwResponseError(response: Response): Promise<never> {
     payload = await response.json();
   } catch {
     throw new ApiApplicationError("application_error", "Request failed", {
+      ...(headerCorrelationId ? { correlationId: headerCorrelationId } : {}),
       status: response.status,
     });
   }
@@ -188,6 +203,9 @@ async function throwResponseError(response: Response): Promise<never> {
       status: response.status,
     });
   }
+  const responseCorrelationId =
+    normalizeCorrelationId(parsed.data.error.correlationId ?? null) ??
+    headerCorrelationId;
   throw new ApiApplicationError(
     parsed.data.error.code,
     parsed.data.error.message,
@@ -195,9 +213,23 @@ async function throwResponseError(response: Response): Promise<never> {
       ...(parsed.data.error.details
         ? { details: parsed.data.error.details }
         : {}),
+      ...(responseCorrelationId
+        ? { correlationId: responseCorrelationId }
+        : {}),
       status: response.status,
     },
   );
+}
+
+function readResponseHeader(response: Response, name: string): string | null {
+  return typeof response.headers?.get === "function"
+    ? response.headers.get(name)
+    : null;
+}
+
+function normalizeCorrelationId(value: string | null): string | undefined {
+  if (!value || value.length > 128) return undefined;
+  return /^[A-Za-z0-9._:-]+$/.test(value) ? value : undefined;
 }
 
 function composeAbortSignal(

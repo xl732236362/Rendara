@@ -8,9 +8,9 @@ import {
   boundaryErrorCodeSchema,
   errorCodeSchema,
   errorCodeValues,
-  healthResponseSchema,
   generatedAssetAttachmentListResponseSchema,
   generatedAssetAttachmentStatusResponseSchema,
+  healthResponseSchema,
   runCancelResponseSchema,
   runCreateRequestSchema,
   runCreateResponseSchema,
@@ -75,6 +75,11 @@ describe("@loomic/shared contracts", () => {
     for (const error of [
       { code: "unauthorized", message: "Authentication is required." },
       { code: "project_create_failed", message: "Unable to create project." },
+      {
+        code: "application_error",
+        message: "An unexpected error occurred",
+        correlationId: "request-7f4c",
+      },
       {
         code: "invalid_request",
         message: "Request validation failed.",

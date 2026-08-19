@@ -21,6 +21,7 @@ import {
 } from "../lib/canvas-persistence";
 import { getServerBaseUrl } from "../lib/env";
 import {
+  ApiApplicationError,
   fetchCanvas,
   getAssetUrl,
   saveCanvas,
@@ -473,8 +474,17 @@ export function CanvasEditor({
               .catch((error) => {
                 console.error("[canvas.persistence] save_failed", {
                   canvasId: canvasIdRef.current,
-                  errorName:
-                    error instanceof Error ? error.name : "UnknownError",
+                  ...(error instanceof ApiApplicationError
+                    ? {
+                        code: error.code,
+                        status: error.status,
+                        correlationId: error.correlationId,
+                      }
+                    : {
+                        code: "unknown_error",
+                        status: 0,
+                        correlationId: undefined,
+                      }),
                 });
               });
           }, SAVE_DEBOUNCE_MS);

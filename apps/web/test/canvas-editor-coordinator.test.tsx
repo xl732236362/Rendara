@@ -32,7 +32,9 @@ vi.mock("next/dynamic", async () => {
       },
   };
 });
-vi.mock("next-themes", () => ({ useTheme: () => ({ resolvedTheme: "light" }) }));
+vi.mock("next-themes", () => ({
+  useTheme: () => ({ resolvedTheme: "light" }),
+}));
 vi.mock("@excalidraw/excalidraw", () => ({
   Excalidraw: () => null,
   exportToBlob: harness.exportToBlob,
@@ -52,6 +54,7 @@ vi.mock("../src/lib/server-api", async (importOriginal) => ({
 }));
 
 import { CanvasEditor } from "../src/components/canvas-editor";
+import { ApiApplicationError } from "../src/lib/api-client";
 
 function renderEditor() {
   harness.api = {
@@ -164,5 +167,60 @@ describe("CanvasEditor persistence coordinator", () => {
       expect(harness.uploadThumbnail).toHaveBeenCalledOnce(),
     );
     view.unmount();
+  });
+
+  it("logs only typed diagnostics for a correlated save 5xx", async () => {
+    vi.useFakeTimers();
+    const error = new ApiApplicationError(
+      "application_error",
+      "An unexpected error occurred",
+      {
+        status: 500,
+        correlationId: "request-canvas-save-1",
+      },
+    );
+    harness.saveCanvas.mockRejectedValue(error);
+    harness.fetchCanvas.mockResolvedValue({
+      canvas: {
+        revision: 1,
+        content: {
+          elements: harness.elements,
+          appState: harness.appState,
+          files: harness.files,
+        },
+      },
+    });
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const view = renderEditor();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2);
+    });
+    harness.elements = [
+      ...harness.elements,
+      { id: "local", type: "rectangle", version: 1, versionNonce: 22 },
+    ];
+    act(() => {
+      harness.excalidrawProps?.onChange(harness.elements, harness.appState);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    await vi.waitFor(() =>
+      expect(log).toHaveBeenCalledWith(
+        "[canvas.persistence] save_failed",
+        expect.objectContaining({
+          code: "application_error",
+          status: 500,
+          correlationId: "request-canvas-save-1",
+        }),
+      ),
+    );
+    expect(JSON.stringify(log.mock.calls)).not.toContain(
+      "An unexpected error occurred",
+    );
+    view.unmount();
+    log.mockRestore();
   });
 });

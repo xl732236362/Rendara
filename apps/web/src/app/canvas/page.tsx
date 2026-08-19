@@ -38,7 +38,12 @@ import {
   insertImageOnCanvas,
   insertVideoOnCanvas,
 } from "../../lib/canvas-elements";
-import { ApiAuthError, fetchCanvas, fetchProject } from "../../lib/server-api";
+import {
+  ApiApplicationError,
+  ApiAuthError,
+  fetchCanvas,
+  fetchProject,
+} from "../../lib/server-api";
 
 function CanvasPageContent() {
   const searchParams = useSearchParams();
@@ -162,7 +167,17 @@ function CanvasPageContent() {
         console.warn("[canvas.persistence] sync_failed", {
           canvasId: event.canvasId,
           revision: event.revision,
-          errorName: err instanceof Error ? err.name : "UnknownError",
+          ...(err instanceof ApiApplicationError
+            ? {
+                code: err.code,
+                status: err.status,
+                correlationId: err.correlationId,
+              }
+            : {
+                code: "unknown_error",
+                status: 0,
+                correlationId: undefined,
+              }),
         });
       }
     },

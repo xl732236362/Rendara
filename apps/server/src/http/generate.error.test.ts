@@ -20,7 +20,7 @@ describe("generation route errors", () => {
       payload: { prompt: "hello", model: "missing/model" },
     });
     expect(response.statusCode).toBe(502);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "generation_failed",
         message: "Image generation is unavailable.",
@@ -44,7 +44,7 @@ describe("generation route errors", () => {
       payload: { prompt: "hello", model: "test/model" },
     });
     expect(response.statusCode).toBe(502);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: { code: "generation_failed", message: "Image generation failed." },
     });
     expect(response.body).not.toContain("secret");
@@ -73,7 +73,7 @@ describe("generation route errors", () => {
       payload: { prompt: "hello", model: "test/model" },
     });
     expect(response.statusCode).toBe(502);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "generation_failed",
         message: "Generated image could not be stored.",
@@ -94,7 +94,7 @@ describe("generation route errors", () => {
       payload: { idempotency_key: "video-error-1", prompt: "hello" },
     });
     expect(response.statusCode).toBe(502);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "generation_failed",
         message: "Video generation could not be started.",
@@ -119,7 +119,7 @@ describe("generation route errors", () => {
       payload: { idempotency_key: "video-error-2", prompt: "hello" },
     });
     expect(response.statusCode).toBe(500);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "job_create_failed",
         message: "Job creation failed.",
@@ -142,7 +142,7 @@ describe("generation route errors", () => {
       payload: { idempotency_key: "video-error-3", prompt: "hello" },
     });
     expect(response.statusCode).toBe(502);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "generation_failed",
         message: "Video generation status could not be retrieved.",
@@ -168,7 +168,7 @@ describe("generation route errors", () => {
       payload: { idempotency_key: "video-error-4", prompt: "hello" },
     });
     expect(response.statusCode).toBe(500);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "job_query_failed",
         message: "Job query failed.",

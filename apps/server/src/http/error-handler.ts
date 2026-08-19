@@ -50,12 +50,19 @@ export function registerErrorHandler(app: FastifyInstance): void {
       return reply;
     }
 
-    const serialized = serializeEnvelope(classified);
-    return reply.code(serialized.statusCode).send(serialized.envelope);
+    const correlationId = String(request.id).slice(0, 128);
+    const serialized = serializeEnvelope(classified, correlationId);
+    return reply
+      .header("x-correlation-id", correlationId)
+      .code(serialized.statusCode)
+      .send(serialized.envelope);
   });
 }
 
-function serializeEnvelope(classified: ClassifiedError): {
+function serializeEnvelope(
+  classified: ClassifiedError,
+  correlationId: string,
+): {
   statusCode: number;
   envelope: unknown;
 } {
@@ -64,11 +71,15 @@ function serializeEnvelope(classified: ClassifiedError): {
       error: {
         code: classified.code,
         message: classified.message,
+        correlationId,
         ...(classified.details ? { details: classified.details } : {}),
       },
     });
     if (!parsed.success) {
-      return { statusCode: 500, envelope: FALLBACK_ENVELOPE };
+      return {
+        statusCode: 500,
+        envelope: withCorrelationId(FALLBACK_ENVELOPE, correlationId),
+      };
     }
 
     // Exercise the same JSON boundary Fastify will use and detach the payload
@@ -77,10 +88,25 @@ function serializeEnvelope(classified: ClassifiedError): {
     const snapshot = errorEnvelopeSchema.safeParse(jsonSnapshot);
     return snapshot.success
       ? { statusCode: classified.statusCode, envelope: snapshot.data }
-      : { statusCode: 500, envelope: FALLBACK_ENVELOPE };
+      : {
+          statusCode: 500,
+          envelope: withCorrelationId(FALLBACK_ENVELOPE, correlationId),
+        };
   } catch {
-    return { statusCode: 500, envelope: FALLBACK_ENVELOPE };
+    return {
+      statusCode: 500,
+      envelope: withCorrelationId(FALLBACK_ENVELOPE, correlationId),
+    };
   }
+}
+
+function withCorrelationId(
+  envelope: typeof FALLBACK_ENVELOPE,
+  correlationId: string,
+) {
+  return {
+    error: { ...envelope.error, correlationId },
+  };
 }
 
 function classifyError(

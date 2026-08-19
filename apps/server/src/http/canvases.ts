@@ -1,23 +1,18 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 
 import {
-  applicationErrorResponseSchema,
   canvasGetResponseSchema,
   canvasSaveRequestSchema,
   canvasSaveResponseSchema,
-  unauthenticatedErrorResponseSchema,
 } from "@loomic/shared";
 
-import {
-  type CanvasService,
-  CanvasServiceError,
-} from "../features/canvas/canvas-service.js";
+import type { CanvasService } from "../features/canvas/canvas-service.js";
 import type { RequestAuthenticator } from "../supabase/user.js";
+import { saveCanvasAtHttpBoundary } from "./canvas-save-boundary.js";
 import {
   parseRequest,
   parseStringParams,
   raiseBoundaryError,
-  throwLegacyServiceError,
 } from "./route-errors.js";
 
 export async function registerCanvasRoutes(
@@ -46,12 +41,15 @@ export async function registerCanvasRoutes(
       if (!user) return sendUnauthorized(reply);
       const payload = parseRequest(canvasSaveRequestSchema, request.body);
       const { canvasId } = parseStringParams(request.params, ["canvasId"]);
-      const committed = await options.canvasService.saveCanvasContent(
+      const committed = await saveCanvasAtHttpBoundary({
+        canvasService: options.canvasService,
         user,
         canvasId,
-        payload.expectedRevision,
-        payload.content,
-      );
+        expectedRevision: payload.expectedRevision,
+        content: payload.content,
+        correlationId: String(request.id).slice(0, 128),
+        log: request.log,
+      });
       const bodySize = JSON.stringify(request.body).length;
       request.log.info({ canvasId, bodyBytes: bodySize }, "canvas.save OK");
       return reply.code(200).send(

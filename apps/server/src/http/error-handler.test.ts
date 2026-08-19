@@ -27,7 +27,7 @@ describe("Fastify error boundary", () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "invalid_request",
         message: "Request validation failed",
@@ -58,7 +58,7 @@ describe("Fastify error boundary", () => {
     });
 
     expect(response.statusCode).toBe(500);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "application_error",
         message: "An unexpected error occurred",
@@ -83,7 +83,7 @@ describe("Fastify error boundary", () => {
     const response = await app.inject({ method: "GET", url: "/application" });
 
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "project_not_found",
         message: "Project not found",
@@ -124,7 +124,7 @@ describe("Fastify error boundary", () => {
     });
 
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "project_not_found",
         message: "Project not found",
@@ -165,7 +165,7 @@ describe("Fastify error boundary", () => {
     });
 
     expect(response.statusCode).toBe(500);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "application_error",
         message: "An unexpected error occurred",
@@ -220,7 +220,7 @@ describe("Fastify error boundary", () => {
     });
     const response = await app.inject({ method: "GET", url: "/legacy-secret" });
     expect(response.statusCode).toBe(500);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "application_error",
         message: "An unexpected error occurred",
@@ -259,7 +259,7 @@ describe("Fastify error boundary", () => {
       url: "/legacy-project",
     });
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: { code: "project_not_found", message: "Project not found." },
     });
     expect(response.body).not.toContain("project-secret");
@@ -279,7 +279,7 @@ describe("Fastify error boundary", () => {
       url: "/legacy-generation",
     });
     expect(response.statusCode).toBe(500);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "application_error",
         message: "An unexpected error occurred",
@@ -315,7 +315,7 @@ describe("Fastify error boundary", () => {
     const response = await app.inject({ method: "GET", url: "/hostile-error" });
 
     expect(response.statusCode).toBe(500);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "application_error",
         message: "An unexpected error occurred",
@@ -352,7 +352,7 @@ describe("Fastify error boundary", () => {
     const response = await app.inject({ method: "GET", url: "/hostile-proxy" });
 
     expect(response.statusCode).toBe(500);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "application_error",
         message: "An unexpected error occurred",
@@ -381,7 +381,7 @@ describe("Fastify error boundary", () => {
     });
 
     expect(response.statusCode).toBe(499);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "request_aborted",
         message: "Request was aborted",
@@ -420,7 +420,7 @@ describe("Fastify error boundary", () => {
     });
 
     expect(response.statusCode).toBe(500);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "application_error",
         message: "An unexpected error occurred",
@@ -499,7 +499,7 @@ describe("Fastify error boundary", () => {
     });
 
     expect(response.statusCode).toBe(500);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "application_error",
         message: "An unexpected error occurred",
@@ -568,7 +568,7 @@ describe("Fastify error boundary", () => {
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "invalid_request",
         message: "Request validation failed",

@@ -126,7 +126,7 @@ describe("high-risk route error boundaries", () => {
     });
     const response = await app.inject({ method: "GET", url: "/api/viewer" });
     expect(response.statusCode).toBe(500);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "application_error",
         message: "An unexpected error occurred",
