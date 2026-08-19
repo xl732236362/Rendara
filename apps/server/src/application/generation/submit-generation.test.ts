@@ -22,7 +22,7 @@ const principal: GenerationPrincipal = {
   accessToken: "secret-access-token",
 };
 
-function setup() {
+function setup(options: { attachmentReady?: boolean } = {}) {
   const calls: string[] = [];
   const ports: GenerationApplicationPorts = {
     models: {
@@ -61,6 +61,9 @@ function setup() {
         calls.push("reference-assets");
       }),
     },
+    attachmentIntents: {
+      isReady: vi.fn(() => options.attachmentReady ?? true),
+    },
     jobs: {
       submit: vi.fn(async () => {
         calls.push("submit");
@@ -88,6 +91,88 @@ function setup() {
 }
 
 describe("SubmitGeneration", () => {
+  it("adds a validated private attachment intent to the atomic submission", async () => {
+    const { ports, submit } = setup();
+    const attachment = {
+      intentId: "66666666-6666-4666-8666-666666666666",
+      runId: "77777777-7777-4777-8777-777777777777",
+      attemptId: "88888888-8888-4888-8888-888888888888",
+      fencingToken: 7,
+      logicalToolCallId: "tool-1",
+      inputDigest:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      effectKind: "generated_asset_attached" as const,
+      mediaType: "image" as const,
+      placement: { kind: "auto_right" as const },
+    };
+
+    await submit(
+      principal,
+      {
+        type: "image_generation",
+        idempotency_key: "agent-image-1",
+        project_id: ids.project,
+        canvas_id: ids.canvas,
+        session_id: "99999999-9999-4999-8999-999999999999",
+        prompt: "draw",
+      },
+      attachment,
+    );
+
+    expect(ports.jobs.submit).toHaveBeenCalledWith(
+      expect.objectContaining({ attachmentIntent: attachment }),
+    );
+  });
+
+  it("fails closed before authorization or submission when attachment infrastructure is unavailable", async () => {
+    const { ports, submit } = setup({ attachmentReady: false });
+
+    await expect(
+      submit(
+        principal,
+        {
+          type: "image_generation",
+          idempotency_key: "agent-image-unready",
+          project_id: ids.project,
+          canvas_id: ids.canvas,
+          session_id: "99999999-9999-4999-8999-999999999999",
+          prompt: "draw",
+        },
+        {
+          intentId: "66666666-6666-4666-8666-666666666666",
+          runId: "77777777-7777-4777-8777-777777777777",
+          attemptId: "88888888-8888-4888-8888-888888888888",
+          fencingToken: 7,
+          logicalToolCallId: "tool-1",
+          inputDigest:
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          effectKind: "generated_asset_attached",
+          mediaType: "image",
+          placement: { kind: "auto_right" },
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: "application_error",
+      statusCode: 503,
+      expose: false,
+    });
+    expect(ports.models.resolveModel).not.toHaveBeenCalled();
+    expect(ports.jobs.submit).not.toHaveBeenCalled();
+  });
+
+  it("keeps public generation available when attachment infrastructure is unavailable", async () => {
+    const { ports, submit } = setup({ attachmentReady: false });
+
+    await expect(
+      submit(principal, {
+        type: "image_generation",
+        idempotency_key: "public-image-unready",
+        prompt: "draw",
+      }),
+    ).resolves.toEqual({ jobId: ids.job, status: "queued" });
+    expect(ports.jobs.submit).toHaveBeenCalledOnce();
+  });
+
   it("submits the authorized charge and job atomically", async () => {
     const { ports, submit } = setup();
 

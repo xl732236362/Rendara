@@ -9,7 +9,11 @@ import type { JobService } from "./job-service.js";
 export function createJobServiceGenerationPorts(options: {
   jobService: JobService;
   toAuthenticatedUser(principal: GenerationPrincipal): AuthenticatedUser;
-}): Pick<GenerationApplicationPorts, "jobs" | "cancellation"> {
+  isAttachmentInfrastructureReady?: () => boolean;
+}): Pick<
+  GenerationApplicationPorts,
+  "jobs" | "cancellation" | "attachmentIntents"
+> {
   return {
     jobs: {
       async submit(command) {
@@ -41,6 +45,9 @@ export function createJobServiceGenerationPorts(options: {
           return { id: job.id, status: "canceled" };
         throw invalidLegacyOutcome();
       },
+    },
+    attachmentIntents: {
+      isReady: () => options.isAttachmentInfrastructureReady?.() === true,
     },
   };
 }

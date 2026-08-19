@@ -117,6 +117,9 @@ export function createJobStateRepository(options: {
           p_canvas_id: command.canvasId ?? null,
           p_session_id: command.sessionId ?? null,
           p_thread_id: command.threadId ?? null,
+          ...(command.attachmentIntent
+            ? { p_attachment_intent: command.attachmentIntent }
+            : {}),
         },
       );
       if (error) throw mapRpcError(error, "job_create_failed");

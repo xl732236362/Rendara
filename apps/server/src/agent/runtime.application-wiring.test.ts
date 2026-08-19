@@ -10,6 +10,101 @@ import type { SubmitImageJobFn } from "./tools/image-generate.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
 
 describe("Agent runtime application wiring", () => {
+  it("passes the current fenced effect as a private attachment intent", async () => {
+    const ids = {
+      run: "11111111-1111-4111-8111-111111111111",
+      attempt: "22222222-2222-4222-8222-222222222222",
+      user: "33333333-3333-4333-8333-333333333333",
+      workspace: "44444444-4444-4444-8444-444444444444",
+      project: "55555555-5555-4555-8555-555555555555",
+      canvas: "66666666-6666-4666-8666-666666666666",
+      session: "77777777-7777-4777-8777-777777777777",
+    };
+    const repository = new MemoryAgentExecutionRepository();
+    await repository.accept({
+      clientRequestId: "request-attachment-intent",
+      requestDigest: "digest-attachment-intent",
+      context: {
+        runId: ids.run,
+        attemptId: ids.attempt,
+        userId: ids.user,
+        workspaceId: ids.workspace,
+        projectId: ids.project,
+        canvasId: ids.canvas,
+        capabilities: ["image.generate", "canvas.mutate"],
+        capabilityPolicyVersion: "policy-1",
+        skillCatalogDigest: "catalog-1",
+        effectiveSkillNames: [],
+      },
+    });
+    const submitGeneration = vi.fn(async () => {
+      throw new Error("stop before polling");
+    });
+    const service = createAgentRunService({
+      agentExecutionRepository: repository,
+      agentFactory: ((options: { submitImageJob?: SubmitImageJobFn }) => ({
+        async *streamEvents() {
+          await options
+            .submitImageJob?.({
+              logicalToolCallId: "tool-attachment-image",
+              prompt: "image",
+              title: "Image",
+              model: "image/model",
+              aspectRatio: "1:1",
+            })
+            .catch(() => undefined);
+        },
+        async *stream() {},
+      })) as never,
+      createUserClient: (() =>
+        canvasWorkspaceClient({
+          canvasId: ids.canvas,
+          projectId: ids.project,
+          workspaceId: ids.workspace,
+        })) as never,
+      env: loadServerEnv({}, {}),
+      jobService: {} as never,
+      providerRegistry: new ProviderRegistry().seal(),
+      submitGeneration,
+    });
+    service.createRun(
+      {
+        canvasId: ids.canvas,
+        clientRequestId: "request-attachment-intent",
+        conversationId: "conversation-attachment-intent",
+        prompt: "hello",
+        sessionId: ids.session,
+      },
+      { accessToken: "token", runId: ids.run, userId: ids.user },
+    );
+
+    for await (const _event of service.streamRun(ids.run)) {
+    }
+
+    expect(submitGeneration).toHaveBeenCalledWith(
+      { userId: ids.user, workspaceId: ids.workspace, accessToken: "token" },
+      expect.objectContaining({
+        project_id: ids.project,
+        canvas_id: ids.canvas,
+        session_id: ids.session,
+        type: "image_generation",
+      }),
+      expect.objectContaining({
+        intentId: expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        ),
+        runId: ids.run,
+        attemptId: ids.attempt,
+        fencingToken: expect.any(Number),
+        logicalToolCallId: "tool-attachment-image",
+        inputDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+        effectKind: "generated_asset_attached",
+        mediaType: "image",
+        placement: { kind: "auto_right" },
+      }),
+    );
+  });
+
   it("closes an open tool before publishing the run terminal event", async () => {
     const supervisor = createToolExecutionSupervisor({
       agentRunId: "run-open-tool",
@@ -925,6 +1020,7 @@ function workspaceClient() {
 
 function canvasWorkspaceClient(options: {
   canvasId: string | null;
+  projectId?: string;
   workspaceId: string | null;
   onSelect?: (columns: string) => void;
 }) {
@@ -939,7 +1035,7 @@ function canvasWorkspaceClient(options: {
                 options.canvasId && options.workspaceId
                   ? {
                       id: options.canvasId,
-                      project_id: "project-team",
+                      project_id: options.projectId ?? "project-team",
                       projects: { workspace_id: options.workspaceId },
                     }
                   : null,

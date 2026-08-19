@@ -26,6 +26,10 @@ import {
 } from "../application/agent/agent-run-errors.js";
 import type { ApplyCanvasOperations } from "../application/canvas/apply-canvas-operations.js";
 import type { AttachGeneratedAsset } from "../application/canvas/attach-generated-asset.js";
+import type {
+  AgentAttachmentContext,
+  AgentAttachmentPlacement,
+} from "../application/generation/ports.js";
 import type { SubmitGeneration } from "../application/generation/submit-generation.js";
 import type { ServerEnv } from "../config/env.js";
 import { AppError } from "../errors/app-error.js";
@@ -56,6 +60,7 @@ import {
   PRODUCTION_AGENT_CAPABILITIES,
   createAgentAuthority,
 } from "./capabilities.js";
+import type { AgentExecutionContext } from "./execution-context.js";
 import {
   type LoomicAgent,
   type LoomicAgentFactory,
@@ -646,7 +651,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         const canvasId = run.canvasId;
         const sessionId = run.sessionId;
         const runId = run.runId;
-        const resolveGenerationWorkspaceId = createGenerationWorkspaceResolver({
+        const resolveGenerationScope = createGenerationWorkspaceResolver({
           accessToken,
           ...(canvasId ? { canvasId } : {}),
           createUserClient: createClient,
@@ -670,10 +675,22 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           if (effect?.status === "completed") {
             return effect.result as Awaited<ReturnType<SubmitImageJobFn>>;
           }
-          const workspaceId = await resolveGenerationWorkspaceId();
+          const scope = await resolveGenerationScope();
+          assertGenerationScope(executionContext, scope, canMutateCanvas);
+          const { workspaceId } = scope;
+          const attachment = canMutateCanvas
+            ? createAgentAttachmentContext({
+                run,
+                effect,
+                input,
+                logicalToolCallId: input.logicalToolCallId,
+                mediaType: "image",
+              })
+            : undefined;
           let submitted: Awaited<ReturnType<SubmitGeneration>>;
           try {
-            submitted = await submitGeneration(
+            submitted = await submitGenerationWithOptionalAttachment(
+              submitGeneration,
               { userId, workspaceId, accessToken },
               {
                 idempotency_key: agentGenerationKey(
@@ -692,7 +709,11 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                   : {}),
                 ...(canvasId ? { canvas_id: canvasId } : {}),
                 ...(sessionId ? { session_id: sessionId } : {}),
+                ...(attachment && scope.projectId
+                  ? { project_id: scope.projectId }
+                  : {}),
               },
+              attachment,
             );
           } catch (error) {
             handleBillingSubmissionError(error, run);
@@ -879,10 +900,22 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           if (effect?.status === "completed") {
             return effect.result as Awaited<ReturnType<SubmitVideoJobFn>>;
           }
-          const workspaceId = await resolveGenerationWorkspaceId();
+          const scope = await resolveGenerationScope();
+          assertGenerationScope(executionContext, scope, canMutateCanvas);
+          const { workspaceId } = scope;
+          const attachment = canMutateCanvas
+            ? createAgentAttachmentContext({
+                run,
+                effect,
+                input,
+                logicalToolCallId: input.logicalToolCallId,
+                mediaType: "video",
+              })
+            : undefined;
           let submitted: Awaited<ReturnType<SubmitGeneration>>;
           try {
-            submitted = await submitGeneration(
+            submitted = await submitGenerationWithOptionalAttachment(
+              submitGeneration,
               { userId, workspaceId, accessToken },
               {
                 idempotency_key: agentGenerationKey(
@@ -907,7 +940,11 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                   : {}),
                 ...(canvasId ? { canvas_id: canvasId } : {}),
                 ...(sessionId ? { session_id: sessionId } : {}),
+                ...(attachment && scope.projectId
+                  ? { project_id: scope.projectId }
+                  : {}),
               },
+              attachment,
             );
           } catch (error) {
             handleBillingSubmissionError(error, run);
@@ -1512,7 +1549,7 @@ async function beginRuntimeEffect(
     attemptId: run.attemptId,
     fencingToken: run.fencingToken,
     logicalToolCallId,
-    inputDigest: createHash("sha256").update(stableJson(input)).digest("hex"),
+    inputDigest: runtimeInputDigest(input),
   });
 }
 
@@ -1529,8 +1566,116 @@ async function completeRuntimeEffect(
     attemptId: run.attemptId,
     fencingToken: run.fencingToken,
     logicalToolCallId,
-    inputDigest: createHash("sha256").update(stableJson(input)).digest("hex"),
+    inputDigest: runtimeInputDigest(input),
     result,
+  });
+}
+
+function runtimeInputDigest(input: unknown): string {
+  return createHash("sha256").update(stableJson(input)).digest("hex");
+}
+
+function submitGenerationWithOptionalAttachment(
+  submitGeneration: SubmitGeneration,
+  principal: Parameters<SubmitGeneration>[0],
+  request: unknown,
+  attachment: AgentAttachmentContext | undefined,
+): ReturnType<SubmitGeneration> {
+  return attachment
+    ? submitGeneration(principal, request, attachment)
+    : submitGeneration(principal, request);
+}
+
+function createAgentAttachmentContext(options: {
+  run: RuntimeRunRecord;
+  effect: Awaited<ReturnType<typeof beginRuntimeEffect>>;
+  input: unknown;
+  logicalToolCallId: string;
+  mediaType: "image" | "video";
+}): AgentAttachmentContext {
+  if (
+    options.effect?.status !== "reserved" ||
+    !options.run.attemptId ||
+    options.run.fencingToken === undefined
+  ) {
+    throw attachmentInfrastructureUnavailable();
+  }
+  return {
+    intentId: deterministicAttachmentIntentId(
+      options.run.runId,
+      options.mediaType,
+      options.logicalToolCallId,
+    ),
+    runId: options.run.runId,
+    attemptId: options.run.attemptId,
+    fencingToken: options.run.fencingToken,
+    logicalToolCallId: options.logicalToolCallId,
+    inputDigest: runtimeInputDigest(options.input),
+    effectKind: "generated_asset_attached",
+    mediaType: options.mediaType,
+    placement: attachmentPlacement(options.input, options.mediaType),
+  };
+}
+
+function deterministicAttachmentIntentId(
+  runId: string,
+  mediaType: "image" | "video",
+  logicalToolCallId: string,
+): string {
+  const bytes = createHash("sha256")
+    .update(`${runId}:${mediaType}:${logicalToolCallId}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function attachmentPlacement(
+  input: unknown,
+  mediaType: "image" | "video",
+): AgentAttachmentPlacement {
+  const placement = input as {
+    placementX?: number;
+    placementY?: number;
+    placementWidth?: number;
+    placementHeight?: number;
+  };
+  if (placement.placementX == null || placement.placementY == null) {
+    return { kind: "auto_right" };
+  }
+  return {
+    kind: "explicit",
+    x: placement.placementX,
+    y: placement.placementY,
+    width: placement.placementWidth ?? (mediaType === "image" ? 512 : 640),
+    height: placement.placementHeight ?? (mediaType === "image" ? 512 : 360),
+  };
+}
+
+function assertGenerationScope(
+  executionContext: Readonly<AgentExecutionContext> | null | undefined,
+  scope: GenerationWorkspaceScope,
+  requiresAttachment: boolean,
+): void {
+  if (!requiresAttachment) return;
+  if (
+    !scope.projectId ||
+    !executionContext?.projectId ||
+    scope.projectId !== executionContext.projectId ||
+    scope.workspaceId !== executionContext.workspaceId
+  ) {
+    throw attachmentInfrastructureUnavailable();
+  }
+}
+
+function attachmentInfrastructureUnavailable(): AppError {
+  return new AppError({
+    code: "application_error",
+    statusCode: 503,
+    message: "Generated asset attachment context is unavailable.",
+    expose: false,
   });
 }
 
@@ -1572,14 +1717,14 @@ function createGenerationWorkspaceResolver(options: {
   accessToken: string;
   canvasId?: string;
   createUserClient: (accessToken: string) => unknown;
-}): () => Promise<string> {
-  let resolution: Promise<string> | undefined;
+}): () => Promise<GenerationWorkspaceScope> {
+  let resolution: Promise<GenerationWorkspaceScope> | undefined;
   return () => {
     resolution ??= resolve();
     return resolution;
   };
 
-  async function resolve(): Promise<string> {
+  async function resolve(): Promise<GenerationWorkspaceScope> {
     const client = options.createUserClient(
       options.accessToken,
     ) as UserSupabaseClient;
@@ -1591,13 +1736,19 @@ function createGenerationWorkspaceResolver(options: {
         .maybeSingle();
       const canvas = data as unknown as {
         id?: string;
+        project_id?: string;
         projects?: { workspace_id?: string };
       } | null;
       const workspaceId = canvas?.projects?.workspace_id;
-      if (error || canvas?.id !== options.canvasId || !workspaceId) {
+      if (
+        error ||
+        canvas?.id !== options.canvasId ||
+        !canvas.project_id ||
+        !workspaceId
+      ) {
         throw new Error("Canvas not found or access denied");
       }
-      return workspaceId;
+      return { projectId: canvas.project_id, workspaceId };
     }
 
     const { data, error } = await client
@@ -1607,9 +1758,14 @@ function createGenerationWorkspaceResolver(options: {
       .limit(1)
       .single();
     if (error || !data?.id) throw new Error("No personal workspace found");
-    return data.id;
+    return { workspaceId: data.id };
   }
 }
+
+type GenerationWorkspaceScope = {
+  workspaceId: string;
+  projectId?: string;
+};
 
 function isTerminalStatus(
   status: RuntimeRunStatus,
