@@ -531,6 +531,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
       let persistence: Awaited<
         ReturnType<NonNullable<AgentPersistenceService["getPersistence"]>>
       > | null = null;
+      const persistenceStartedAt = Date.now();
       try {
         const persistenceService = options.agentPersistenceService;
         persistence =
@@ -547,8 +548,15 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                 timeoutMs: persistenceTimeoutMs,
               })
             : null;
-        rlog.lap("persistence_init");
+        rlog.info("agent.persistence.init.completed", {
+          durationMs: Date.now() - persistenceStartedAt,
+        });
       } catch (error) {
+        rlog.warn("agent.persistence.init.failed", {
+          durationMs: Date.now() - persistenceStartedAt,
+          errorCode: runtimeFailureCode(error),
+          retryable: error instanceof AgentRunError && error.retryable,
+        });
         const failedEvent = toFailedEvent(runId, now, error);
         run.status = "failed";
         await updatePersistedRunFailure(
@@ -1362,6 +1370,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         stream,
       })[Symbol.asyncIterator]();
       let receivedModelEvent = false;
+      const modelStartedAt = Date.now();
       try {
         while (true) {
           const next = receivedModelEvent
@@ -1379,7 +1388,12 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               });
           if (next.done) break;
           const event = next.value;
-          if (event.type !== "run.started") receivedModelEvent = true;
+          if (event.type !== "run.started" && !receivedModelEvent) {
+            receivedModelEvent = true;
+            rlog.info("agent.model.first_event", {
+              durationMs: Date.now() - modelStartedAt,
+            });
+          }
           if (
             options.agentExecutionRepository &&
             run.attemptId &&
@@ -1425,6 +1439,11 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         }
       } catch (streamError) {
         if (streamError instanceof AgentRunError) {
+          rlog.warn("agent.model.first_event.failed", {
+            durationMs: Date.now() - modelStartedAt,
+            errorCode: runtimeFailureCode(streamError),
+            retryable: streamError.retryable,
+          });
           run.controller.abort();
           void adaptedStream.return?.(undefined).catch(() => undefined);
         }
