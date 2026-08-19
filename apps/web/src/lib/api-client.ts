@@ -2,6 +2,7 @@ import { type BoundaryErrorCode, errorEnvelopeSchema } from "@loomic/shared";
 import type { ZodType } from "zod";
 
 import { getServerBaseUrl } from "./env";
+import { notifyApiAuthExpired } from "./auth-expiry";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -168,6 +169,7 @@ function prepareRequest<TRequest>(options: ApiFetchBaseOptions<TRequest>) {
 
 async function throwResponseError(response: Response): Promise<never> {
   if (response.status === 401) {
+    notifyApiAuthExpired();
     throw new ApiAuthError();
   }
 

@@ -442,7 +442,9 @@ export function CanvasEditor({
 
       // Durable persistence uses a compact identity/version signature so
       // selection and viewport callbacks never serialize legacy base64 files.
-      if (suppressNextAutosaveRef.current) {
+      if (persistenceCoordinatorRef.current?.snapshot().stopped) {
+        pendingDurableChangeRef.current = false;
+      } else if (suppressNextAutosaveRef.current) {
         suppressNextAutosaveRef.current = false;
       } else {
         const signature = dirtySignatureRef.current({
@@ -565,6 +567,8 @@ export function CanvasEditor({
         };
       },
       enqueueSave,
+      isStopped: () =>
+        persistenceCoordinatorRef.current?.snapshot().stopped ?? false,
     });
   }, [enqueueSave, excalidrawApi]);
 
@@ -724,6 +728,7 @@ export function CanvasEditor({
   useEffect(() => {
     const flushBeforeUnload = () => {
       if (!pendingDurableChangeRef.current) return;
+      if (persistenceCoordinatorRef.current?.snapshot().stopped) return;
 
       const payload = buildSavePayloadRef.current();
       if (!payload) return;
@@ -763,7 +768,10 @@ export function CanvasEditor({
       if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current);
 
       // Flush pending save on component unmount (e.g. SPA navigation)
-      if (pendingDurableChangeRef.current) {
+      if (
+        pendingDurableChangeRef.current &&
+        !persistenceCoordinatorRef.current?.snapshot().stopped
+      ) {
         const payload = buildSavePayloadRef.current();
         if (payload) {
           enqueueSave(payload).catch(console.error);

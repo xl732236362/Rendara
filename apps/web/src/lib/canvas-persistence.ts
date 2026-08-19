@@ -1,4 +1,8 @@
-import { ApiApplicationError, ApiTimeoutError } from "./api-client";
+import {
+  ApiApplicationError,
+  ApiAuthError,
+  ApiTimeoutError,
+} from "./api-client";
 
 export type CanvasContent = {
   elements: Record<string, unknown>[];
@@ -20,6 +24,7 @@ export type CanvasPersistenceState = {
   inFlight: PendingCanvasSnapshot | null;
   live: PendingCanvasSnapshot;
   conflict: boolean;
+  stopped: boolean;
 };
 
 type CanvasCommitNotice = {
@@ -228,6 +233,7 @@ export function createCanvasPersistenceCoordinator(
     inFlight: null,
     live: { content: initialContent, fingerprint: "" },
     conflict: false,
+    stopped: false,
   };
   let queue = Promise.resolve();
   let initialized: Promise<void> | null = null;
@@ -247,14 +253,31 @@ export function createCanvasPersistenceCoordinator(
 
   function enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const result = queue.then(async () => {
+      if (state.stopped) return undefined as T;
       await ensureInitialized();
-      return operation();
+      if (state.stopped) return undefined as T;
+      try {
+        return await operation();
+      } catch (error) {
+        if (error instanceof ApiAuthError) stop();
+        throw error;
+      }
     });
     queue = result.then(
       () => undefined,
       () => undefined,
     );
     return result;
+  }
+
+  function stop() {
+    if (state.stopped) return;
+    state = {
+      ...state,
+      pending: null,
+      inFlight: null,
+      stopped: true,
+    };
   }
 
   async function toPending(content: CanvasContent): Promise<PendingCanvasSnapshot> {
@@ -445,6 +468,7 @@ export function createCanvasPersistenceCoordinator(
     },
     pendingUnload(): CanvasContent | null {
       if (
+        state.stopped ||
         state.conflict ||
         !state.live.fingerprint ||
         state.live.fingerprint === state.base.fingerprint
@@ -514,8 +538,10 @@ export function createDurableSceneMutation(options: {
   updateScene(elements: Record<string, unknown>[]): void;
   buildContent(elements: Record<string, unknown>[]): CanvasContent;
   enqueueSave(content: CanvasContent): Promise<unknown>;
+  isStopped?: () => boolean;
 }): DurableSceneMutation {
   return async (mutate) => {
+    if (options.isStopped?.()) return { kind: "rejected" };
     options.cancelPendingSave();
     const previousElements = [...options.getSceneElements()];
     const nextElements = mutate(previousElements);

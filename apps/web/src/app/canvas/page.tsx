@@ -1,7 +1,14 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import type { ImageArtifact, StreamEvent, VideoArtifact } from "@loomic/shared";
 import { BrandKitSelector } from "../../components/brand-kit-selector";
@@ -23,6 +30,10 @@ import { LoadingScreen } from "../../components/loading-screen";
 import { useJobFallbackPolling } from "../../hooks/use-job-fallback-polling";
 import { useWebSocket } from "../../hooks/use-websocket";
 import { useAuth } from "../../lib/auth-context";
+import {
+  createAuthExpiryHandler,
+  registerApiAuthExpiryHandler,
+} from "../../lib/auth-expiry";
 import {
   insertImageOnCanvas,
   insertVideoOnCanvas,
@@ -95,22 +106,21 @@ function CanvasPageContent() {
   accessTokenRef.current = accessToken;
 
   const getToken = useCallback(() => accessTokenRef.current ?? null, []);
-  const authExpiryHandledRef = useRef(false);
-  const handleAuthExpired = useCallback(() => {
-    if (authExpiryHandledRef.current) return;
-    authExpiryHandledRef.current = true;
-
-    const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    console.warn("[auth] session expired; redirecting to login", { returnTo });
-    void signOutRef.current().finally(() => {
-      routerRef.current.replace(
-        `/login?${new URLSearchParams({
-          error: "session_expired",
-          returnTo,
-        }).toString()}`,
-      );
-    });
-  }, []);
+  const handleAuthExpired = useMemo(
+    () =>
+      createAuthExpiryHandler({
+        signOut: () => signOutRef.current(),
+        navigateToLogin: (path) => routerRef.current.replace(path),
+        getReturnTo: () =>
+          `${window.location.pathname}${window.location.search}${window.location.hash}`,
+        logger: console,
+      }),
+    [],
+  );
+  useEffect(
+    () => registerApiAuthExpiryHandler(handleAuthExpired),
+    [handleAuthExpired],
+  );
   const ws = useWebSocket(getToken, { onAuthExpired: handleAuthExpired });
 
   const handleApiReady = useCallback((api: any) => {

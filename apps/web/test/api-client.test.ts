@@ -10,6 +10,7 @@ import {
   ApiTimeoutError,
   apiFetch,
 } from "../src/lib/api-client";
+import { registerApiAuthExpiryHandler } from "../src/lib/auth-expiry";
 
 const mockFetch = vi.fn<typeof fetch>();
 
@@ -234,6 +235,46 @@ describe("apiFetch", () => {
         responseSchema: z.unknown(),
       }),
     ).rejects.toBeInstanceOf(ApiAuthError);
+  });
+
+  it("notifies the registered auth boundary only for HTTP 401", async () => {
+    const onAuthExpired = vi.fn();
+    const unregister = registerApiAuthExpiryHandler(onAuthExpired);
+    mockFetch
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { error: { code: "unauthorized", message: "expired" } },
+          { status: 401 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { error: { code: "forbidden", message: "forbidden" } },
+          { status: 403 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: {
+              code: "application_error",
+              message: "An unexpected error occurred",
+            },
+          },
+          { status: 500 },
+        ),
+      );
+
+    for (let index = 0; index < 3; index += 1) {
+      await apiFetch({
+        method: "GET",
+        path: "/api/canvas-boundary",
+        responseSchema: z.unknown(),
+      }).catch(() => undefined);
+    }
+
+    expect(onAuthExpired).toHaveBeenCalledOnce();
+    unregister();
   });
 
   it("distinguishes timeout from caller abort", async () => {

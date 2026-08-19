@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { ApiApplicationError, ApiTimeoutError } from "../src/lib/api-client";
+import {
+  ApiApplicationError,
+  ApiAuthError,
+  ApiTimeoutError,
+} from "../src/lib/api-client";
 import {
   canonicalJson,
   createCanvasDirtySignatureFactory,
@@ -253,6 +257,39 @@ describe("canvas durable persistence", () => {
 
     expect(save).toHaveBeenCalledTimes(2);
     expect(coordinator.snapshot().base.revision).toBe(2);
+  });
+
+  it("stops and discards all persistence work after a REST 401", async () => {
+    const local = {
+      ...baseContent,
+      elements: [...baseContent.elements, { id: "local", version: 1 }],
+    };
+    const save = vi.fn().mockRejectedValue(new ApiAuthError());
+    const fetch = vi.fn();
+    const coordinator = createCanvasPersistenceCoordinator({
+      initial: { revision: 1, content: baseContent },
+      save,
+      fetch,
+      applyRemote: vi.fn(),
+      onConflict: vi.fn(),
+      onCommitted: vi.fn(),
+    });
+
+    await expect(coordinator.observe(local)).rejects.toBeInstanceOf(
+      ApiAuthError,
+    );
+    expect(coordinator.snapshot()).toMatchObject({
+      stopped: true,
+      pending: null,
+      inFlight: null,
+    });
+    expect(coordinator.pendingUnload()).toBeNull();
+
+    await expect(coordinator.observe(local)).resolves.toBeUndefined();
+    await expect(coordinator.syncToRevision(2)).resolves.toBeUndefined();
+    await expect(coordinator.reconcile()).resolves.toBeUndefined();
+    expect(save).toHaveBeenCalledOnce();
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("serializes generated asset metadata without persisting its runtime data URL", () => {
