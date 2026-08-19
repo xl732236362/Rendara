@@ -6,6 +6,7 @@ import type {
   RunCreateRequest,
   StreamEvent,
   WsCommandAck,
+  WsErrorMessage,
   WsRpcRequest,
 } from "@loomic/shared";
 import { getServerBaseUrl } from "../lib/env";
@@ -17,14 +18,16 @@ type RPCHandler = (
 
 export type WebSocketHandle = {
   connected: boolean;
-  startRun: (
-    payload: RunCreateRequest,
-    onAck?: (ack: WsCommandAck) => void,
-  ) => void;
+  startRun: (payload: RunCreateRequest, callbacks?: RunCallbacks) => boolean;
   cancelRun: (runId: string) => void;
   onEvent: (cb: EventCallback) => () => void;
   registerRPC: (method: string, handler: RPCHandler) => () => void;
   resumeCanvas: (canvasId: string, onAck?: (ack: WsCommandAck) => void) => void;
+};
+
+export type RunCallbacks = {
+  onAck: (ack: WsCommandAck) => void;
+  onError: (error: WsErrorMessage) => void;
 };
 
 export function useWebSocket(getToken: () => string | null): WebSocketHandle {
@@ -55,6 +58,7 @@ export function useWebSocket(getToken: () => string | null): WebSocketHandle {
   const ackListeners = useRef<Map<string, (ack: WsCommandAck) => void>>(
     new Map(),
   );
+  const runListeners = useRef<Map<string, RunCallbacks>>(new Map());
   const rpcHandlers = useRef<Map<string, RPCHandler>>(new Map());
 
   const connect = useCallback(() => {
@@ -116,6 +120,18 @@ export function useWebSocket(getToken: () => string | null): WebSocketHandle {
           }
         }
       } else if (msg.type === "command.ack") {
+        if (msg.action === "agent.run") {
+          const payload = msg.payload as Record<string, unknown> | undefined;
+          const clientRequestId = payload?.clientRequestId;
+          if (typeof clientRequestId === "string") {
+            const callbacks = runListeners.current.get(clientRequestId);
+            if (callbacks) {
+              runListeners.current.delete(clientRequestId);
+              callbacks.onAck(msg as unknown as WsCommandAck);
+            }
+          }
+          return;
+        }
         const cb = ackListeners.current.get(msg.action as string);
         if (cb) {
           ackListeners.current.delete(msg.action as string);
@@ -123,6 +139,15 @@ export function useWebSocket(getToken: () => string | null): WebSocketHandle {
             cb(msg as unknown as WsCommandAck);
           } catch (ackErr) {
             console.error("[ws] ack listener threw:", ackErr);
+          }
+        }
+      } else if (msg.type === "error" && msg.action === "agent.run") {
+        const clientRequestId = msg.clientRequestId;
+        if (typeof clientRequestId === "string") {
+          const callbacks = runListeners.current.get(clientRequestId);
+          if (callbacks) {
+            runListeners.current.delete(clientRequestId);
+            callbacks.onError(msg as unknown as WsErrorMessage);
           }
         }
       } else if (msg.type === "rpc.request") {
@@ -232,18 +257,17 @@ export function useWebSocket(getToken: () => string | null): WebSocketHandle {
   );
 
   const startRun = useCallback(
-    (payload: RunCreateRequest, onAck?: (ack: WsCommandAck) => void) => {
-      if (onAck) {
-        ackListeners.current.set("agent.run", onAck);
-      }
+    (payload: RunCreateRequest, callbacks?: RunCallbacks): boolean => {
+      if (callbacks)
+        runListeners.current.set(payload.clientRequestId, callbacks);
       const sent = sendCommand(
         "agent.run",
         payload as unknown as Record<string, unknown>,
       );
       if (!sent) {
-        // Remove the dangling ack listener so callers don't hang forever
-        ackListeners.current.delete("agent.run");
+        runListeners.current.delete(payload.clientRequestId);
       }
+      return sent;
     },
     [sendCommand],
   );

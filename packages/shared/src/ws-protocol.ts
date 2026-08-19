@@ -29,6 +29,10 @@ export const wsCommandAckSchema = z.object({
 
 export const wsErrorMessageSchema = errorEnvelopeSchema.extend({
   type: z.literal("error"),
+  action: z.string().min(1).optional(),
+  clientRequestId: z.string().min(1).max(128).optional(),
+  requestId: z.string().min(1).optional(),
+  retryable: z.boolean().optional(),
 });
 
 // --- Client → Server: Command ---

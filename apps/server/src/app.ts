@@ -29,6 +29,8 @@ import {
   type AcceptAgentRun,
   createAcceptAgentRun,
 } from "./application/agent/accept-agent-run.js";
+import { createAuthorizedRunContextResolver } from "./application/agent/authorized-run-context.js";
+import { createPrepareAgentRun } from "./application/agent/prepare-agent-run.js";
 import {
   type ServerEnv,
   loadServerEnv,
@@ -38,6 +40,7 @@ import {
   type AgentExecutionRepository,
   createAgentExecutionRepository,
 } from "./features/agent-runs/agent-execution-repository.js";
+import { createAgentSessionScopeResolver } from "./features/agent-runs/agent-run-context-repository.js";
 import {
   type AgentRunMetadataService,
   createAgentRunMetadataService,
@@ -120,6 +123,7 @@ import { registerSettingsRoutes } from "./http/settings.js";
 import { registerUploadRoutes } from "./http/uploads.js";
 import { registerVideoModelRoutes } from "./http/video-models.js";
 import { registerViewerRoutes } from "./http/viewer.js";
+import { sanitizeRequestUrl } from "./logging/sanitize-log-data.js";
 import { createPgmqClient } from "./queue/pgmq-client.js";
 import { registerRateLimiting } from "./security/rate-limit.js";
 import {
@@ -230,7 +234,20 @@ export function buildAppFromEnv(
   ).seal();
 
   const app = Fastify({
-    logger: { level: "info" },
+    logger: {
+      level: "info",
+      serializers: {
+        req(request) {
+          return {
+            host: request.headers.host ?? "",
+            method: request.method,
+            remoteAddress: request.socket.remoteAddress ?? "",
+            remotePort: request.socket.remotePort ?? 0,
+            url: sanitizeRequestUrl(request.url),
+          };
+        },
+      },
+    },
   });
   const loadCatalog =
     options.builtinSkillCatalogLoader ?? loadRepositoryBuiltinSkillCatalog;
@@ -253,17 +270,15 @@ export function buildAppFromEnv(
   void app.register(async (instance) => {
     await instance.register(websocket);
     await registerWsRoute(instance, {
-      acceptAgentRun,
       agentRuns,
+      agentRunStageLogger,
       agentRunMetadataService,
       auth,
       chatService,
       connectionManager,
       eventBuffer,
       authorization: resourceAuthorization,
-      settingsService,
-      threadService,
-      viewerService,
+      prepareAgentRun,
     });
   });
   const auth = options.auth ?? createSupabaseRequestAuthenticator(env);
@@ -345,18 +360,6 @@ export function buildAppFromEnv(
         ),
       resolveAuthority: () =>
         createAgentAuthority(PRODUCTION_AGENT_CAPABILITIES),
-      resolveScope: resolveAgentCanvasScope,
-      requireSessionScope: async (principal, sessionId) => {
-        if (!principal.accessToken) throw new Error("canvas_access_denied");
-        const client = createUserClient(principal.accessToken);
-        const { data, error } = await client
-          .from("chat_sessions")
-          .select("canvas_id")
-          .eq("id", sessionId)
-          .maybeSingle();
-        if (error || !data?.canvas_id) throw new Error("canvas_access_denied");
-        return resolveAgentCanvasScope(principal, data.canvas_id);
-      },
     });
   const viewerService =
     options.viewerService ?? createViewerService({ getAdminClient });
@@ -384,6 +387,35 @@ export function buildAppFromEnv(
       createUserClient,
       defaultModel: resolveDefaultAgentModel(env),
     });
+  const resolveAuthorizedRunContext = createAuthorizedRunContextResolver({
+    resolveSessionScope: createAgentSessionScopeResolver({ createUserClient }),
+  });
+  const agentRunStageLogger = {
+    info: (event: string, context: Record<string, unknown>) =>
+      app.log.info({ ...context, event }, event),
+    warn: (event: string, context: Record<string, unknown>) =>
+      app.log.warn({ ...context, event }, event),
+    error: (event: string, context: Record<string, unknown>) =>
+      app.log.error({ ...context, event }, event),
+  };
+  const prepareAgentRun = createPrepareAgentRun({
+    acceptAgentRun,
+    findAcceptance: (input) => agentExecutionRepository.findAcceptance(input),
+    logger: agentRunStageLogger,
+    resolveContext: resolveAuthorizedRunContext,
+    resolveWorkspaceModel: async (context) =>
+      (
+        await settingsService.getWorkspaceSettings(
+          {
+            accessToken: context.accessToken,
+            email: "",
+            id: context.userId,
+            userMetadata: {},
+          },
+          context.workspaceId,
+        )
+      ).defaultModel,
+  });
   const uploadService =
     options.uploadService ?? createUploadService({ createUserClient });
   const pgmq = env.supabaseDbUrl
@@ -695,13 +727,10 @@ export function buildAppFromEnv(
       }),
   });
   void registerRunRoutes(app, agentRuns, {
-    acceptAgentRun,
+    prepareAgentRun,
     agentRunMetadataService,
     auth,
     authorization: resourceAuthorization,
-    settingsService,
-    threadService,
-    viewerService,
   });
   void registerViewerRoutes(app, {
     auth,

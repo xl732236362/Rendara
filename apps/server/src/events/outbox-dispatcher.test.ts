@@ -25,6 +25,40 @@ function setup(events: unknown[] = [event]) {
 }
 
 describe("domain outbox dispatcher", () => {
+  it("acknowledges a valid Agent acceptance lifecycle event", async () => {
+    const publish = createDomainEventPublisher({
+      pushCanvas: vi.fn(),
+      sendToUser: vi.fn(),
+      rememberCanvasEvent: vi.fn(() => true),
+    });
+
+    await expect(
+      publish({
+        ...event,
+        aggregate_type: "agent_run",
+        event_type: "agent.run.accepted",
+        payload: { attemptId: "attempt-1", runId: event.aggregate_id },
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("rejects unknown Agent lifecycle events", async () => {
+    const publish = createDomainEventPublisher({
+      pushCanvas: vi.fn(),
+      sendToUser: vi.fn(),
+      rememberCanvasEvent: vi.fn(() => true),
+    });
+
+    await expect(
+      publish({
+        ...event,
+        aggregate_type: "agent_run",
+        event_type: "agent.run.unknown",
+        payload: { attemptId: "attempt-1", runId: event.aggregate_id },
+      }),
+    ).rejects.toMatchObject({ code: "invalid_agent_run_event" });
+  });
+
   it("publishes generation events to the owning user instead of silently acknowledging", async () => {
     const sendToUser = vi.fn(() => true);
     const publish = createDomainEventPublisher({

@@ -44,13 +44,14 @@ vi.mock("../src/lib/server-api", () => ({
 function createMockWs(): WebSocketHandle {
   return {
     connected: true,
-    startRun: vi.fn((payload, onAck) => {
+    startRun: vi.fn((payload, callbacks) => {
       // Simulate server ack
-      onAck?.({
+      callbacks?.onAck({
         type: "command.ack",
         action: "agent.run",
-        payload: { runId: "run_123" },
+        payload: { runId: "run_123", clientRequestId: payload.clientRequestId },
       });
+      return true;
     }),
     cancelRun: vi.fn(),
     onEvent: vi.fn(() => () => {}),
@@ -142,7 +143,10 @@ describe("ChatSidebar", () => {
           prompt: "hello loom",
           canvasId: "canvas-1",
         }),
-        expect.any(Function),
+        expect.objectContaining({
+          onAck: expect.any(Function),
+          onError: expect.any(Function),
+        }),
       ),
     );
     expect(mockWs.startRun).not.toHaveBeenCalledWith(
@@ -151,5 +155,61 @@ describe("ChatSidebar", () => {
       }),
       expect.anything(),
     );
+  });
+
+  it("retries acceptance with the same request without duplicating the user message", async () => {
+    const startRun = vi.fn((payload, callbacks) => {
+      if (startRun.mock.calls.length === 1) {
+        callbacks?.onError({
+          type: "error",
+          action: "agent.run",
+          clientRequestId: payload.clientRequestId,
+          retryable: true,
+          error: {
+            code: "agent_acceptance_indeterminate",
+            message: "Agent acceptance is still being confirmed.",
+          },
+        });
+      } else {
+        callbacks?.onAck({
+          type: "command.ack",
+          action: "agent.run",
+          payload: {
+            runId: "run_123",
+            clientRequestId: payload.clientRequestId,
+          },
+        });
+      }
+      return true;
+    });
+    mockWs.startRun = startRun;
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    const input = await screen.findByPlaceholderText(/start with an idea/i);
+    await userEvent.type(input, "retry me{Enter}");
+    const retry = await screen.findByRole("button", { name: "重试" });
+    const firstRequestId = startRun.mock.calls[0]?.[0].clientRequestId;
+    await userEvent.click(retry);
+
+    await waitFor(() => expect(startRun).toHaveBeenCalledTimes(2));
+    expect(startRun.mock.calls[1]?.[0].clientRequestId).toBe(firstRequestId);
+    expect(saveMessageMock).toHaveBeenCalledTimes(1);
+    expect(
+      [...document.querySelectorAll(".items-end")].filter((element) =>
+        element.textContent?.includes("retry me"),
+      ),
+    ).toHaveLength(1);
   });
 });

@@ -1,5 +1,6 @@
 "use client";
 
+import { RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type {
@@ -24,7 +25,7 @@ import type { ReadyAttachment } from "../hooks/use-image-attachments";
 import { useImageAttachments } from "../hooks/use-image-attachments";
 import { useImageModelPreference } from "../hooks/use-image-model-preference";
 import { useVideoModelPreference } from "../hooks/use-video-model-preference";
-import type { WebSocketHandle } from "../hooks/use-websocket";
+import type { RunCallbacks, WebSocketHandle } from "../hooks/use-websocket";
 import { fetchBrandKit } from "../lib/brand-kit-api";
 import { claimDailyCredits } from "../lib/credits-api";
 import { fetchImageModels, saveMessage } from "../lib/server-api";
@@ -63,6 +64,29 @@ type ChatSidebarProps = {
   ws: WebSocketHandle;
   selectedCanvasElements?: CanvasSelectedElement[];
 };
+
+function acceptanceFailureText(
+  code: string | undefined,
+  requestId: string,
+): string {
+  switch (code) {
+    case "agent_context_timeout":
+      return "Agent 上下文加载超时，请重试。";
+    case "agent_context_unavailable":
+    case "agent_acceptance_unavailable":
+      return "Agent 服务暂时不可用，请稍后重试。";
+    case "agent_acceptance_indeterminate":
+      return "请求仍在确认中，请使用原请求重试。";
+    case "agent_acceptance_conflict":
+      return "该请求与之前的提交不一致，请重新发送。";
+    case "agent_context_forbidden":
+      return "当前会话或画布无权运行 Agent。";
+    case "agent_acceptance_failed":
+      return "Agent 请求未能接受，请重新发送。";
+    default:
+      return `Agent 暂时无法响应，请求编号：${requestId}`;
+  }
+}
 
 export function ChatSidebar({
   accessToken,
@@ -128,6 +152,10 @@ export function ChatSidebar({
     requiredAmount: number;
     plan: string;
     dailyClaimed: boolean;
+  } | null>(null);
+  const [pendingAcceptanceRetry, setPendingAcceptanceRetry] = useState<{
+    assistantId: string;
+    retry: () => void;
   } | null>(null);
   const chatInputRef = useRef<import("./chat-input").ChatInputHandle>(null);
 
@@ -433,6 +461,25 @@ export function ChatSidebar({
       setStreaming(true);
       abortRef.current = false;
 
+      const normalizedRequest = {
+        sessionId: currentSessionId,
+        conversationId: canvasId,
+        prompt: text,
+        canvasId,
+        clientRequestId: crypto.randomUUID(),
+        ...(currentAttachments.length > 0
+          ? { attachments: currentAttachments }
+          : {}),
+        ...(currentMentions.length > 0 ? { mentions: currentMentions } : {}),
+        ...(currentImageGenerationPreference
+          ? { imageGenerationPreference: currentImageGenerationPreference }
+          : {}),
+        ...(currentVideoGenerationPreference
+          ? { videoGenerationPreference: currentVideoGenerationPreference }
+          : {}),
+        ...(agentModelRef.current ? { model: agentModelRef.current } : {}),
+      };
+
       try {
         const perf = {
           t0Send: performance.now(),
@@ -538,38 +585,17 @@ export function ChatSidebar({
           const timeout = setTimeout(() => {
             cleanup();
             reject(new Error("WebSocket ack timeout — connection may be down"));
-          }, 10_000);
+          }, 15_000);
 
-          ws.startRun(
-            {
-              sessionId: currentSessionId,
-              conversationId: canvasId,
-              prompt: text,
-              canvasId,
-              clientRequestId: crypto.randomUUID(),
-              accessToken: accessTokenRef.current,
-              ...(currentAttachments.length > 0
-                ? { attachments: currentAttachments }
-                : {}),
-              ...(currentMentions.length > 0
-                ? { mentions: currentMentions }
-                : {}),
-              ...(currentImageGenerationPreference
-                ? {
-                    imageGenerationPreference: currentImageGenerationPreference,
-                  }
-                : {}),
-              ...(currentVideoGenerationPreference
-                ? {
-                    videoGenerationPreference: currentVideoGenerationPreference,
-                  }
-                : {}),
-              ...(agentModelRef.current
-                ? { model: agentModelRef.current }
-                : {}),
-            },
-            (ack) => {
+          const transportRequest = {
+            ...normalizedRequest,
+            accessToken: accessTokenRef.current,
+          };
+          let retrySubmission: () => void;
+          const callbacks: RunCallbacks = {
+            onAck: (ack) => {
               clearTimeout(timeout);
+              setPendingAcceptanceRetry(null);
               perf.tAck = performance.now();
               console.log(
                 `[perf] send → ack: ${(perf.tAck - perf.t0Send).toFixed(0)}ms`,
@@ -578,14 +604,64 @@ export function ChatSidebar({
               runIdRef.current = id;
               resolve(id);
             },
-          );
+            onError: (error) => {
+              clearTimeout(timeout);
+              if (error.retryable) {
+                setPendingAcceptanceRetry({
+                  assistantId,
+                  retry: retrySubmission,
+                });
+              }
+              reject(
+                Object.assign(new Error(error.error.message), {
+                  wsError: error,
+                }),
+              );
+            },
+          };
+          retrySubmission = () => {
+            setPendingAcceptanceRetry(null);
+            setStreaming(true);
+            const sent = ws.startRun(
+              {
+                ...normalizedRequest,
+                accessToken: accessTokenRef.current,
+              },
+              callbacks,
+            );
+            if (!sent) {
+              callbacks.onError({
+                type: "error",
+                action: "agent.run",
+                clientRequestId: normalizedRequest.clientRequestId,
+                retryable: true,
+                error: {
+                  code: "agent_acceptance_unavailable",
+                  message: "连接尚未恢复。",
+                },
+              });
+              setStreaming(false);
+              return;
+            }
+            void streamDone.finally(() => {
+              cleanup();
+              setStreaming(false);
+            });
+          };
+          ws.startRun(transportRequest, callbacks);
         });
         clearAttachments();
         setMessageMentions([]);
 
         await streamDone;
         cleanup();
-      } catch {
+      } catch (error) {
+        const wsError = (error as { wsError?: { error?: { code?: string } } })
+          .wsError;
+        const failureText = acceptanceFailureText(
+          wsError?.error?.code,
+          normalizedRequest.clientRequestId,
+        );
         updateSessionMessages(currentSessionId, (prev) =>
           prev.map((m) => {
             if (m.id !== assistantId) return m;
@@ -595,7 +671,7 @@ export function ChatSidebar({
               ...m,
               contentBlocks: [
                 ...m.contentBlocks,
-                { type: "text" as const, text: "Failed to get response." },
+                { type: "text" as const, text: failureText },
               ],
             };
           }),
@@ -954,16 +1030,27 @@ export function ChatSidebar({
             <ChatSkills onSend={handleSend} />
           ) : (
             messages.map((msg) => (
-              <ChatMessage
-                key={msg.id}
-                role={msg.role}
-                contentBlocks={msg.contentBlocks}
-                isStreaming={
-                  streaming &&
-                  msg.role === "assistant" &&
-                  msg === messages[messages.length - 1]
-                }
-              />
+              <div key={msg.id} className="flex flex-col gap-2">
+                <ChatMessage
+                  role={msg.role}
+                  contentBlocks={msg.contentBlocks}
+                  isStreaming={
+                    streaming &&
+                    msg.role === "assistant" &&
+                    msg === messages[messages.length - 1]
+                  }
+                />
+                {pendingAcceptanceRetry?.assistantId === msg.id && (
+                  <button
+                    type="button"
+                    className="inline-flex h-8 w-fit items-center gap-1.5 rounded-md border border-border px-2.5 text-xs text-foreground hover:bg-muted"
+                    onClick={pendingAcceptanceRetry.retry}
+                  >
+                    <RotateCcw className="h-3.5 w-3.5" />
+                    重试
+                  </button>
+                )}
+              </div>
             ))
           )}
           <div ref={messagesEndRef} />

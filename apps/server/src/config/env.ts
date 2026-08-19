@@ -13,10 +13,12 @@ export const DEFAULT_WEB_ORIGIN = "http://localhost:3000";
 export type ServerEnv = ServerEnvironment & { version: string };
 
 export function resolveDefaultAgentModel(env: {
+  agentModel?: string | undefined;
   googleApiKey?: string | undefined;
   googleVertexProject?: string | undefined;
   openAIApiKey?: string | undefined;
 }): string {
+  if (env.agentModel) return env.agentModel;
   return !env.openAIApiKey && (env.googleApiKey || env.googleVertexProject)
     ? DEFAULT_GOOGLE_AGENT_MODEL
     : DEFAULT_AGENT_MODEL;

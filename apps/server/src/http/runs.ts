@@ -9,17 +9,11 @@ import {
 } from "@loomic/shared";
 
 import type { AgentRunService } from "../agent/runtime.js";
-import type { AcceptAgentRun } from "../application/agent/accept-agent-run.js";
+import type { PrepareAgentRun } from "../application/agent/prepare-agent-run.js";
 import {
   type AgentRunMetadataService,
   AgentRunPersistenceError,
 } from "../features/agent-runs/agent-run-service.js";
-import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
-import {
-  type ThreadService,
-  ThreadServiceError,
-} from "../features/chat/thread-service.js";
-import type { SettingsService } from "../features/settings/settings-service.js";
 import {
   type ResourceAuthorization,
   ResourceAuthorizationError,
@@ -38,13 +32,10 @@ export async function registerRunRoutes(
   app: FastifyInstance,
   agentRuns: AgentRunService,
   options: {
-    acceptAgentRun?: AcceptAgentRun;
+    prepareAgentRun?: PrepareAgentRun;
     agentRunMetadataService?: AgentRunMetadataService;
     auth?: RequestAuthenticator;
     authorization?: ResourceAuthorization;
-    settingsService?: SettingsService;
-    threadService?: ThreadService;
-    viewerService?: ViewerService;
   },
 ) {
   app.post("/api/agent/runs", async (request, reply) => {
@@ -61,64 +52,26 @@ export async function registerRunRoutes(
       throw new Error("Resource authorization is not configured.");
     }
 
-    await requireRunResourceAccess(
-      options.authorization,
-      authenticatedUser,
-      payload,
-    );
-
-    const sessionThread =
-      authenticatedUser && options?.threadService
-        ? await options.threadService.resolveOwnedSessionThread(
-            authenticatedUser,
-            payload.sessionId,
-          )
-        : null;
-
-    // Resolve per-workspace model if auth context is available
-    let model: string | undefined;
-    if (authenticatedUser && options.settingsService && options.viewerService) {
-      try {
-        // Workspace model lookup is optional enrichment; run submission falls
-        // back to the server model when settings are temporarily unavailable.
-        const viewer =
-          await options.viewerService.ensureViewer(authenticatedUser);
-        const settings = await options.settingsService.getWorkspaceSettings(
-          authenticatedUser,
-          viewer.workspace.id,
-        );
-        model = settings.defaultModel;
-      } catch {
-        // Fall through to server default model if settings lookup fails
-      }
+    if (!options.prepareAgentRun) {
+      throw new Error("Agent preparation is not configured.");
     }
-
-    if (!options.acceptAgentRun) {
-      throw new Error("Agent acceptance is not configured.");
-    }
-    const accepted = await options.acceptAgentRun(
+    const prepared = await options.prepareAgentRun(
       payload,
       {
         userId: authenticatedUser.id,
         accessToken: authenticatedUser.accessToken,
       },
-      {
-        ...(model ? { model } : {}),
-        ...(sessionThread ? { threadId: sessionThread.threadId } : {}),
-      },
+      { requestId: request.id },
     );
     const response = runCreateResponseSchema.parse(
-      agentRuns.createRun(payload, {
-        runId: accepted.runId,
-        ...(authenticatedUser
-          ? {
-              accessToken: authenticatedUser.accessToken,
-              userId: authenticatedUser.id,
-            }
-          : {}),
-        ...(model ? { model } : {}),
-        ...(sessionThread ? { threadId: sessionThread.threadId } : {}),
-      }),
+      agentRuns.registerRun(payload, {
+        accessToken: authenticatedUser.accessToken,
+        durableCreated: prepared.accepted.created,
+        runId: prepared.accepted.runId,
+        userId: authenticatedUser.id,
+        ...(prepared.model ? { model: prepared.model } : {}),
+        threadId: prepared.context.threadId,
+      }).response,
     );
 
     return reply.code(202).send(response);

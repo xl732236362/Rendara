@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { MemoryAgentExecutionRepository } from "./agent-execution-repository.js";
+import {
+  MemoryAgentExecutionRepository,
+  createAgentExecutionRepository,
+} from "./agent-execution-repository.js";
 
 const acceptance = {
   clientRequestId: "request-1",
   requestDigest: "digest-1",
+  model: "openai:test-model",
   context: {
     runId: "run-1",
     attemptId: "attempt-1",
@@ -43,6 +47,22 @@ describe("AgentExecutionRepository", () => {
     await expect(
       repository.accept({ ...acceptance, requestDigest: "digest-other" }),
     ).rejects.toThrow("agent_acceptance_conflict");
+  });
+
+  it("finds a durable acceptance by user and client request", async () => {
+    const repository = new MemoryAgentExecutionRepository();
+    await repository.accept(acceptance);
+
+    await expect(
+      repository.findAcceptance({
+        clientRequestId: "request-1",
+        userId: "user-1",
+      }),
+    ).resolves.toEqual({
+      model: "openai:test-model",
+      requestDigest: "digest-1",
+      runId: "run-1",
+    });
   });
 
   it("leases an attempt to one owner and fences an expired owner", async () => {
@@ -182,3 +202,149 @@ describe("AgentExecutionRepository", () => {
     expect(resumed.effectiveSkillNames).toEqual(["json-image-prompt"]);
   });
 });
+
+describe("Supabase Agent acceptance adapter", () => {
+  it("passes cancellation to the acceptance RPC", async () => {
+    const result = abortableResult({
+      data: [{ created: true, run_id: "run-1" }],
+      error: null,
+    });
+    const rpc = vi.fn(() => result.builder);
+    const repository = createAgentExecutionRepository({
+      getAdminClient: () => ({ rpc }) as never,
+    });
+    const controller = new AbortController();
+
+    await repository.accept(acceptance, controller.signal);
+
+    expect(result.abortSignal).toHaveBeenCalledWith(controller.signal);
+  });
+
+  it.each(["57014", "55P03", "40001", "40P01"])(
+    "classifies PostgreSQL %s as a definitive retryable rollback",
+    async (code) => {
+      const result = abortableResult({
+        data: null,
+        error: { code, message: "sensitive database detail" },
+      });
+      const repository = createAgentExecutionRepository({
+        getAdminClient: () => ({ rpc: vi.fn(() => result.builder) }) as never,
+      });
+
+      await expect(repository.accept(acceptance)).rejects.toMatchObject({
+        kind: "definitive_unavailable",
+        message: "agent_acceptance_unavailable",
+      });
+    },
+  );
+
+  it("classifies the idempotency conflict without exposing database text", async () => {
+    const result = abortableResult({
+      data: null,
+      error: {
+        code: "P0001",
+        message: "agent_acceptance_conflict: sentinel detail",
+      },
+    });
+    const repository = createAgentExecutionRepository({
+      getAdminClient: () => ({ rpc: vi.fn(() => result.builder) }) as never,
+    });
+
+    const error = await repository.accept(acceptance).catch((cause) => cause);
+    expect(error).toMatchObject({
+      kind: "conflict",
+      message: "agent_acceptance_conflict",
+    });
+    expect(String(error)).not.toContain("sentinel detail");
+  });
+
+  it("treats transport rejection and malformed success as indeterminate", async () => {
+    const rejected = abortableResult(undefined, new Error("socket reset"));
+    const malformed = abortableResult({ data: { created: true }, error: null });
+    const rejectedRepository = createAgentExecutionRepository({
+      getAdminClient: () => ({ rpc: vi.fn(() => rejected.builder) }) as never,
+    });
+    const malformedRepository = createAgentExecutionRepository({
+      getAdminClient: () => ({ rpc: vi.fn(() => malformed.builder) }) as never,
+    });
+
+    await expect(rejectedRepository.accept(acceptance)).rejects.toMatchObject({
+      kind: "indeterminate",
+    });
+    await expect(malformedRepository.accept(acceptance)).rejects.toMatchObject({
+      kind: "indeterminate",
+    });
+  });
+
+  it("looks up a durable acceptance using the indexed identity", async () => {
+    const result = abortableResult({
+      data: {
+        id: "run-1",
+        model: "openai:persisted-model",
+        request_digest: "digest-1",
+      },
+      error: null,
+    });
+    const query = queryChain(result.builder);
+    const from = vi.fn(() => query);
+    const repository = createAgentExecutionRepository({
+      getAdminClient: () => ({ from }) as never,
+    });
+    const controller = new AbortController();
+
+    await expect(
+      repository.findAcceptance({
+        clientRequestId: "request-1",
+        signal: controller.signal,
+        userId: "user-1",
+      }),
+    ).resolves.toEqual({
+      model: "openai:persisted-model",
+      requestDigest: "digest-1",
+      runId: "run-1",
+    });
+    expect(from).toHaveBeenCalledWith("agent_runs");
+    expect(query.select).toHaveBeenCalledWith("id, request_digest, model");
+    expect(query.eq).toHaveBeenNthCalledWith(1, "user_id", "user-1");
+    expect(query.eq).toHaveBeenNthCalledWith(
+      2,
+      "client_request_id",
+      "request-1",
+    );
+    expect(query.abortSignal).toHaveBeenCalledWith(controller.signal);
+  });
+});
+
+function abortableResult(
+  value: unknown,
+  rejection?: unknown,
+): {
+  abortSignal: ReturnType<typeof vi.fn>;
+  builder: AbortableTestResult;
+} {
+  const abortSignal = vi.fn();
+  const builder = (
+    rejection === undefined ? Promise.resolve(value) : Promise.reject(rejection)
+  ) as AbortableTestResult;
+  builder.abortSignal = abortSignal;
+  abortSignal.mockReturnValue(builder);
+  return { abortSignal, builder };
+}
+
+type AbortableTestResult = Promise<unknown> & {
+  abortSignal(signal: AbortSignal): AbortableTestResult;
+};
+
+function queryChain(terminal: unknown) {
+  const query = {
+    abortSignal: vi.fn(),
+    eq: vi.fn(),
+    maybeSingle: vi.fn(),
+    select: vi.fn(),
+  };
+  query.select.mockReturnValue(query);
+  query.eq.mockReturnValue(query);
+  query.abortSignal.mockReturnValue(query);
+  query.maybeSingle.mockReturnValue(terminal);
+  return query;
+}

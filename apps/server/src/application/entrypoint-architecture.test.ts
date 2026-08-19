@@ -34,4 +34,13 @@ describe("application entrypoint boundaries", () => {
     );
     expect(source).not.toMatch(/\.from\(["']canvases["']\)/);
   });
+
+  it("wires Agent acceptance stage logs into application composition", async () => {
+    const source = await readFile(
+      new URL("../app.ts", import.meta.url),
+      "utf8",
+    );
+
+    expect(source).toContain("logger: agentRunStageLogger");
+  });
 });

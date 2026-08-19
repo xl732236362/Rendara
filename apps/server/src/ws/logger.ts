@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { sanitizeLogData } from "../logging/sanitize-log-data.js";
 
 /**
  * Structured logger for WebSocket + Agent pipeline.
@@ -57,21 +58,22 @@ export function createPipelineLogger(
 
   function emit(level: LogLevel, event: string, ctx?: Record<string, unknown>) {
     const now = Date.now();
-    const entry = {
+    const entry = sanitizeLogData({
       level: LEVEL_NUM[level],
       time: now,
       scope,
       event,
       ...baseCtx,
       ...ctx,
-    };
+    }) as Record<string, unknown>;
     const line = JSON.stringify(entry) + "\n";
 
     // stdout: human-friendly one-liner
     const ts = new Date(now).toISOString().slice(11, 23);
-    const ctxStr = ctx
+    const safeCtx = sanitizeLogData(ctx) as Record<string, unknown> | undefined;
+    const ctxStr = safeCtx
       ? " " +
-        Object.entries(ctx)
+        Object.entries(safeCtx)
           .map(([k, v]) => `${k}=${v}`)
           .join(" ")
       : "";

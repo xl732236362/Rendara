@@ -22,7 +22,9 @@ export type AgentRunMetadataService = {
 
 export function createAgentRunMetadataService(options: {
   getAdminClient: () => AdminSupabaseClient;
+  retryDelayMs?: number;
 }): AgentRunMetadataService {
+  const retryDelayMs = options.retryDelayMs ?? 100;
   return {
     async createAcceptedRun(input) {
       const { error } = await options
@@ -48,15 +50,23 @@ export function createAgentRunMetadataService(options: {
         ...(input.errorMessage ? { error_message: input.errorMessage } : {}),
         status: input.status,
       };
-      const { error } = await options
-        .getAdminClient()
-        .from("agent_runs")
-        .update(patch)
-        .eq("id", input.runId);
+      // Status patches are idempotent, so a bounded retry prevents a transient
+      // PostgREST failure from converting a successful Agent run into failure.
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        const { error } = await options
+          .getAdminClient()
+          .from("agent_runs")
+          .update(patch)
+          .eq("id", input.runId);
 
-      if (error) {
-        throw new AgentRunPersistenceError("Failed to update run metadata.");
+        if (!error) return;
+        if (attempt < 3 && retryDelayMs > 0) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, retryDelayMs * attempt),
+          );
+        }
       }
+      throw new AgentRunPersistenceError("Failed to update run metadata.");
     },
   };
 }

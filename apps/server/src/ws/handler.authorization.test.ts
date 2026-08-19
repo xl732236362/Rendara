@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 
+import { AgentRunError } from "../application/agent/agent-run-errors.js";
 import {
   type ResourceAuthorization,
   ResourceAuthorizationError,
@@ -48,6 +49,116 @@ describe("WebSocket run authorization", () => {
 });
 
 describe("WebSocket resource commands", () => {
+  it("acknowledges an active replay without consuming or clearing its stream", async () => {
+    const socket = new FakeSocket();
+    const agentRuns = fakeAgentRuns();
+    agentRuns.registerRun.mockReturnValue({
+      ownership: "existing_active",
+      response: {
+        conversationId: "conversation-1",
+        runId: "run-1",
+        sessionId: "session-1",
+        status: "accepted",
+      },
+    });
+    const connectionManager = new ConnectionManager();
+    const clearActiveRun = vi.spyOn(connectionManager, "clearActiveRun");
+
+    await bindAuthenticatedSocket(
+      socket as never,
+      "token",
+      { url: "/api/ws", headers: { host: "localhost" } } as never,
+      {
+        agentRuns: agentRuns as never,
+        authorization: fakeAuthorization("canvas-1"),
+        auth: { authenticate: async () => user },
+        connectionManager,
+        prepareAgentRun: async () => preparedRun(false),
+      },
+    );
+    socket.emit("message", runCommand());
+    await nextTurn();
+
+    expect(agentRuns.streamRun).not.toHaveBeenCalled();
+    expect(clearActiveRun).not.toHaveBeenCalled();
+    expect(
+      socket.messages.map((message) => JSON.parse(message)),
+    ).toContainEqual(
+      expect.objectContaining({
+        action: "agent.run",
+        payload: expect.objectContaining({
+          clientRequestId: "request-1",
+          runId: "run-1",
+        }),
+        type: "command.ack",
+      }),
+    );
+    socket.emit("close");
+  });
+
+  it("marks a newly owned run active before sending its acknowledgement", async () => {
+    const socket = new FakeSocket();
+    const agentRuns = fakeAgentRuns();
+    agentRuns.registerRun.mockReturnValue({
+      ownership: "created",
+      response: {
+        conversationId: "conversation-1",
+        runId: "run-1",
+        sessionId: "session-1",
+        status: "accepted",
+      },
+    });
+    agentRuns.streamRun.mockReturnValue((async function* () {})());
+    const connectionManager = new ConnectionManager();
+    const setActiveRun = vi.spyOn(connectionManager, "setActiveRun");
+    const sendTo = vi.spyOn(connectionManager, "sendTo");
+    const prepareAgentRun = vi.fn(async () => preparedRun(true));
+    const agentRunStageLogger = {
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
+
+    await bindAuthenticatedSocket(
+      socket as never,
+      "token",
+      {
+        id: "ws-request-1",
+        url: "/api/ws",
+        headers: { host: "localhost" },
+      } as never,
+      {
+        agentRuns: agentRuns as never,
+        agentRunStageLogger,
+        authorization: fakeAuthorization("canvas-1"),
+        auth: { authenticate: async () => user },
+        connectionManager,
+        prepareAgentRun,
+      },
+    );
+    socket.emit("message", runCommand());
+    await nextTurn();
+
+    expect(setActiveRun.mock.invocationCallOrder[0]).toBeLessThan(
+      sendTo.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(agentRuns.streamRun).toHaveBeenCalledOnce();
+    expect(prepareAgentRun).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.any(Object),
+      { requestId: "ws-request-1" },
+    );
+    expect(agentRunStageLogger.info).toHaveBeenCalledWith(
+      "agent.ack.completed",
+      expect.objectContaining({
+        clientRequestId: "request-1",
+        requestId: "ws-request-1",
+        runId: "run-1",
+      }),
+    );
+    socket.emit("close");
+  });
+
   it("authorizes canvas resume before replay work begins", async () => {
     let authorizedCanvas: string | undefined;
     const authorization = fakeAuthorization("canvas-1", {
@@ -106,7 +217,10 @@ describe("WebSocket resource commands", () => {
     expect(
       socket.messages.map((message) => JSON.parse(message)),
     ).toContainEqual(
-      expect.objectContaining({ type: "error", code: "forbidden" }),
+      expect.objectContaining({
+        type: "error",
+        error: expect.objectContaining({ code: "forbidden" }),
+      }),
     );
     socket.emit("close");
   });
@@ -141,7 +255,10 @@ describe("WebSocket resource commands", () => {
     expect(
       socket.messages.map((message) => JSON.parse(message)),
     ).toContainEqual(
-      expect.objectContaining({ type: "error", code: "forbidden" }),
+      expect.objectContaining({
+        type: "error",
+        error: expect.objectContaining({ code: "forbidden" }),
+      }),
     );
     socket.emit("close");
   });
@@ -193,6 +310,14 @@ describe("WebSocket resource commands", () => {
         authorization: rejectingAuthorization(),
         auth: { authenticate: async () => user },
         connectionManager: new ConnectionManager(),
+        prepareAgentRun: async () => {
+          throw new AgentRunError({
+            code: "agent_context_forbidden",
+            message: "You do not have access to this Agent context.",
+            retryable: false,
+            statusCode: 403,
+          });
+        },
       },
     );
 
@@ -212,11 +337,17 @@ describe("WebSocket resource commands", () => {
     );
     await nextTurn();
 
-    expect(agentRuns.createRun).not.toHaveBeenCalled();
+    expect(agentRuns.registerRun).not.toHaveBeenCalled();
     expect(
       socket.messages.map((message) => JSON.parse(message)),
     ).toContainEqual(
-      expect.objectContaining({ type: "error", code: "forbidden" }),
+      expect.objectContaining({
+        action: "agent.run",
+        clientRequestId: "request-1",
+        error: expect.objectContaining({ code: "agent_context_forbidden" }),
+        retryable: false,
+        type: "error",
+      }),
     );
     socket.emit("close");
   });
@@ -259,7 +390,44 @@ function fakeAgentRuns() {
   return {
     cancelRun: vi.fn(),
     createRun: vi.fn(),
+    registerRun: vi.fn(),
     streamRun: vi.fn(),
+  };
+}
+
+function runCommand() {
+  return JSON.stringify({
+    type: "command",
+    action: "agent.run",
+    payload: {
+      canvasId: "canvas-1",
+      clientRequestId: "request-1",
+      conversationId: "conversation-1",
+      sessionId: "session-1",
+      prompt: "test",
+    },
+  });
+}
+
+function preparedRun(created: boolean) {
+  return {
+    accepted: {
+      created,
+      requestDigest: "digest-1",
+      runId: "run-1",
+      status: "accepted" as const,
+    },
+    context: {
+      accessToken: "token",
+      canvasId: "canvas-1",
+      conversationId: "conversation-1",
+      projectId: "project-1",
+      sessionId: "session-1",
+      threadId: "thread-1",
+      userId: "user-1",
+      workspaceId: "workspace-1",
+    },
+    model: "openai:test",
   };
 }
 

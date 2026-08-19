@@ -5,17 +5,7 @@ import type { RunCreateRequest } from "@loomic/shared";
 import type { AgentAuthority } from "../../agent/capabilities.js";
 import { freezeExecutionContext } from "../../agent/execution-context.js";
 import type { AgentExecutionRepository } from "../../features/agent-runs/agent-execution-repository.js";
-
-interface CanonicalScope {
-  readonly canvasId: string;
-  readonly projectId: string;
-  readonly workspaceId: string;
-}
-
-interface AgentPrincipal {
-  readonly userId: string;
-  readonly accessToken?: string;
-}
+import type { AuthorizedAgentRunContext } from "./authorized-run-context.js";
 
 interface SkillCatalogView {
   readonly digest: string;
@@ -25,18 +15,30 @@ interface SkillCatalogView {
   }[];
 }
 
+export type AcceptedAgentRun = Readonly<{
+  created: boolean;
+  requestDigest: string;
+  runId: string;
+  status: "accepted";
+}>;
+
+export type AcceptAgentRunInput = Readonly<{
+  context: AuthorizedAgentRunContext;
+  model?: string;
+  request: RunCreateRequest;
+  requestDigest: string;
+  signal?: AbortSignal;
+}>;
+
 export function createAcceptAgentRun(options: {
   readonly repository: AgentExecutionRepository;
   readonly catalog: SkillCatalogView;
-  readonly resolveAuthority: (scope: CanonicalScope) => AgentAuthority;
-  readonly resolveScope: (
-    principal: AgentPrincipal,
-    canvasId: string,
-  ) => Promise<CanonicalScope>;
-  readonly requireSessionScope: (
-    principal: AgentPrincipal,
-    sessionId: string,
-  ) => Promise<Pick<CanonicalScope, "projectId" | "workspaceId">>;
+  readonly resolveAuthority: (
+    scope: Pick<
+      AuthorizedAgentRunContext,
+      "canvasId" | "projectId" | "workspaceId"
+    >,
+  ) => AgentAuthority;
   readonly runIdFactory?: () => string;
   readonly attemptIdFactory?: () => string;
   readonly onAccepted?: (event: {
@@ -52,24 +54,16 @@ export function createAcceptAgentRun(options: {
   const runIdFactory = options.runIdFactory ?? randomUUID;
   const attemptIdFactory = options.attemptIdFactory ?? randomUUID;
 
-  return async (
-    request: RunCreateRequest,
-    principal: AgentPrincipal,
-    metadata: { readonly threadId?: string; readonly model?: string } = {},
-  ): Promise<{ runId: string; status: "accepted" }> => {
-    const scope = await options.resolveScope(principal, request.canvasId);
-    const sessionScope = await options.requireSessionScope(
-      principal,
-      request.sessionId,
-    );
+  return async (input: AcceptAgentRunInput): Promise<AcceptedAgentRun> => {
+    assertMatchingRequestContext(input.request, input.context);
     if (
-      scope.projectId !== sessionScope.projectId ||
-      scope.workspaceId !== sessionScope.workspaceId
+      input.requestDigest !==
+      createAgentRunRequestDigest(input.request, input.context)
     ) {
-      throw new Error("session_canvas_mismatch");
+      throw new TypeError("agent_request_digest_mismatch");
     }
 
-    const authority = options.resolveAuthority(scope);
+    const authority = options.resolveAuthority(input.context);
     const capabilitySet = new Set(authority.capabilities);
     const effectiveSkillNames = options.catalog
       .list()
@@ -82,46 +76,93 @@ export function createAcceptAgentRun(options: {
       )
       .map((skill) => skill.name)
       .sort();
-    const context = freezeExecutionContext({
+    const executionContext = freezeExecutionContext({
       attemptId: attemptIdFactory(),
-      canvasId: scope.canvasId,
+      canvasId: input.context.canvasId,
       capabilities: [...authority.capabilities],
       capabilityPolicyVersion: authority.policyVersion,
       effectiveSkillNames,
-      projectId: scope.projectId,
+      projectId: input.context.projectId,
       runId: runIdFactory(),
       skillCatalogDigest: options.catalog.digest,
-      userId: principal.userId,
-      workspaceId: scope.workspaceId,
+      userId: input.context.userId,
+      workspaceId: input.context.workspaceId,
     });
-    const requestDigest = createHash("sha256")
-      .update(
-        JSON.stringify({
-          request,
-          scope,
-          userId: principal.userId,
-        }),
-      )
-      .digest("hex");
-    const accepted = await options.repository.accept({
-      clientRequestId: request.clientRequestId,
-      context,
-      sessionId: request.sessionId,
-      threadId: metadata.threadId ?? request.sessionId,
-      ...(metadata.model ? { model: metadata.model } : {}),
-      requestDigest,
-    });
+    const accepted = await options.repository.accept(
+      {
+        clientRequestId: input.request.clientRequestId,
+        context: executionContext,
+        sessionId: input.context.sessionId,
+        threadId: input.context.threadId,
+        ...(input.model ? { model: input.model } : {}),
+        requestDigest: input.requestDigest,
+      },
+      input.signal,
+    );
     options.onAccepted?.({
       runId: accepted.runId,
-      canvasId: context.canvasId,
-      projectId: context.projectId,
-      workspaceId: context.workspaceId,
-      capabilities: context.capabilities,
-      effectiveSkillNames: context.effectiveSkillNames,
+      canvasId: executionContext.canvasId,
+      projectId: executionContext.projectId,
+      workspaceId: executionContext.workspaceId,
+      capabilities: executionContext.capabilities,
+      effectiveSkillNames: executionContext.effectiveSkillNames,
       created: accepted.created,
     });
-    return { runId: accepted.runId, status: "accepted" };
+    return {
+      created: accepted.created,
+      requestDigest: input.requestDigest,
+      runId: accepted.runId,
+      status: "accepted",
+    };
   };
+}
+
+export function createAgentRunRequestDigest(
+  request: RunCreateRequest,
+  context: AuthorizedAgentRunContext,
+): string {
+  const { accessToken: _ignoredAccessToken, ...requestWithoutAccessToken } =
+    request;
+  return createHash("sha256")
+    .update(
+      stableJson({
+        request: requestWithoutAccessToken,
+        scope: {
+          canvasId: context.canvasId,
+          projectId: context.projectId,
+          sessionId: context.sessionId,
+          threadId: context.threadId,
+          workspaceId: context.workspaceId,
+        },
+        userId: context.userId,
+      }),
+    )
+    .digest("hex");
+}
+
+function assertMatchingRequestContext(
+  request: RunCreateRequest,
+  context: AuthorizedAgentRunContext,
+): void {
+  if (
+    request.canvasId !== context.canvasId ||
+    request.conversationId !== context.conversationId ||
+    request.sessionId !== context.sessionId
+  ) {
+    throw new TypeError("agent_request_context_mismatch");
+  }
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, child]) => child !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => `${JSON.stringify(key)}:${stableJson(child)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 export type AcceptAgentRun = ReturnType<typeof createAcceptAgentRun>;
