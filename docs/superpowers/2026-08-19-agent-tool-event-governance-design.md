@@ -1,7 +1,7 @@
 # Agent Tool Event Governance Design
 
 Date: 2026-08-19
-Status: Approved for implementation planning
+Status: Revised after architecture review; awaiting implementation-plan approval
 
 ## Context
 
@@ -72,19 +72,31 @@ Agent
 
 ```text
 Agent
-  -> one DynamicStructuredTool lifecycle
-    -> guard before execution
-      -> business operation
-    -> guard after execution
+  -> LangChain ToolNode
+    -> Loomic wrapToolCall middleware
+      -> guard before execution
+      -> handler(request) invokes the registered tool once
+      -> guard after execution
 ```
 
-Each tool must expose a framework-independent definition containing its name,
-description, schema, and business handler. Tool construction creates exactly
-one LangChain tool whose function runs `guardToolCall()` around that handler.
-The guard must not invoke another LangChain `StructuredTool`.
+Loomic will use LangChain's public `createMiddleware({ wrapToolCall })`
+extension point for capability, scope, lease, fencing, input/output bounds, and
+resource authorization. The middleware receives `request.toolCall.id`,
+`request.toolCall.name`, the registered tool, agent state, and runtime context.
+It invokes the supplied `handler(request)` exactly once after the precondition
+checks and performs the postcondition checks on the result.
+
+Existing registered tool definitions, schemas, config handling, return values,
+and artifact behavior remain unchanged. `guardStructuredTool` and the outer
+`DynamicStructuredTool` wrappers are removed after all protected tools are
+covered by the middleware. Tool construction must fail closed if a classified
+tool has no capability mapping.
 
 Calling protected LangChain internals such as `_call()` is prohibited. It
-would avoid callbacks today but bind Loomic to an unstable framework API.
+would avoid callbacks today but bind Loomic to an unstable framework API. The
+middleware must also never invoke `request.tool.invoke()` directly, because
+that would recreate the nested lifecycle; only the supplied handler owns tool
+execution.
 
 Capability resolution remains server-owned. The same pre- and post-execution
 checks remain mandatory:
@@ -96,7 +108,35 @@ checks remain mandatory:
 - input and result limits are enforced;
 - resource-specific authorization succeeds.
 
-## Canonical Event Adaptation
+## Canonical Event Publication And Adaptation
+
+LangChain tracing events are not a reliable source of business tool identity.
+In the supported framework version, `handleToolStart` receives a tool-call ID,
+but the v2 `streamEvents()` conversion does not expose that ID as a stable
+field on `on_tool_start` or `on_tool_end`. Loomic must therefore publish its
+own canonical events at the middleware boundary rather than infer identity
+from tracing metadata.
+
+The `wrapToolCall` middleware publishes schema-validated custom events with
+LangChain's public `dispatchCustomEvent` API:
+
+```text
+loomic.tool.started
+loomic.tool.completed
+loomic.tool.failed
+```
+
+Every payload contains `agentRunId`, `attemptId`, `logicalToolCallId` from
+`request.toolCall.id`, tool name, timestamp, and bounded input or output data.
+The middleware emits `started` before calling the handler and exactly one
+terminal event after the handler returns or throws. `dispatchCustomEvent` must
+receive the active runnable configuration so the event remains attached to the
+current run. Its propagation through the current
+`streamEvents({ version: "v2" })` path must be proven by a framework integration
+test before the old tool-event adaptation is removed.
+
+Standard `on_tool_start` and `on_tool_end` remain available for tracing only.
+The stream adapter must not translate them into public Loomic tool events.
 
 The stream adapter will maintain a per-run state machine keyed by
 `logicalToolCallId`:
@@ -108,9 +148,9 @@ unseen -> started -> completed
 
 Rules:
 
-1. The adapter extracts the logical tool-call ID from canonical tool-call
-   metadata. `frameworkRunId` and parent runnable IDs are retained only as
-   diagnostic fields.
+1. The adapter accepts only validated `loomic.tool.*` events for public tool
+   lifecycle output. The logical ID comes from the middleware payload, not a
+   tracing runnable ID.
 2. A repeated `started` or terminal event for the same logical ID is ignored
    after a structured duplicate-event log is written.
 3. A terminal event received without a prior `started` produces a synthesized
@@ -120,14 +160,18 @@ Rules:
    protocol conflict. The run fails safely instead of merging the calls.
 5. `canvas.sync` is emitted only on the first successful completion of a
    `manipulate_canvas` logical call.
-6. A missing logical ID is treated as an instrumentation defect. A bounded
-   compatibility fallback may pair start/end by framework ID, but it must log
-   the defect and must not manufacture time-based business identities.
+6. A missing or malformed logical ID is a protocol violation. Side-effecting
+   tools fail closed before handler execution. Read-only tool failures are also
+   surfaced rather than assigned a framework or time-based fallback identity.
+7. Custom-event publication failure fails closed before a side-effecting
+   handler starts. Failure to publish a terminal event after a committed effect
+   is recorded with a correlation ID and recovered from the durable effect
+   record; the tool must not be executed again merely to recreate an event.
 
 The public `tool.started` and `tool.completed` contracts continue using the
-existing `toolCallId` property during migration; its value becomes the logical
-ID. An optional `frameworkRunId` may be added for diagnostics. This avoids a
-coordinated breaking release across server and web.
+existing `toolCallId` property; its value becomes the logical ID. Tracing
+`frameworkRunId` stays in server logs and is not required by the web contract.
+This avoids a coordinated breaking release across server and web.
 
 ## Attempt Finalization
 
@@ -140,10 +184,25 @@ run.failed    -> failed attempt
 run.canceled  -> canceled attempt
 ```
 
-The operation validates `attemptId` and `fencingToken`, clears or invalidates
-the lease, records `completed_at`, and updates the run terminal metadata. It is
-idempotent for an identical terminal outcome. A conflicting second terminal
-outcome is logged and rejected.
+The operation validates `attemptId` and `fencingToken`, clears the lease,
+records `completed_at`, and updates the run terminal metadata. It uses an
+atomic compare-and-set transition from `accepted|running` to one terminal
+state. The first committed terminal state wins.
+
+The database RPC always returns the canonical persisted terminal state:
+
+| Current state | Requested state | Result |
+| --- | --- | --- |
+| `accepted|running` | any terminal state | Commit request and return it |
+| same terminal state | same terminal state | Idempotently return existing state |
+| terminal state A | different terminal state B | Keep and return A; log the race |
+
+The runtime publishes a terminal WebSocket event only after finalization
+returns. If cancellation and natural completion race, the event sent to the
+client reflects the canonical state returned by the RPC, not the caller's
+requested state. A finalization persistence failure produces a sanitized
+runtime failure while retaining the original failure as its cause; it must not
+guess or broadcast an uncommitted terminal state.
 
 All runtime exits after attempt claim must pass through this finalizer,
 including stream adapter failures, persistence failures, cancellation,
@@ -151,22 +210,26 @@ timeouts, and unexpected exceptions. Cleanup failure must be logged with the
 run and attempt identities and must not replace the original client-facing
 failure.
 
-The preferred persistence boundary is one database RPC that updates the run
-and attempt atomically. If a transitional two-step implementation is needed,
-the attempt transition occurs first and a reconciliation query detects and
-repairs mismatched terminal state; this transitional state must not be the
-final architecture.
+The persistence boundary is one database RPC that updates the run and attempt
+atomically. A transitional two-step implementation is not permitted because it
+would preserve the exact split-brain state this design is intended to remove.
+Assistant chat-message persistence remains a separate post-run concern: its
+failure is logged and retried independently and cannot change an already
+committed execution terminal state.
 
 ## Error Handling And Observability
 
-Repository adapters must log Supabase RPC failures before mapping them. Logs
-include only bounded structured fields:
+Repository adapters must throw typed infrastructure errors that retain
+sanitized Supabase `code`, `message`, `details`, `hint`, and `cause`. They do
+not write operational logs themselves. Runtime, HTTP, and worker orchestration
+boundaries log each failure once before mapping it to a stable client error.
+Logs include only bounded structured fields:
 
 - `agentRunId`, `attemptId`, `logicalToolCallId`;
 - `frameworkRunId`, `parentFrameworkRunId`;
 - tool name and lifecycle phase;
 - duration, replay status, and input digest;
-- Supabase `code`, `message`, `details`, and `hint` after sanitization.
+- typed infrastructure error fields after sanitization.
 
 Logs must not include access tokens, complete canvas content, raw image data,
 or unrestricted tool inputs.
@@ -180,13 +243,14 @@ console serialization does not collapse them to `{}`.
 
 The change is delivered in four compatible steps:
 
-1. Add canonical identity extraction and event-state tests while retaining the
-   current public event property names.
-2. Refactor tool definitions so only one LangChain tool instance owns each
-   lifecycle. Preserve all existing guard assertions.
-3. Add atomic run/attempt finalization and reconciliation diagnostics.
-4. Add browser acceptance coverage, then remove the temporary framework-ID
-   fallback after production telemetry shows no missing logical IDs.
+1. Prove `wrapToolCall` and custom events with a real framework integration
+   test while retaining current public event property names.
+2. Install the guarded middleware, switch public tool adaptation to
+   `loomic.tool.*`, and remove nested `DynamicStructuredTool` wrappers.
+3. Add atomic first-terminal-wins run/attempt finalization and mismatch
+   diagnostics.
+4. Add authenticated browser acceptance coverage and production counters for
+   rejected malformed tool identities and suppressed duplicate events.
 
 No persisted chat migration is required. Existing messages keep historical
 framework-derived IDs; new messages use logical IDs. IDs are message-local in
@@ -198,7 +262,10 @@ the current UI and do not need cross-message rewriting.
 
 Run a guarded tool through a real LangChain agent event stream. Assert:
 
-- one `on_tool_start` and one `on_tool_end` are adapted publicly;
+- `request.toolCall.id` survives as the public `toolCallId`;
+- one canonical custom start and one canonical custom terminal event are
+  adapted publicly;
+- standard tracing events are not adapted as business tool events;
 - the business handler executes once;
 - pre- and post-execution authority checks both execute;
 - tool input and output validation remain active.
@@ -213,7 +280,9 @@ events. Assert one public lifecycle per logical ID and at most one
 
 Verify identical effect replay returns the recorded result, changed input for
 the same logical ID is rejected, stale fencing is rejected, and each run
-terminal transition leaves no active attempt.
+terminal transition leaves no active attempt. Add concurrent complete/cancel,
+complete/fail, and repeated-finalize tests that assert the persisted state and
+public terminal event agree.
 
 ### Web and reconnect
 
@@ -255,13 +324,15 @@ Additionally:
 
 ## Risks And Mitigations
 
-- **Tool refactor changes schemas or outputs.** Keep contract fixtures for every
-  registered tool and compare definitions before and after construction.
-- **Provider metadata lacks a logical ID.** Instrument this explicitly and
-  retain a bounded framework-ID fallback during rollout.
+- **Middleware changes tool results or error behavior.** Keep contract fixtures
+  for every registered tool and compare outputs before and after middleware.
+- **Custom events do not propagate through a framework upgrade.** Pin the
+  supported LangChain behavior with an integration test and fail the build on
+  drift; never fall back to runnable IDs for business identity.
 - **Finalization failure masks the original error.** Preserve the primary
   failure and log cleanup failure separately with correlation fields.
 - **Reconnect replays old events.** Keep server and client idempotency keyed by
   logical ID; do not depend on event arrival order.
-- **Framework upgrades change callback metadata.** Isolate extraction in one
-  adapter with fixtures based on supported LangChain versions.
+- **Middleware loses runnable context during custom-event dispatch.** Pass the
+  active runnable configuration explicitly and pin context propagation with the
+  framework integration test.
