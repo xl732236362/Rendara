@@ -25,7 +25,7 @@ sanitized Supabase diagnostics.
 This design governs three directly related execution invariants:
 
 1. one public lifecycle per logical model tool call;
-2. one durable canvas notification per committed canvas revision;
+2. one durable canvas notification per committed canvas revision advance;
 3. one atomic terminal state shared by a run and its current attempt.
 
 It does not add a durable journal for transient tool-card animation. Tool
@@ -44,8 +44,8 @@ animation is not reconstructed.
   persisted chat blocks.
 - During a live server process, publish exactly one terminal public event for
   every published tool start.
-- Create one durable canvas notification for each committed revision and apply
-  it idempotently at consumers.
+- Create one durable canvas notification for each committed revision advance and
+  apply it idempotently at consumers.
 - Commit the run and current-attempt terminal state in one database transaction.
 - Preserve actionable database diagnostics in server logs without exposing
   sensitive values to clients.
@@ -106,6 +106,12 @@ Loomic uses LangChain's public `createMiddleware({ wrapToolCall })` extension
 point. The middleware calls only the supplied `handler(request)`. It must not
 call `request.tool.invoke()`, another tool's `invoke()`, or protected methods
 such as `_call()`.
+
+The framework assumptions in this design are verified against installed
+`langchain@1.2.36` and `@langchain/core@1.1.35` source and their public APIs.
+These versions are the initial support boundary; dependency upgrades must pass
+the real framework integration suite before release rather than enabling a
+runtime compatibility path.
 
 `guardStructuredTool` and all outer `DynamicStructuredTool` wrappers are
 removed in the same server change that installs the middleware. Existing tool
@@ -339,7 +345,7 @@ errors because the model cannot repair them.
 | Brand kit not configured | Successful `configured: false` result |
 | Missing run/user/canvas/token context | Thrown execution-context invariant error |
 | Access denial or configured resource missing | Thrown authorization/resource invariant error |
-| Database, queue, network, storage, or output-bound failure | Thrown infrastructure/governance error |
+| Infrastructure or output-bound failure | Thrown infrastructure or governance error |
 
 A confirmed generation submission that remains pending, succeeds, or reaches a
 recoverable terminal rejection completes its `agent_effects` receipt with the
@@ -421,44 +427,73 @@ or synthesized start event after the switch.
 ## Canvas Synchronization Ownership
 
 Tool lifecycle events never emit `canvas.sync`. A committed canvas-write
-transaction writes one `canvas.updated` domain event to `domain_outbox`; a
-partial unique constraint on `(aggregate_id, aggregate_version)` where
-`aggregate_type = 'canvas'` prevents a second logical event for the same
-revision, regardless of event type. The domain event publisher is the only
-component that adapts it to `canvas.sync`.
+transaction causes the database to write one `canvas.updated` domain event to
+`domain_outbox`. A row-level `AFTER UPDATE OF content, revision` trigger with a
+`revision IS DISTINCT FROM old.revision` condition, rather than application code
+in three RPCs, owns this insertion. A partial unique constraint on
+`(aggregate_id, aggregate_version)` where `aggregate_type = 'canvas'` prevents a
+second logical event for the same revision. The domain event publisher is the
+only component that adapts it to `canvas.sync`.
 
-Every canvas revision notification uses the fixed outbox event type
-`canvas.updated`. The mutation cause, such as direct manipulation or generated
-asset attachment, is a bounded payload field rather than a second event type.
-Canvas commit APIs no longer accept a caller-selected revision event type.
-Before the partial unique constraint is installed, the cutover migration audits
-existing canvas aggregate/revision pairs. Any duplicate aborts for explicit
-operator resolution; the migration does not select an event by timestamp or
-type.
+The trigger derives aggregate ID, revision, and timestamp from the updated row,
+uses the fixed event type `canvas.updated`, and writes an empty schema-owned
+payload. Mutation cause and correlation remain in structured operation logs and
+the job/effect ledgers; they are not duplicated into the synchronization event.
+Canvas commit APIs accept neither an event type nor an event payload. Before the
+partial unique constraint is installed, the cutover migration audits existing
+canvas aggregate/revision pairs. Any duplicate aborts for explicit operator
+resolution; the migration does not select an event by timestamp or type.
 
 The canonical browser, background-job, and Agent canvas commit RPCs are the
 only writers of `canvases.content` and `canvases.revision`. Direct table-level
 update privileges are revoked from authenticated and service roles; unrelated
 canvas metadata uses explicit column grants or its own RPC. Every commit RPC
 locks the canvas, requires the caller's expected revision, and returns a typed
-conflict instead of overwriting a newer revision. A deferred database constraint
-trigger verifies at commit that every content/revision change increments
-revision by exactly one and has exactly one matching `canvas.updated` outbox row.
-The partial unique index supplies the at-most-one half of this invariant, while
-the trigger supplies at-least-one. Thus no client, worker, or future server
-repository can silently bypass outbox creation.
+conflict instead of overwriting a newer revision. A row-level `BEFORE UPDATE OF
+content, revision` trigger requires content and revision to change together and
+requires the new revision to equal `old.revision + 1`. The `AFTER UPDATE` trigger
+then inserts the event in that same transaction. Thus no client, worker, or
+future server repository can omit an event, create an event for a no-op, advance
+revision without changing content, or insert a second event for a committed
+revision.
+
+Direct `INSERT`, `UPDATE`, and `DELETE` privileges on `domain_outbox` are revoked
+from the service role as well as browser roles. Domain mutation and canvas
+trigger functions use dedicated security-definer owners; the dispatcher accesses
+the table only through the existing claim, acknowledge, and fail RPCs. A
+`BEFORE INSERT` validation trigger rejects every new canvas aggregate row whose
+event type is not `canvas.updated`. Already published historical rows are not
+rewritten and are never read by the new publisher. There is no general-purpose
+application outbox writer.
 
 `canvas.sync` is a canvas-domain WebSocket event, not an Agent run event. Its
 public fields are `eventId`, `canvasId`, `revision`, and `timestamp`; it has no
 fabricated `runId`. Canvas-level consumers do not filter it by Agent run. The
 outbox is an at-least-once transport, so the server replay buffer and web canvas
-reducer deduplicate by `eventId`. A redelivery may cross the wire but cannot
-cause a second observable refresh in the mounted client.
+reducer first deduplicate by `eventId`. The server index evicts IDs atomically
+with its bounded replay entries, and the mounted-client index has the same fixed
+retention bound rather than growing for the life of the process. The mounted
+canvas initializes monotonic `highestObservedRevision` and `appliedRevision`
+values from its authoritative snapshot. On mount or reconnect, it first
+establishes the canvas subscription and buffers incoming events within a fixed
+bound, then fetches the snapshot, drains the buffer through the same reducer,
+and atomically switches to live consumption. Buffer overflow restarts this
+initialization or reports an explicit synchronization error; it never drops an
+event and declares the canvas current.
 
-The domain publisher derives `eventId`, `canvasId`, revision, and timestamp from
-the trusted outbox columns rather than duplicative payload fields. The payload
-contains only a schema-validated bounded mutation cause and optional correlation
-metadata, so a malformed payload cannot redirect a canvas notification.
+The reducer advances `highestObservedRevision` before scheduling or coalescing a
+refresh and ignores any event whose revision is not greater. A coalesced refresh
+retains the latest observed target and is satisfied only by a fetched snapshot at
+or above that revision; a response older than either the target or the rendered
+revision is discarded and retried with a bounded backoff. A newer event raises
+the in-flight target. Exhaustion produces an explicit synchronization error with
+a correlation ID rather than silently accepting stale state. Thus out-of-order
+delivery or a delayed redelivery after ID eviction cannot cause a second logical
+refresh or regress state.
+
+The domain publisher validates the fixed canvas aggregate/event type and derives
+`eventId`, `canvasId`, revision, and timestamp from trusted outbox columns. It
+does not read the payload to route or construct a canvas notification.
 
 Direct `connectionManager.pushToCanvas(...canvas.sync...)` calls in Agent tool
 or job completion paths and the stream adapter's completion-based
@@ -581,14 +616,16 @@ its terminal state, permit resume of an accepted or expired attempt, or require
 the client to wait for a still-live lease. The WebSocket boundary must not
 replace the unconfirmed error with a fabricated `run.failed` event.
 
-An authenticated, resource-authorized run-status query joins through
-`current_attempt_id` and returns the aligned persisted run and current attempt
-state for this decision. It exposes no lease owner, fencing token, database
-diagnostic, or other internal field. For a running unexpired attempt it returns
-an `active_wait` decision with a bounded server-computed `retryAfterMs`, not the
-raw lease. The client repeats the same status query until the run is terminal or
-the attempt becomes resumable. This is the only new recovery API; no background
-coordinator or tool-event persistence is introduced.
+An authenticated run-status query uses one authorization path for every run: it
+joins the run's session to its canvas, project, workspace, and current workspace
+membership. It joins through `current_attempt_id` and returns the aligned
+persisted run and current-attempt state for this decision. It exposes no lease
+owner, fencing token, database diagnostic, or other internal field. For a
+running unexpired attempt it returns an `active_wait` decision with a bounded
+server-computed `retryAfterMs`, not the raw lease. The client repeats the same
+status query until the run is terminal or the attempt becomes resumable. This is
+the only new recovery API; no background coordinator or tool-event persistence
+is introduced.
 
 The web client stops consuming the ended transport, preserves any supervisor-
 confirmed tool terminal events, shows the run as awaiting status confirmation,
@@ -625,9 +662,23 @@ run under a lock, and performs only unambiguous repairs:
    zero-candidate or multi-candidate row, aborts for explicit operator
    resolution instead of choosing by timestamp or ID.
 
-Any candidate with an invalid status/lease/timestamp shape or missing ownership
-data also aborts unless the selected rule above explicitly repairs that field.
-The migration does not fabricate metadata to make an ambiguous row fit.
+Any active or resumable candidate with an invalid status/lease/timestamp shape
+or incomplete Phase 3 execution context aborts. Complete context means
+`user_id`, `client_request_id`, `request_digest`, `workspace_id`, `project_id`,
+`canvas_id`, `capabilities`, `capability_policy_version`,
+`skill_catalog_digest`, and `effective_skill_names` are all present and
+structurally valid. The migration installs a state-shape check requiring that
+context for every `accepted` or `running` run.
+
+A terminal run in the exact pre-Phase3 shape may retain null Phase 3 context as
+non-resumable history. The exact shape requires every field listed above to be
+null and requires the run to have no attempt; a partially populated terminal row
+or a context-free row with any attempt aborts. Only rule 5 creates its aligned
+terminal attempt and current pointer. The row remains queryable through the same
+authenticated session-to-resource ownership path as every other run but can
+never be resumed, claimed, or used to authorize a new effect. The migration does
+not fabricate ownership or policy metadata, and runtime contains no branch that
+heals a legacy row.
 
 The migration then installs the non-null, unique, and deferrable foreign-key
 constraints and asserts the run/current-attempt invariant plus the existing
@@ -641,6 +692,14 @@ Repository adapters throw typed infrastructure errors that retain sanitized
 Supabase `code`, `message`, `details`, `hint`, and `cause`. Repositories do not
 write operational logs. Runtime, HTTP, worker, or WebSocket orchestration logs
 each failure once before mapping it to a stable client error.
+
+`tool.failed` and database-confirmed `run.failed` are protocol-level terminal
+outcomes. The web reducer renders them and does not call `console.error` merely
+because they were received. Browser error telemetry is reserved for malformed
+contracts, protocol conflicts, reducer invariants, and transport failures, and
+records only the bounded public error and correlation ID. This prevents an
+expected run failure from appearing as a framework console exception while
+preserving actionable diagnostics for an actual client defect.
 
 Bounded structured logs include:
 
@@ -674,8 +733,8 @@ This is a coordinated replacement, not a compatibility rollout:
 4. with old writers stopped, run the one-time Agent state repair, install
    `current_attempt_id`, execution state-shape constraints, atomic execution
    RPCs and revoked direct grants, then install canvas aggregate/revision
-   uniqueness, canonical commit RPCs, the deferred outbox constraint, and
-   revoked direct content/revision grants;
+   uniqueness, canonical commit RPCs, paired-change and outbox triggers, canvas
+   event validation, and revoked direct canvas/outbox grants;
 5. deploy the server, worker, shared contracts, and web release together. The
    server accepts only the new protocol version; stale browser clients receive a
    reload-required response rather than a compatibility adapter;
@@ -700,6 +759,9 @@ blocked handler, and a delegated sub-agent tool through a real LangChain
 - `request.toolCall.id` becomes the public `toolCallId`;
 - the Node `dispatchCustomEvent` entry point emits `on_custom_event` without a
   fabricated config;
+- an inner sub-agent invocation inherits the outer `streamEvents` callback
+  context, and its canonical events reach that outer stream through the shared
+  per-run supervisor without an explicit fabricated config;
 - one business handler invocation produces one public start and terminal;
 - invalid arguments produce `tool.failed`, return one error `ToolMessage`, and
   allow a corrected logical call without invoking the invalid handler;
@@ -715,6 +777,9 @@ blocked handler, and a delegated sub-agent tool through a real LangChain
 - parallel calls receive independent logical identities; when one rejects,
   already completed siblings remain completed and every open sibling receives
   one failed terminal without a late state reversal;
+- two distinct main- or sub-agent calls that reuse one logical tool-call ID fail
+  the second admission before its handler runs, even when tool name and input are
+  identical; the runtime never merges calls or invents a replacement identity;
 - if a sibling terminal was published but not consumed before stream failure,
   adapter closure projects the exact supervisor record once before failing open
   siblings;
@@ -740,7 +805,10 @@ blocked handler, and a delegated sub-agent tool through a real LangChain
 Cover success, failure, cancellation, duplicate canonical events, out-of-order
 events, conflicting identity, open calls at stream termination, WebSocket
 replay, and persisted assistant accumulation. Assert canonical protocol errors
-fail the run while replayed public events remain idempotent.
+fail the run while replayed public events remain idempotent. Assert valid
+`tool.failed` and `run.failed` events update the UI without invoking browser
+error telemetry, while malformed or conflicting events report one bounded
+diagnostic with their correlation ID.
 
 Cover `run_finalization_unconfirmed` separately. Assert the WebSocket boundary
 emits no terminal run event, the client enters status-confirmation state, and a
@@ -755,13 +823,26 @@ only the database-confirmed terminal state.
 For a read, failed write, successful write, effect replay, generated asset
 attachment, and outbox redelivery, assert the number of logical `canvas.sync`
 applications is respectively zero, zero, one, zero, one, and one. Also assert
-that the canvas event contains the outbox `eventId` and revision, is not filtered
-by Agent run, and repeated delivery is ignored by `eventId`. Assert every
-revision row uses `canvas.updated`, and inserting any second canvas event type
-for the same aggregate and revision violates the unique constraint. Assert a
-direct content/revision update is denied, and a test-only RPC that increments a
-revision without an outbox row is rejected by the deferred constraint at
-transaction commit.
+that the canvas event contains the outbox `eventId` and revision and is not
+filtered by Agent run. For each browser, background-job, and Agent commit RPC,
+assert one valid update causes the trigger to create exactly one
+`canvas.updated` row and that the RPC exposes no event-type or event-payload
+argument. Effect replay performs no update and creates no event.
+
+Assert direct canvas content/revision mutation and direct `domain_outbox` DML are
+denied. Test through the trigger owner that a content-only change, revision-only
+change, or revision jump is rejected; a no-op creates no event; a new canvas
+event type is rejected; and a second event for the same canvas revision violates
+the partial unique constraint. Verify server and client event-ID indexes remain
+within their configured retention bound. Initialize from a current snapshot,
+then deliver duplicate and out-of-order revisions; the monotonic reducer must
+coalesce forward refreshes, ignore revisions at or below
+`highestObservedRevision`, and never apply an older fetched snapshot. Return a
+snapshot below the in-flight target, then assert bounded retry reaches the target
+or reports an explicit synchronization error without marking stale state as
+applied. Race an event against initial mount and reconnect; subscription-first
+buffering must preserve it, while buffer overflow must restart synchronization or
+surface the explicit error instead of silently dropping the event.
 
 ### Persistence
 
@@ -772,14 +853,19 @@ complete/fail, identical retry, stale fencing, a non-current attempt, mismatched
 current rows, and an indeterminate first RPC response followed by retry. Assert
 the run and current attempt agree, historical attempts remain unchanged, and the
 public terminal event equals the returned state. Include the exact regression
-case of a failed
-historical attempt plus one active current attempt; migration must select the
-active attempt and must not promote the historical failure. Assert direct table
+case of a failed historical attempt plus one active current attempt; migration
+must select the active attempt and must not promote the historical failure.
+Assert direct table
 mutation is denied and a test-only mismatched transaction is rejected by the
 deferred constraint. Verify every security-definer RPC has the fixed empty
 `search_path`, non-login owner, schema-qualified references, least-privilege
 `EXECUTE` grants, persisted resource authorization, and no dynamic SQL input
 surface.
+Verify active and resumable runs with incomplete Phase 3 context abort migration,
+while a pre-Phase3 terminal run with missing new context remains queryable as
+non-resumable history and cannot claim, resume, or authorize an effect. The same
+session-to-resource membership query must authorize both historical and current
+runs and deny a caller outside that resource chain.
 Rehearse the coordinated migration from a production-shaped snapshot. Verify
 each maintenance precondition aborts before schema mutation when live or leased
 attempts, canvas-writing jobs, undispatched legacy canvas events, or duplicate
@@ -825,10 +911,12 @@ Additionally:
   closure;
 - normal completion cannot finalize while a call is nonterminal, and abnormal
   closure fences persistence before appending failed records for open calls;
-- every canvas revision creates exactly one `canvas.updated` outbox row and each
-  mounted client applies its `canvas.sync` projection once by `eventId`;
+- every committed canvas revision advance creates exactly one `canvas.updated`
+  outbox row and each mounted client applies its `canvas.sync` projection once
+  through bounded event identity and monotonic revision handling;
 - canvas content/revision and Agent execution state are writable only through
-  their canonical RPCs and are checked by deferred database constraints;
+  their canonical RPCs; database triggers own canvas event creation while
+  database constraints enforce both domains' state invariants;
 - no terminal run has an active or differently terminated current attempt;
 - historical attempts remain terminal history and may differ from the run;
 - no live path consumes a runnable ID as a logical tool-call ID;
