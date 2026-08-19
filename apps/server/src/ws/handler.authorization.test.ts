@@ -112,17 +112,28 @@ describe("WebSocket resource commands", () => {
     const connectionManager = new ConnectionManager();
     const setActiveRun = vi.spyOn(connectionManager, "setActiveRun");
     const sendTo = vi.spyOn(connectionManager, "sendTo");
+    const prepareAgentRun = vi.fn(async () => preparedRun(true));
+    const agentRunStageLogger = {
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
 
     await bindAuthenticatedSocket(
       socket as never,
       "token",
-      { url: "/api/ws", headers: { host: "localhost" } } as never,
+      {
+        id: "ws-request-1",
+        url: "/api/ws",
+        headers: { host: "localhost" },
+      } as never,
       {
         agentRuns: agentRuns as never,
+        agentRunStageLogger,
         authorization: fakeAuthorization("canvas-1"),
         auth: { authenticate: async () => user },
         connectionManager,
-        prepareAgentRun: async () => preparedRun(true),
+        prepareAgentRun,
       },
     );
     socket.emit("message", runCommand());
@@ -132,6 +143,19 @@ describe("WebSocket resource commands", () => {
       sendTo.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
     expect(agentRuns.streamRun).toHaveBeenCalledOnce();
+    expect(prepareAgentRun).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.any(Object),
+      { requestId: "ws-request-1" },
+    );
+    expect(agentRunStageLogger.info).toHaveBeenCalledWith(
+      "agent.ack.completed",
+      expect.objectContaining({
+        clientRequestId: "request-1",
+        requestId: "ws-request-1",
+        runId: "run-1",
+      }),
+    );
     socket.emit("close");
   });
 

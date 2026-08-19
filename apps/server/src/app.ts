@@ -271,6 +271,7 @@ export function buildAppFromEnv(
     await instance.register(websocket);
     await registerWsRoute(instance, {
       agentRuns,
+      agentRunStageLogger,
       agentRunMetadataService,
       auth,
       chatService,
@@ -389,9 +390,18 @@ export function buildAppFromEnv(
   const resolveAuthorizedRunContext = createAuthorizedRunContextResolver({
     resolveSessionScope: createAgentSessionScopeResolver({ createUserClient }),
   });
+  const agentRunStageLogger = {
+    info: (event: string, context: Record<string, unknown>) =>
+      app.log.info({ ...context, event }, event),
+    warn: (event: string, context: Record<string, unknown>) =>
+      app.log.warn({ ...context, event }, event),
+    error: (event: string, context: Record<string, unknown>) =>
+      app.log.error({ ...context, event }, event),
+  };
   const prepareAgentRun = createPrepareAgentRun({
     acceptAgentRun,
     findAcceptance: (input) => agentExecutionRepository.findAcceptance(input),
+    logger: agentRunStageLogger,
     resolveContext: resolveAuthorizedRunContext,
     resolveWorkspaceModel: async (context) =>
       (

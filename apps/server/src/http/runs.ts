@@ -55,10 +55,14 @@ export async function registerRunRoutes(
     if (!options.prepareAgentRun) {
       throw new Error("Agent preparation is not configured.");
     }
-    const prepared = await options.prepareAgentRun(payload, {
-      userId: authenticatedUser.id,
-      accessToken: authenticatedUser.accessToken,
-    });
+    const prepared = await options.prepareAgentRun(
+      payload,
+      {
+        userId: authenticatedUser.id,
+        accessToken: authenticatedUser.accessToken,
+      },
+      { requestId: request.id },
+    );
     const response = runCreateResponseSchema.parse(
       agentRuns.registerRun(payload, {
         accessToken: authenticatedUser.accessToken,

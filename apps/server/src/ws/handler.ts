@@ -10,7 +10,10 @@ import {
 import type { ContentBlock, ToolBlock } from "@loomic/shared";
 import type { AgentRunService } from "../agent/runtime.js";
 import { AgentRunError } from "../application/agent/agent-run-errors.js";
-import type { PrepareAgentRun } from "../application/agent/prepare-agent-run.js";
+import type {
+  AgentRunStageLogger,
+  PrepareAgentRun,
+} from "../application/agent/prepare-agent-run.js";
 import type { AgentRunMetadataService } from "../features/agent-runs/agent-run-service.js";
 import type { ChatService } from "../features/chat/chat-service.js";
 import {
@@ -32,6 +35,7 @@ import { createPipelineLogger } from "./logger.js";
 
 type RegisterWsOptions = {
   agentRuns: AgentRunService;
+  agentRunStageLogger?: AgentRunStageLogger;
   authorization: ResourceAuthorization;
   agentRunMetadataService?: AgentRunMetadataService;
   auth?: RequestAuthenticator;
@@ -220,6 +224,7 @@ export async function bindAuthenticatedSocket(
             ...(p.mentions !== undefined ? { mentions: p.mentions } : {}),
             ...(p.model !== undefined ? { model: p.model } : {}),
           },
+          _request.id ?? connectionId,
           agentRuns,
           connectionManager,
           options,
@@ -312,6 +317,7 @@ async function handleRunCommand(
   authenticatedUser: AuthenticatedUser,
   connectionId: string,
   payload: Omit<RunCreateRequest, "accessToken">,
+  requestId: string,
   agentRuns: AgentRunService,
   connectionManager: ConnectionManager,
   services: RegisterWsOptions,
@@ -323,10 +329,14 @@ async function handleRunCommand(
   if (!services.prepareAgentRun) {
     throw new Error("Agent preparation is not configured.");
   }
-  const prepared = await services.prepareAgentRun(payload, {
-    accessToken: authenticatedUser.accessToken,
-    userId: authenticatedUser.id,
-  });
+  const prepared = await services.prepareAgentRun(
+    payload,
+    {
+      accessToken: authenticatedUser.accessToken,
+      userId: authenticatedUser.id,
+    },
+    { requestId },
+  );
   const canvasId = prepared.context.canvasId;
   log.info("started", {
     canvasId: payload.canvasId,
@@ -359,6 +369,7 @@ async function handleRunCommand(
     action: "agent.run",
     payload: { ...response, clientRequestId: payload.clientRequestId },
   };
+  const ackStartedAt = Date.now();
   let ackSent = connectionManager.sendTo(connectionId, ackMessage);
   if (!ackSent) {
     for (let i = 0; i < 5; i++) {
@@ -366,6 +377,23 @@ async function handleRunCommand(
       ackSent = connectionManager.sendTo(connectionId, ackMessage);
       if (ackSent) break;
     }
+  }
+  const ackLogContext = {
+    canvasId,
+    clientRequestId: payload.clientRequestId,
+    durationMs: Math.max(0, Date.now() - ackStartedAt),
+    requestId,
+    runId,
+    sessionId: payload.sessionId,
+  };
+  if (ackSent) {
+    services.agentRunStageLogger?.info("agent.ack.completed", ackLogContext);
+  } else {
+    services.agentRunStageLogger?.warn("agent.ack.failed", {
+      ...ackLogContext,
+      errorCode: "agent_ack_delivery_failed",
+      retryable: true,
+    });
   }
   log.lap("ack_sent", { runId, connectionId, delivered: ackSent });
 

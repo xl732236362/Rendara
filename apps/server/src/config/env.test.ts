@@ -1,7 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { loadServerEnv } from "./env.js";
+import { loadServerEnv, resolveDefaultAgentModel } from "./env.js";
 
 describe("validated server environment adapter", () => {
+  it("uses the configured Agent model as the workspace fallback", () => {
+    expect(
+      resolveDefaultAgentModel({
+        agentModel: "openai:gpt-5.6-terra",
+        openAIApiKey: "configured",
+      }),
+    ).toBe("openai:gpt-5.6-terra");
+  });
+
   it("validates typed overrides instead of bypassing the schema", () => {
     expect(() => loadServerEnv({ port: 70_000 }, {})).toThrow(
       /LOOMIC_SERVER_PORT/,

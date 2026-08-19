@@ -7,6 +7,68 @@ import { registerErrorHandler } from "./error-handler.js";
 import { registerRunRoutes } from "./runs.js";
 
 describe("HTTP run authorization", () => {
+  it("forwards the boundary request id into Agent preparation", async () => {
+    const app = Fastify({ genReqId: () => "http-request-1" });
+    const agentRuns = fakeAgentRuns();
+    agentRuns.registerRun.mockReturnValue({
+      ownership: "created",
+      response: {
+        conversationId: "conversation-1",
+        runId: "run-1",
+        sessionId: "session-1",
+        status: "accepted",
+      },
+    });
+    const prepareAgentRun = vi.fn(async () => ({
+      accepted: {
+        created: true,
+        requestDigest: "digest-1",
+        runId: "run-1",
+        status: "accepted" as const,
+      },
+      context: {
+        accessToken: "token",
+        canvasId: "canvas-1",
+        conversationId: "conversation-1",
+        projectId: "project-1",
+        sessionId: "session-1",
+        threadId: "thread-1",
+        userId: "user-1",
+        workspaceId: "workspace-1",
+      },
+      model: "openai:model",
+    }));
+    await registerRunRoutes(app, agentRuns as never, {
+      auth: { authenticate: async () => authenticatedUser },
+      authorization: {
+        requireCanvasAccess: vi.fn(),
+        requireSessionAccess: vi.fn(),
+        requireRunAccess: vi.fn(),
+      },
+      prepareAgentRun,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agent/runs",
+      payload: {
+        sessionId: "session-1",
+        conversationId: "conversation-1",
+        canvasId: "canvas-1",
+        clientRequestId: "client-request-1",
+        prompt: "test",
+      },
+    });
+
+    expect(response.statusCode).toBe(202);
+    expect(prepareAgentRun).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.any(Object),
+      { requestId: "http-request-1" },
+    );
+    await app.close();
+  });
+
   it("does not create a run when the requested canvas differs from the session", async () => {
     const app = Fastify();
     registerErrorHandler(app);
