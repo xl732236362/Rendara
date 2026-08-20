@@ -164,6 +164,22 @@ describe("boundedToolArtifactsSchema", () => {
       ]),
     ).toThrow();
   });
+
+  it("rejects an oversized raw image artifact array before decoding", () => {
+    const invalidImage = {
+      type: "image",
+      assetId: "not-a-uuid",
+      mimeType: "image/png",
+      width: 512,
+      height: 512,
+    };
+
+    expect(() =>
+      boundedToolArtifactsSchema(10).parse(
+        Array.from({ length: 1_001 }, () => invalidImage),
+      ),
+    ).toThrow();
+  });
 });
 
 describe("generated asset recovery contracts", () => {

@@ -18,6 +18,8 @@ const safeArtifactUrlSchema = z
 
 const assetIdSchema = z.string().uuid();
 const assetRoutePattern = /^\/api\/assets\/([^/]+)$/;
+// Bounds validation work before invalid transition artifacts are discarded.
+const maxRawToolArtifactEntries = 1_000;
 
 const externalArtifactUrlSchema = safeArtifactUrlSchema.refine(
   (value) => value.startsWith("https://"),
@@ -246,27 +248,30 @@ function assetRoute(assetId: string): string {
 }
 
 function normalizedToolArtifactsSchema(max?: number) {
-  const decodedArtifacts = z.array(z.unknown()).transform((values, context) => {
-    const decoded: ToolArtifact[] = [];
+  const decodedArtifacts = z
+    .array(z.unknown())
+    .max(maxRawToolArtifactEntries)
+    .transform((values, context) => {
+      const decoded: ToolArtifact[] = [];
 
-    for (const [index, value] of values.entries()) {
-      const parsed = toolArtifactSchema.safeParse(value);
-      if (parsed.success) {
-        decoded.push(parsed.data);
-        continue;
+      for (const [index, value] of values.entries()) {
+        const parsed = toolArtifactSchema.safeParse(value);
+        if (parsed.success) {
+          decoded.push(parsed.data);
+          continue;
+        }
+
+        if (isImageArtifact(value)) continue;
+
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index],
+          message: "Tool artifact is invalid.",
+        });
       }
 
-      if (isImageArtifact(value)) continue;
-
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: [index],
-        message: "Tool artifact is invalid.",
-      });
-    }
-
-    return decoded;
-  });
+      return decoded;
+    });
 
   return decodedArtifacts.superRefine((artifacts, context) => {
     if (max !== undefined && artifacts.length > max) {
