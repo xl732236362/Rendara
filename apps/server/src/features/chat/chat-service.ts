@@ -77,6 +77,58 @@ function synthesizeLegacyBlocks(
   return blocks.length > 0 ? blocks : null;
 }
 
+export function deduplicateAdjacentMessages(
+  messages: ChatMessage[],
+): ChatMessage[] {
+  const deduplicated: ChatMessage[] = [];
+  for (const message of messages) {
+    const previous = deduplicated.at(-1);
+    if (
+      !previous ||
+      previous.role !== message.role ||
+      previous.content !== message.content
+    ) {
+      deduplicated.push(message);
+      continue;
+    }
+    if (compareLifecycleRichness(message, previous) > 0) {
+      deduplicated[deduplicated.length - 1] = message;
+    }
+  }
+  return deduplicated;
+}
+
+function compareLifecycleRichness(
+  candidate: ChatMessage,
+  existing: ChatMessage,
+): number {
+  const candidateBlocks = candidate.contentBlocks ?? [];
+  const existingBlocks = existing.contentBlocks ?? [];
+  const scores = [
+    countTerminalToolBlocks(candidateBlocks) -
+      countTerminalToolBlocks(existingBlocks),
+    countArtifacts(candidateBlocks) - countArtifacts(existingBlocks),
+    candidateBlocks.length - existingBlocks.length,
+  ];
+  return scores.find((score) => score !== 0) ?? 0;
+}
+
+function countTerminalToolBlocks(blocks: ContentBlock[]): number {
+  return blocks.filter(
+    (block) =>
+      block.type === "tool" &&
+      (block.status === "completed" || block.status === "failed"),
+  ).length;
+}
+
+function countArtifacts(blocks: ContentBlock[]): number {
+  return blocks.reduce(
+    (count, block) =>
+      count + (block.type === "tool" ? (block.artifacts?.length ?? 0) : 0),
+    0,
+  );
+}
+
 export function createChatService(options: {
   createUserClient: (accessToken: string) => UserSupabaseClient;
   threadService: Pick<ThreadService, "createThreadId">;
@@ -202,14 +254,8 @@ export function createChatService(options: {
         };
       });
 
-      // Deduplicate consecutive messages with same role + content
-      // (caused by dual client+server save in earlier versions)
-      return rows.filter(
-        (msg, i) =>
-          i === 0 ||
-          msg.role !== rows[i - 1]!.role ||
-          msg.content !== rows[i - 1]!.content,
-      );
+      // During the static-client transition, retain the richer server record.
+      return deduplicateAdjacentMessages(rows);
     },
 
     async createMessage(user, sessionId, input) {

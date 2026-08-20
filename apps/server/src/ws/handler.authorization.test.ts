@@ -160,6 +160,119 @@ describe("WebSocket resource commands", () => {
     socket.emit("close");
   });
 
+  it("persists terminal tool events, including terminals received without a start", async () => {
+    const socket = new FakeSocket();
+    const agentRuns = fakeAgentRuns();
+    agentRuns.registerRun.mockReturnValue({
+      ownership: "created",
+      response: {
+        conversationId: "conversation-1",
+        runId: "run-1",
+        sessionId: "session-1",
+        status: "accepted",
+      },
+    });
+    agentRuns.streamRun.mockReturnValue(
+      (async function* () {
+        yield {
+          type: "tool.started",
+          runId: "run-1",
+          toolCallId: "started-call",
+          toolName: "inspect_canvas",
+          timestamp: "2026-08-20T00:00:00.000Z",
+        };
+        yield {
+          type: "tool.failed",
+          runId: "run-1",
+          toolCallId: "started-call",
+          toolName: "inspect_canvas",
+          error: {
+            code: "element_not_found",
+            message: "Element not found.",
+            correlationId: "correlation-1",
+          },
+          timestamp: "2026-08-20T00:00:01.000Z",
+        };
+        yield {
+          type: "tool.completed",
+          runId: "run-1",
+          toolCallId: "terminal-only-call",
+          toolName: "generate_image",
+          output: { elementId: "element-1" },
+          outputSummary: "Generated media is ready.",
+          artifacts: [
+            {
+              type: "image",
+              url: "https://example.com/generated.png",
+              mimeType: "image/png",
+              width: 512,
+              height: 512,
+            },
+          ],
+          timestamp: "2026-08-20T00:00:02.000Z",
+        };
+        yield {
+          type: "tool.failed",
+          runId: "run-1",
+          toolCallId: "failed-terminal-only-call",
+          toolName: "generate_video",
+          error: {
+            code: "tool_failed",
+            message: "Generation failed.",
+            correlationId: "correlation-2",
+          },
+          timestamp: "2026-08-20T00:00:03.000Z",
+        };
+      })(),
+    );
+    const createMessage = vi.fn();
+
+    await bindAuthenticatedSocket(
+      socket as never,
+      "token",
+      { url: "/api/ws", headers: { host: "localhost" } } as never,
+      {
+        agentRuns: agentRuns as never,
+        authorization: fakeAuthorization("canvas-1"),
+        auth: { authenticate: async () => user },
+        chatService: { createMessage } as never,
+        connectionManager: new ConnectionManager(),
+        prepareAgentRun: async () => preparedRun(true),
+      },
+    );
+    socket.emit("message", runCommand());
+    await nextTurn();
+    await nextTurn();
+
+    expect(createMessage).toHaveBeenCalledWith(
+      user,
+      "session-1",
+      expect.objectContaining({
+        role: "assistant",
+        contentBlocks: [
+          expect.objectContaining({
+            toolCallId: "started-call",
+            status: "failed",
+            error: expect.objectContaining({ code: "element_not_found" }),
+          }),
+          expect.objectContaining({
+            toolCallId: "terminal-only-call",
+            status: "completed",
+            output: { elementId: "element-1" },
+            outputSummary: "Generated media is ready.",
+            artifacts: [expect.objectContaining({ type: "image" })],
+          }),
+          expect.objectContaining({
+            toolCallId: "failed-terminal-only-call",
+            status: "failed",
+            error: expect.objectContaining({ code: "tool_failed" }),
+          }),
+        ],
+      }),
+    );
+    socket.emit("close");
+  });
+
   it("does not fabricate run.failed when finalization is unconfirmed", async () => {
     const socket = new FakeSocket();
     const agentRuns = fakeAgentRuns();

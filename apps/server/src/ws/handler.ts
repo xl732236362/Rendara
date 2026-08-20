@@ -442,22 +442,27 @@ async function handleRunCommand(
           ...(event.input ? { input: event.input } : {}),
         });
       } else if (event.type === "tool.completed") {
-        const idx = assistantBlocks.findIndex(
-          (b) =>
-            b.type === "tool" &&
-            (b as ToolBlock).toolCallId === event.toolCallId,
-        );
-        if (idx >= 0) {
-          assistantBlocks[idx] = {
-            ...(assistantBlocks[idx] as ToolBlock),
-            status: "completed" as const,
-            ...(event.output ? { output: event.output } : {}),
-            ...(event.outputSummary
-              ? { outputSummary: event.outputSummary }
-              : {}),
-            ...(event.artifacts ? { artifacts: event.artifacts } : {}),
-          };
-        }
+        upsertTerminalToolBlock(assistantBlocks, {
+          type: "tool",
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          status: "completed",
+          ...(event.output ? { output: event.output } : {}),
+          ...(event.outputSummary
+            ? { outputSummary: event.outputSummary }
+            : {}),
+          ...(event.artifacts ? { artifacts: event.artifacts } : {}),
+        });
+      } else if (event.type === "tool.failed") {
+        upsertTerminalToolBlock(assistantBlocks, {
+          type: "tool",
+          toolCallId: event.toolCallId,
+          toolName: event.toolName,
+          status: "failed",
+          error: event.error,
+          ...(event.recovery ? { recovery: event.recovery } : {}),
+          ...(event.artifacts ? { artifacts: event.artifacts } : {}),
+        });
       }
     }
     log.lap("stream_done", { runId });
@@ -513,6 +518,25 @@ async function handleRunCommand(
 export async function authorizeRunResources(
   authorization: ResourceAuthorization,
   user: AuthenticatedUser,
+function upsertTerminalToolBlock(
+  blocks: ContentBlock[],
+  terminal: ToolBlock,
+): void {
+  const index = blocks.findIndex(
+    (block) =>
+      block.type === "tool" && block.toolCallId === terminal.toolCallId,
+  );
+  if (index < 0) {
+    blocks.push(terminal);
+    return;
+  }
+
+  blocks[index] = {
+    ...(blocks[index] as ToolBlock),
+    ...terminal,
+  };
+}
+
   payload: Pick<RunCreateRequest, "canvasId" | "conversationId" | "sessionId">,
 ): Promise<string> {
   return requireRunResourceAccess(authorization, user, payload);

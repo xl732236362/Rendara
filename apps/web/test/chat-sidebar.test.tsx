@@ -261,6 +261,10 @@ describe("ChatSidebar", () => {
             artifacts: [
               {
                 type: "image",
+                source: {
+                  kind: "external",
+                  url: "https://example.com/generated.png",
+                },
                 url: "https://example.com/generated.png",
                 mimeType: "image/png",
                 width: 512,
@@ -382,6 +386,10 @@ describe("ChatSidebar", () => {
       artifacts: [
         {
           type: "image",
+          source: {
+            kind: "external",
+            url: "https://example.com/generated.png",
+          },
           url: "https://example.com/generated.png",
           mimeType: "image/png",
           width: 512,
@@ -468,7 +476,7 @@ describe("ChatSidebar", () => {
     ).toBeNull();
   });
 
-  it("persists failed attachment metadata when the Agent run terminates", async () => {
+  it("leaves terminal assistant persistence to the Agent server", async () => {
     const canvasId = "22222222-2222-4222-8222-222222222222";
     const jobId = "11111111-1111-4111-8111-111111111111";
     let listener: ((event: StreamEvent) => void) | undefined;
@@ -514,6 +522,10 @@ describe("ChatSidebar", () => {
       artifacts: [
         {
           type: "image",
+          source: {
+            kind: "external",
+            url: "https://example.com/generated.png",
+          },
           url: "https://example.com/generated.png",
           mimeType: "image/png",
           width: 512,
@@ -529,27 +541,13 @@ describe("ChatSidebar", () => {
       timestamp: "2026-08-20T00:00:02.000Z",
     });
 
-    await waitFor(() => expect(saveMessageMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(saveMessageMock).toHaveBeenCalledTimes(1));
     expect(saveMessageMock).toHaveBeenLastCalledWith(
       "token_abc",
       "session-real",
       expect.objectContaining({
-        role: "assistant",
-        contentBlocks: expect.arrayContaining([
-          expect.objectContaining({
-            type: "tool",
-            status: "failed",
-            error: expect.objectContaining({
-              code: "generated_asset_not_attached",
-            }),
-            recovery: expect.objectContaining({
-              kind: "attach_generated_asset",
-              jobId,
-              canvasId,
-            }),
-            artifacts: [expect.objectContaining({ type: "image" })],
-          }),
-        ]),
+        role: "user",
+        content: "generate and attach",
       }),
     );
   });

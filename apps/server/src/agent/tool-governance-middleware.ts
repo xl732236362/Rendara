@@ -12,7 +12,10 @@ import {
 import type { AgentExecutionRepository } from "../features/agent-runs/agent-execution-repository.js";
 import type { AgentCapability } from "./capabilities.js";
 import type { AgentExecutionContext } from "./execution-context.js";
-import { GeneratedAssetAttachmentError } from "./generated-media-result.js";
+import {
+  GeneratedAssetAttachmentError,
+  generatedMediaToolResultSchema,
+} from "./generated-media-result.js";
 import type { ToolExecutionSupervisor } from "./tool-execution-supervisor.js";
 import {
   type CanonicalToolRecord,
@@ -175,9 +178,20 @@ export function createToolGovernanceMiddleware(
           return result;
         }
 
+        const generatedMedia = parseGeneratedMediaToolResult(result);
+        if (
+          generatedMedia?.attachmentStatus === "pending" ||
+          generatedMedia?.attachmentStatus === "not_attached"
+        ) {
+          throw new GeneratedAssetAttachmentError(generatedMedia);
+        }
+
         const completed = dependencies.supervisor.stageCompleted(
           logicalToolCallId,
-          summarizeResult(result),
+          {
+            ...summarizeResult(result),
+            ...(generatedMedia ? { artifacts: [generatedMedia.artifact] } : {}),
+          },
         );
         await publishAndWait(completed);
         return result;
@@ -295,6 +309,17 @@ function summarizeResult(result: unknown) {
     return {};
   }
   return { outputSummary: result.content.slice(0, 512) };
+}
+
+function parseGeneratedMediaToolResult(result: unknown) {
+  if (
+    !ToolMessage.isInstance(result) ||
+    !isRecord(result.artifact) ||
+    !("attachmentStatus" in result.artifact)
+  ) {
+    return undefined;
+  }
+  return generatedMediaToolResultSchema.parse(result.artifact);
 }
 
 function classifyFailure(error: unknown): string {
