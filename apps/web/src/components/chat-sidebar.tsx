@@ -1057,11 +1057,16 @@ export function ChatSidebar({
       ws.resumeCanvas(canvasId, (ack) => {
         const activeRunId = (ack.payload as Record<string, unknown>)
           .activeRunId;
-        if (activeRunId && typeof activeRunId === "string") {
+        const resumedRunId =
+          typeof activeRunId === "string" ? activeRunId : null;
+        const replayed = (ack.payload as Record<string, unknown>).replayed;
+        const replayCount =
+          typeof replayed === "number" && replayed >= 0 ? replayed : 0;
+        if (resumedRunId) {
           setStreaming(true);
 
-          const assistantId = `resumed_${activeRunId}`;
-          assistantIdByRunIdRef.current.set(activeRunId, assistantId);
+          const assistantId = `resumed_${resumedRunId}`;
+          assistantIdByRunIdRef.current.set(resumedRunId, assistantId);
           // Must use updateSessionMessages (not setMessages) so the placeholder
           // lands in msgCacheRef as well as React state. applyStreamEvent reads
           // from the cache — if the placeholder only lives in React state, stream
@@ -1078,14 +1083,27 @@ export function ChatSidebar({
               },
             ];
           });
+        }
 
-          // Reuse the shared stream event handler — eliminates ~70 lines of duplication
-          const unsub = ws.onEvent((evt) => {
-            if (evt.type === "canvas.sync") {
-              if (evt.canvasId === canvasId) onCanvasSync?.(evt);
-              return;
-            }
-            if (evt.runId !== activeRunId) return;
+        if (!resumedRunId && replayCount === 0) return;
+
+        // The server clears activeRunId before replaying terminal events. Register
+        // after every resume ACK so its preceding persistence marker is not lost.
+        let remainingReplayEvents = replayCount;
+        const unsub = ws.onEvent((evt) => {
+          if (!resumedRunId && remainingReplayEvents > 0) {
+            remainingReplayEvents -= 1;
+          }
+          if (evt.type === "canvas.sync") {
+            if (evt.canvasId === canvasId) onCanvasSync?.(evt);
+            if (!resumedRunId && remainingReplayEvents === 0) unsub();
+            return;
+          }
+
+          if (resumedRunId) {
+            if (evt.runId !== resumedRunId) return;
+            const assistantId = assistantIdByRunIdRef.current.get(evt.runId);
+            if (!assistantId) return;
 
             applyStreamEvent(evt, assistantId, sessionId);
             onStreamEvent?.(evt);
@@ -1103,8 +1121,32 @@ export function ChatSidebar({
               setStreaming(false);
               unsub();
             }
-          });
-        }
+            return;
+          }
+
+          // A terminal replay with no active run may belong to a different chat
+          // session on this canvas. Only recover a response this sidebar owns.
+          if (!assistantIdByRunIdRef.current.has(evt.runId)) {
+            if (remainingReplayEvents === 0) unsub();
+            return;
+          }
+          if (evt.type === "assistant.persistence_failed") {
+            persistAssistantFallback(sessionId, evt.runId);
+            if (remainingReplayEvents === 0) unsub();
+            return;
+          }
+          if (
+            evt.type === "run.completed" ||
+            evt.type === "run.failed" ||
+            evt.type === "run.canceled"
+          ) {
+            onStreamEvent?.(evt);
+            void refreshAttachmentRecovery(sessionId);
+            unsub();
+            return;
+          }
+          if (remainingReplayEvents === 0) unsub();
+        });
       });
     })();
   }, [

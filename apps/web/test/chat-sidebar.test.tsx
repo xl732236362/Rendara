@@ -652,4 +652,139 @@ describe("ChatSidebar", () => {
       expect.objectContaining({ role: "assistant" }),
     );
   });
+
+  it("persists a known assistant response when a terminal replay resumes without an active run", async () => {
+    const listeners: Array<(event: StreamEvent) => void> = [];
+    mockWs.onEvent = vi.fn((callback) => {
+      listeners.push(callback);
+      return () => {};
+    });
+    const view = render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    const input = await screen.findByPlaceholderText(/start with an idea/i);
+    await userEvent.type(input, "resume terminal fallback{Enter}");
+    await waitFor(() => expect(listeners).toHaveLength(1));
+    listeners[0]?.({
+      type: "message.delta",
+      runId: "run_123",
+      messageId: "message-1",
+      delta: "Recovered assistant response.",
+      timestamp: "2026-08-20T00:00:00.000Z",
+    });
+
+    mockWs.connected = false;
+    view.rerender(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+    mockWs.connected = true;
+    view.rerender(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(mockWs.resumeCanvas).toHaveBeenCalledTimes(2));
+    const resume = vi.mocked(mockWs.resumeCanvas).mock.calls.at(-1)?.[1];
+    resume?.({
+      type: "command.ack",
+      action: "canvas.resume",
+      payload: { activeRunId: null, replayed: 2 },
+    });
+    await waitFor(() => expect(listeners).toHaveLength(2));
+
+    listeners[1]?.({
+      type: "assistant.persistence_failed",
+      runId: "run_123",
+      timestamp: "2026-08-20T00:00:01.000Z",
+    });
+    listeners[1]?.({
+      type: "run.completed",
+      runId: "run_123",
+      timestamp: "2026-08-20T00:00:02.000Z",
+    });
+
+    await waitFor(() => expect(saveMessageMock).toHaveBeenCalledTimes(2));
+    expect(saveMessageMock).toHaveBeenLastCalledWith(
+      "token_abc",
+      "session-real",
+      expect.objectContaining({
+        role: "assistant",
+        content: "Recovered assistant response.",
+      }),
+    );
+  });
+
+  it("does not persist a replayed terminal marker for an unrelated completed run", async () => {
+    const listeners: Array<(event: StreamEvent) => void> = [];
+    mockWs.onEvent = vi.fn((callback) => {
+      listeners.push(callback);
+      return () => {};
+    });
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(mockWs.resumeCanvas).toHaveBeenCalled());
+    const resume = vi.mocked(mockWs.resumeCanvas).mock.calls.at(-1)?.[1];
+    resume?.({
+      type: "command.ack",
+      action: "canvas.resume",
+      payload: { activeRunId: null, replayed: 2 },
+    });
+    await waitFor(() => expect(listeners).toHaveLength(1));
+
+    listeners[0]?.({
+      type: "assistant.persistence_failed",
+      runId: "completed_elsewhere",
+      timestamp: "2026-08-20T00:00:01.000Z",
+    });
+    listeners[0]?.({
+      type: "run.completed",
+      runId: "completed_elsewhere",
+      timestamp: "2026-08-20T00:00:02.000Z",
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(saveMessageMock).not.toHaveBeenCalled();
+  });
 });
