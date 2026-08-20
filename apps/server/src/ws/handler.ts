@@ -7,7 +7,7 @@ import {
   wsCommandSchema,
   wsRpcResponseSchema,
 } from "@loomic/shared";
-import type { ContentBlock, ToolBlock } from "@loomic/shared";
+import type { ContentBlock, StreamEvent, ToolBlock } from "@loomic/shared";
 import type { AgentRunService } from "../agent/runtime.js";
 import { AgentRunError } from "../application/agent/agent-run-errors.js";
 import type {
@@ -409,6 +409,12 @@ async function handleRunCommand(
   // Accumulate assistant content blocks for server-side persistence
   const assistantText: string[] = [];
   const assistantBlocks: ContentBlock[] = [];
+  let deferredRunFailure: StreamEvent | undefined;
+
+  const publishStreamEvent = (event: StreamEvent) => {
+    services.eventBuffer?.push(canvasId, event);
+    connectionManager.pushToCanvas(canvasId, event);
+  };
 
   try {
     let firstEvent = true;
@@ -418,21 +424,23 @@ async function handleRunCommand(
         firstEvent = false;
       }
 
-      // Buffer for replay on reconnect
-      services.eventBuffer?.push(canvasId, event);
-
-      // Broadcast to all viewers
-      connectionManager.pushToCanvas(canvasId, event);
+      // A run failure is published only after assistant persistence. This keeps
+      // an actionable persistence-exhaustion marker ahead of the terminal event.
+      if (event.type === "run.failed") {
+        deferredRunFailure = event;
+      } else {
+        publishStreamEvent(event);
+      }
 
       // Accumulate content for server-side persistence
       if (event.type === "message.delta") {
-        const lastBlock = assistantBlocks[assistantBlocks.length - 1];
-        if (lastBlock && lastBlock.type === "text") {
-          (lastBlock as { type: "text"; text: string }).text += event.delta;
-        } else {
-          assistantBlocks.push({ type: "text", text: event.delta });
-        }
+        appendTextBlock(assistantBlocks, event.delta);
         assistantText.push(event.delta);
+      } else if (event.type === "thinking.delta") {
+        appendThinkingBlock(assistantBlocks, event.delta);
+      } else if (event.type === "run.failed" && assistantText.length === 0) {
+        appendTextBlock(assistantBlocks, RUN_FAILURE_MESSAGE);
+        assistantText.push(RUN_FAILURE_MESSAGE);
       } else if (event.type === "tool.started") {
         assistantBlocks.push({
           type: "tool",
@@ -472,23 +480,42 @@ async function handleRunCommand(
       services.chatService &&
       (assistantText.length > 0 || assistantBlocks.length > 0)
     ) {
-      try {
-        await services.chatService.createMessage(
-          authenticatedUser,
-          payload.sessionId,
-          {
-            role: "assistant",
-            content: assistantText.join(""),
-            contentBlocks: assistantBlocks,
-          },
-        );
+      const message = {
+        role: "assistant" as const,
+        content: assistantText.join(""),
+        contentBlocks: assistantBlocks,
+      };
+      const persisted = await persistAssistantMessage({
+        chatService: services.chatService,
+        input: message,
+        log,
+        sessionId: payload.sessionId,
+        user: authenticatedUser,
+      });
+      if (persisted) {
         log.lap("assistant_message_persisted", { runId });
-      } catch (err) {
-        log.warn("assistant_message_persist_failed", {
+      } else {
+        const failureMessage =
+          "The assistant response could not be saved. Please retry.";
+        log.error("assistant_message_persist_exhausted", {
           runId,
-          error: err instanceof Error ? err.message : String(err),
+          errorCode: "assistant_message_persistence_failed",
+        });
+        connectionManager.sendTo(connectionId, {
+          type: "error",
+          action: "agent.run",
+          clientRequestId: payload.clientRequestId,
+          runId,
+          error: {
+            code: "assistant_message_persistence_failed",
+            message: failureMessage,
+          },
         });
       }
+    }
+
+    if (deferredRunFailure) {
+      publishStreamEvent(deferredRunFailure);
     }
   } catch (error) {
     log.error("stream_error", {
@@ -497,6 +524,9 @@ async function handleRunCommand(
     });
     connectionManager.sendTo(connectionId, {
       type: "error",
+      action: "agent.run",
+      clientRequestId: payload.clientRequestId,
+      runId,
       error:
         error instanceof AgentFinalizationUnconfirmedError
           ? {
@@ -516,6 +546,64 @@ async function handleRunCommand(
 }
 
 const MAX_PERSISTED_TOOL_ARTIFACTS = 10;
+const ASSISTANT_PERSISTENCE_MAX_ATTEMPTS = 3;
+const ASSISTANT_PERSISTENCE_RETRY_DELAY_MS = 25;
+const RUN_FAILURE_MESSAGE = "抱歉，处理过程中遇到问题，请重试。";
+
+async function persistAssistantMessage(options: {
+  chatService: ChatService;
+  input: { role: "assistant"; content: string; contentBlocks: ContentBlock[] };
+  log: ReturnType<typeof createPipelineLogger>;
+  sessionId: string;
+  user: AuthenticatedUser;
+}): Promise<boolean> {
+  for (
+    let attempt = 1;
+    attempt <= ASSISTANT_PERSISTENCE_MAX_ATTEMPTS;
+    attempt += 1
+  ) {
+    try {
+      await options.chatService.createMessage(
+        options.user,
+        options.sessionId,
+        options.input,
+      );
+      return true;
+    } catch (error) {
+      if (attempt === ASSISTANT_PERSISTENCE_MAX_ATTEMPTS) return false;
+      options.log.warn("assistant_message_persist_retry", {
+        attempt,
+        error: boundedErrorMessage(error),
+      });
+      await new Promise((resolve) =>
+        setTimeout(resolve, ASSISTANT_PERSISTENCE_RETRY_DELAY_MS * attempt),
+      );
+    }
+  }
+  return false;
+}
+
+function appendTextBlock(blocks: ContentBlock[], text: string): void {
+  const lastBlock = blocks[blocks.length - 1];
+  if (lastBlock?.type === "text") {
+    lastBlock.text += text;
+    return;
+  }
+  blocks.push({ type: "text", text });
+}
+
+function appendThinkingBlock(blocks: ContentBlock[], thinking: string): void {
+  const lastBlock = blocks[blocks.length - 1];
+  if (lastBlock?.type === "thinking") {
+    lastBlock.thinking += thinking;
+    return;
+  }
+  blocks.push({ type: "thinking", thinking });
+}
+
+function boundedErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message.slice(0, 256) : "UnknownError";
+}
 
 function upsertTerminalToolBlock(
   blocks: ContentBlock[],

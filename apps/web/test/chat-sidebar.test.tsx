@@ -551,4 +551,66 @@ describe("ChatSidebar", () => {
       }),
     );
   });
+
+  it("performs one assistant fallback save only after a server persistence failure signal", async () => {
+    let listener: ((event: StreamEvent) => void) | undefined;
+    mockWs.onEvent = vi.fn((callback) => {
+      listener = callback;
+      return () => {};
+    });
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    const input = await screen.findByPlaceholderText(/start with an idea/i);
+    await userEvent.type(input, "save fallback{Enter}");
+    await waitFor(() => expect(listener).toBeDefined());
+    listener?.({
+      type: "message.delta",
+      runId: "run_123",
+      messageId: "message-1",
+      delta: "Assistant response.",
+      timestamp: "2026-08-20T00:00:00.000Z",
+    });
+    listener?.({
+      type: "run.failed",
+      runId: "run_123",
+      error: {
+        code: "run_failed",
+        message: "The assistant response could not be saved.",
+        details: { sourceCode: "assistant_message_persistence_failed" },
+      },
+      timestamp: "2026-08-20T00:00:01.000Z",
+    });
+    listener?.({
+      type: "run.failed",
+      runId: "run_123",
+      error: {
+        code: "run_failed",
+        message: "The assistant response could not be saved.",
+        details: { sourceCode: "assistant_message_persistence_failed" },
+      },
+      timestamp: "2026-08-20T00:00:02.000Z",
+    });
+
+    await waitFor(() => expect(saveMessageMock).toHaveBeenCalledTimes(2));
+    expect(saveMessageMock).toHaveBeenLastCalledWith(
+      "token_abc",
+      "session-real",
+      expect.objectContaining({
+        role: "assistant",
+        content: "Assistant response.",
+      }),
+    );
+  });
 });

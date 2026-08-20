@@ -279,6 +279,176 @@ describe("WebSocket resource commands", () => {
     socket.emit("close");
   });
 
+  it("retries a transient assistant persistence failure and saves the response", async () => {
+    const socket = new FakeSocket();
+    const agentRuns = createdAgentRuns(
+      (async function* () {
+        yield {
+          type: "message.delta",
+          runId: "run-1",
+          messageId: "message-1",
+          delta: "Saved response.",
+          timestamp: "2026-08-20T00:00:00.000Z",
+        };
+      })(),
+    );
+    const createMessage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("temporary_database_error"))
+      .mockResolvedValueOnce(undefined);
+
+    await bindWithCreatedRun(socket, agentRuns, {
+      chatService: { createMessage } as never,
+    });
+    socket.emit("message", runCommand());
+    await waitForTurns(8);
+
+    expect(createMessage).toHaveBeenCalledTimes(2);
+    expect(createMessage).toHaveBeenLastCalledWith(
+      user,
+      "session-1",
+      expect.objectContaining({
+        content: "Saved response.",
+        contentBlocks: [{ type: "text", text: "Saved response." }],
+        role: "assistant",
+      }),
+    );
+    socket.emit("close");
+  });
+
+  it("emits an assistant persistence failure after bounded retries", async () => {
+    const socket = new FakeSocket();
+    const agentRuns = createdAgentRuns(
+      (async function* () {
+        yield {
+          type: "message.delta",
+          runId: "run-1",
+          messageId: "message-1",
+          delta: "Unsaved response.",
+          timestamp: "2026-08-20T00:00:00.000Z",
+        };
+        yield {
+          type: "run.failed",
+          runId: "run-1",
+          error: { code: "run_failed", message: "Agent execution failed." },
+          timestamp: "2026-08-20T00:00:01.000Z",
+        };
+      })(),
+    );
+    const createMessage = vi.fn().mockRejectedValue(new Error("database_down"));
+
+    await bindWithCreatedRun(socket, agentRuns, {
+      chatService: { createMessage } as never,
+    });
+    socket.emit("message", runCommand());
+    await waitForTurns(12);
+
+    expect(createMessage).toHaveBeenCalledTimes(3);
+    const messages = socket.messages.map((message) => JSON.parse(message));
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        action: "agent.run",
+        clientRequestId: "request-1",
+        runId: "run-1",
+        type: "error",
+        error: expect.objectContaining({
+          code: "assistant_message_persistence_failed",
+        }),
+      }),
+    );
+    const persistenceErrorIndex = messages.findIndex(
+      (message) =>
+        message.type === "error" &&
+        message.error?.code === "assistant_message_persistence_failed",
+    );
+    const terminalFailureIndex = messages.findIndex(
+      (message) =>
+        message.type === "event" && message.event?.type === "run.failed",
+    );
+    expect(persistenceErrorIndex).toBeGreaterThan(-1);
+    expect(terminalFailureIndex).toBeGreaterThan(persistenceErrorIndex);
+    socket.emit("close");
+  });
+
+  it("persists a run failure received before text or tool events", async () => {
+    const socket = new FakeSocket();
+    const agentRuns = createdAgentRuns(
+      (async function* () {
+        yield {
+          type: "run.failed",
+          runId: "run-1",
+          error: { code: "run_failed", message: "Agent execution failed." },
+          timestamp: "2026-08-20T00:00:00.000Z",
+        };
+      })(),
+    );
+    const createMessage = vi.fn();
+
+    await bindWithCreatedRun(socket, agentRuns, {
+      chatService: { createMessage } as never,
+    });
+    socket.emit("message", runCommand());
+    await nextTurn();
+    await nextTurn();
+
+    expect(createMessage).toHaveBeenCalledWith(
+      user,
+      "session-1",
+      expect.objectContaining({
+        content: "抱歉，处理过程中遇到问题，请重试。",
+        contentBlocks: [
+          { type: "text", text: "抱歉，处理过程中遇到问题，请重试。" },
+        ],
+        role: "assistant",
+      }),
+    );
+    socket.emit("close");
+  });
+
+  it("persists ordered thinking blocks from the Agent stream", async () => {
+    const socket = new FakeSocket();
+    const agentRuns = createdAgentRuns(
+      (async function* () {
+        yield {
+          type: "thinking.delta",
+          runId: "run-1",
+          messageId: "message-1",
+          delta: "Consider the composition.",
+          timestamp: "2026-08-20T00:00:00.000Z",
+        };
+        yield {
+          type: "message.delta",
+          runId: "run-1",
+          messageId: "message-1",
+          delta: "Use a centered layout.",
+          timestamp: "2026-08-20T00:00:01.000Z",
+        };
+      })(),
+    );
+    const createMessage = vi.fn();
+
+    await bindWithCreatedRun(socket, agentRuns, {
+      chatService: { createMessage } as never,
+    });
+    socket.emit("message", runCommand());
+    await nextTurn();
+    await nextTurn();
+
+    expect(createMessage).toHaveBeenCalledWith(
+      user,
+      "session-1",
+      expect.objectContaining({
+        content: "Use a centered layout.",
+        contentBlocks: [
+          { type: "thinking", thinking: "Consider the composition." },
+          { type: "text", text: "Use a centered layout." },
+        ],
+        role: "assistant",
+      }),
+    );
+    socket.emit("close");
+  });
+
   it("does not fabricate run.failed when finalization is unconfirmed", async () => {
     const socket = new FakeSocket();
     const agentRuns = fakeAgentRuns();
@@ -327,6 +497,9 @@ describe("WebSocket resource commands", () => {
       socket.messages.map((message) => JSON.parse(message)),
     ).toContainEqual(
       expect.objectContaining({
+        action: "agent.run",
+        clientRequestId: "request-1",
+        runId: "run-1",
         type: "error",
         error: expect.objectContaining({
           code: "run_finalization_unconfirmed",
@@ -573,6 +746,41 @@ function fakeAgentRuns() {
   };
 }
 
+function createdAgentRuns(stream: AsyncIterable<unknown>) {
+  const agentRuns = fakeAgentRuns();
+  agentRuns.registerRun.mockReturnValue({
+    ownership: "created",
+    response: {
+      conversationId: "conversation-1",
+      runId: "run-1",
+      sessionId: "session-1",
+      status: "accepted",
+    },
+  });
+  agentRuns.streamRun.mockReturnValue(stream);
+  return agentRuns;
+}
+
+async function bindWithCreatedRun(
+  socket: FakeSocket,
+  agentRuns: ReturnType<typeof fakeAgentRuns>,
+  services: Record<string, unknown>,
+) {
+  await bindAuthenticatedSocket(
+    socket as never,
+    "token",
+    { url: "/api/ws", headers: { host: "localhost" } } as never,
+    {
+      agentRuns: agentRuns as never,
+      authorization: fakeAuthorization("canvas-1"),
+      auth: { authenticate: async () => user },
+      connectionManager: new ConnectionManager(),
+      prepareAgentRun: async () => preparedRun(true),
+      ...services,
+    } as never,
+  );
+}
+
 function runCommand() {
   return JSON.stringify({
     type: "command",
@@ -630,4 +838,8 @@ class FakeSocket extends EventEmitter {
 
 async function nextTurn() {
   await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function waitForTurns(turns: number) {
+  for (let turn = 0; turn < turns; turn += 1) await nextTurn();
 }

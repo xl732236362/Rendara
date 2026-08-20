@@ -159,6 +159,33 @@ export function useWebSocket(
             callbacks.onError(msg as unknown as WsErrorMessage);
           }
         }
+        const runId = msg.runId;
+        if (typeof runId === "string") {
+          console.error("[ws] active Agent run failed:", {
+            runId,
+            code: (msg.error as { code?: string } | undefined)?.code,
+          });
+          const failedEvent: StreamEvent = {
+            type: "run.failed",
+            runId,
+            timestamp: new Date().toISOString(),
+            error: {
+              code: "run_failed",
+              message:
+                (msg.error as { message?: string } | undefined)?.message ??
+                "Agent stream could not be completed.",
+              ...((msg.error as { code?: string } | undefined)?.code ===
+              "assistant_message_persistence_failed"
+                ? {
+                    details: {
+                      sourceCode: "assistant_message_persistence_failed",
+                    },
+                  }
+                : {}),
+            },
+          };
+          for (const cb of eventListeners.current) cb(failedEvent);
+        }
       } else if (msg.type === "rpc.request") {
         void handleRpcRequest(ws, msg as unknown as WsRpcRequest);
       }

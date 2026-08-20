@@ -173,6 +173,7 @@ export function ChatSidebar({
   const selectedCanvasElementsRef = useRef(selectedCanvasElements);
   selectedCanvasElementsRef.current = selectedCanvasElements;
   const prevConnectedRef = useRef(false);
+  const fallbackPersistedAssistantIdsRef = useRef(new Set<string>());
 
   const {
     attachments: imageAttachments,
@@ -203,6 +204,33 @@ export function ChatSidebar({
 
   const { showTierLimit } = useTierLimitToast();
   const { toast: showToast } = useToast();
+
+  const persistAssistantFallback = useCallback(
+    (sessionId: string, assistantId: string) => {
+      if (fallbackPersistedAssistantIdsRef.current.has(assistantId)) return;
+      const assistant = getSessionMessages(sessionId).find(
+        (message) => message.id === assistantId && message.role === "assistant",
+      );
+      if (!assistant) return;
+      fallbackPersistedAssistantIdsRef.current.add(assistantId);
+      const content = assistant.contentBlocks
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("");
+      void saveMessage(accessTokenRef.current, sessionId, {
+        role: "assistant",
+        content,
+        contentBlocks: assistant.contentBlocks,
+      }).catch(() => {
+        console.warn("[chat] assistant fallback persistence failed", {
+          assistantId,
+          errorCode: "assistant_fallback_persistence_failed",
+          sessionId,
+        });
+      });
+    },
+    [accessTokenRef, getSessionMessages],
+  );
 
   const syncedAttachmentRevisionsRef = useRef(new Map<string, number>());
 
@@ -747,6 +775,13 @@ export function ChatSidebar({
             event.type === "run.failed" ||
             event.type === "run.canceled"
           ) {
+            if (
+              event.type === "run.failed" &&
+              event.error.details?.sourceCode ===
+                "assistant_message_persistence_failed"
+            ) {
+              persistAssistantFallback(currentSessionId, assistantId);
+            }
             void refreshAttachmentRecovery(currentSessionId);
             resolveStream();
           }
@@ -866,6 +901,7 @@ export function ChatSidebar({
       accessTokenRef,
       activeSessionIdRef,
       refreshAttachmentRecovery,
+      persistAssistantFallback,
     ],
   );
 
@@ -1056,6 +1092,13 @@ export function ChatSidebar({
               evt.type === "run.failed" ||
               evt.type === "run.canceled"
             ) {
+              if (
+                evt.type === "run.failed" &&
+                evt.error.details?.sourceCode ===
+                  "assistant_message_persistence_failed"
+              ) {
+                persistAssistantFallback(sessionId, assistantId);
+              }
               void refreshAttachmentRecovery(sessionId);
               setStreaming(false);
               unsub();
@@ -1078,6 +1121,7 @@ export function ChatSidebar({
     setStreaming,
     initialPrompt,
     refreshAttachmentRecovery,
+    persistAssistantFallback,
   ]);
 
   // ── Collapsed state ──
