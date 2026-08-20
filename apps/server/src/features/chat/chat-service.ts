@@ -85,6 +85,7 @@ export function deduplicateAdjacentMessages(
     const previous = deduplicated.at(-1);
     if (
       !previous ||
+      message.role !== "assistant" ||
       previous.role !== message.role ||
       previous.content !== message.content
     ) {

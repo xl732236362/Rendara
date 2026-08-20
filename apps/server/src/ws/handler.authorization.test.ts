@@ -200,15 +200,13 @@ describe("WebSocket resource commands", () => {
           toolName: "generate_image",
           output: { elementId: "element-1" },
           outputSummary: "Generated media is ready.",
-          artifacts: [
-            {
+          artifacts: Array.from({ length: 11 }, (_, index) => ({
               type: "image",
-              url: "https://example.com/generated.png",
+              url: `https://example.com/generated-${index}.png`,
               mimeType: "image/png",
               width: 512,
               height: 512,
-            },
-          ],
+            })),
           timestamp: "2026-08-20T00:00:02.000Z",
         };
         yield {
@@ -260,7 +258,9 @@ describe("WebSocket resource commands", () => {
             status: "completed",
             output: { elementId: "element-1" },
             outputSummary: "Generated media is ready.",
-            artifacts: [expect.objectContaining({ type: "image" })],
+            artifacts: expect.arrayContaining([
+              expect.objectContaining({ type: "image" }),
+            ]),
           }),
           expect.objectContaining({
             toolCallId: "failed-terminal-only-call",
@@ -270,6 +270,12 @@ describe("WebSocket resource commands", () => {
         ],
       }),
     );
+    const persisted = createMessage.mock.calls[0]?.[2];
+    const terminalOnlyBlock = persisted?.contentBlocks?.find(
+      (block: { toolCallId?: string }) =>
+        block.toolCallId === "terminal-only-call",
+    );
+    expect(terminalOnlyBlock?.artifacts).toHaveLength(10);
     socket.emit("close");
   });
 

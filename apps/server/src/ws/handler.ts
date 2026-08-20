@@ -515,28 +515,39 @@ async function handleRunCommand(
   }
 }
 
-export async function authorizeRunResources(
-  authorization: ResourceAuthorization,
-  user: AuthenticatedUser,
+const MAX_PERSISTED_TOOL_ARTIFACTS = 10;
+
 function upsertTerminalToolBlock(
   blocks: ContentBlock[],
   terminal: ToolBlock,
 ): void {
+  const boundedTerminal =
+    terminal.artifacts &&
+    terminal.artifacts.length > MAX_PERSISTED_TOOL_ARTIFACTS
+      ? {
+          ...terminal,
+          artifacts: terminal.artifacts.slice(0, MAX_PERSISTED_TOOL_ARTIFACTS),
+        }
+      : terminal;
   const index = blocks.findIndex(
     (block) =>
-      block.type === "tool" && block.toolCallId === terminal.toolCallId,
+      block.type === "tool" &&
+      block.toolCallId === boundedTerminal.toolCallId,
   );
   if (index < 0) {
-    blocks.push(terminal);
+    blocks.push(boundedTerminal);
     return;
   }
 
   blocks[index] = {
     ...(blocks[index] as ToolBlock),
-    ...terminal,
+    ...boundedTerminal,
   };
 }
 
+export async function authorizeRunResources(
+  authorization: ResourceAuthorization,
+  user: AuthenticatedUser,
   payload: Pick<RunCreateRequest, "canvasId" | "conversationId" | "sessionId">,
 ): Promise<string> {
   return requireRunResourceAccess(authorization, user, payload);

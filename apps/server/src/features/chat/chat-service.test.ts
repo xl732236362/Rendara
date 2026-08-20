@@ -87,6 +87,27 @@ describe("deduplicateAdjacentMessages", () => {
     expect(deduplicateAdjacentMessages(messages)).toEqual([messages[0]]);
   });
 
+  it("does not deduplicate adjacent user messages with identical content", () => {
+    const messages: ChatMessage[] = [
+      {
+        id: "user-1",
+        role: "user",
+        content: "Repeat request.",
+        createdAt: timestamp,
+        contentBlocks: [{ type: "text", text: "Repeat request." }],
+      },
+      {
+        id: "user-2",
+        role: "user",
+        content: "Repeat request.",
+        createdAt: timestamp,
+        contentBlocks: [{ type: "text", text: "Repeat request." }],
+      },
+    ];
+
+    expect(deduplicateAdjacentMessages(messages)).toEqual(messages);
+  });
+
   it("uses artifacts and block count as lifecycle richness tiebreakers", () => {
     const messages: ChatMessage[] = [
       {
