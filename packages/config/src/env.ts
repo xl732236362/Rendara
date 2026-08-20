@@ -28,6 +28,11 @@ const descriptor = (
 
 export type ServerEnvironment = {
   agentModel: string;
+  agentModelInactivityMs: number;
+  agentToolDeadlineMs: number;
+  agentOverallDeadlineMs: number;
+  agentAttemptLeaseMs: number;
+  agentAttemptRenewIntervalMs: number;
   googleApiKey?: string;
   googleApplicationCredentials?: string;
   googleServiceAccountJson?: string;
@@ -107,6 +112,36 @@ export const envDescriptors = [
   descriptor("NEXT_PUBLIC_SUPABASE_URL", undefined, "public", ["web"]),
   descriptor("NEXT_PUBLIC_SUPABASE_ANON_KEY", undefined, "public", ["web"]),
   descriptor("LOOMIC_AGENT_MODEL", "agentModel", "private", ["api", "worker"]),
+  descriptor(
+    "LOOMIC_AGENT_MODEL_INACTIVITY_MS",
+    "agentModelInactivityMs",
+    "private",
+    ["api"],
+  ),
+  descriptor(
+    "LOOMIC_AGENT_TOOL_DEADLINE_MS",
+    "agentToolDeadlineMs",
+    "private",
+    ["api"],
+  ),
+  descriptor(
+    "LOOMIC_AGENT_OVERALL_DEADLINE_MS",
+    "agentOverallDeadlineMs",
+    "private",
+    ["api"],
+  ),
+  descriptor(
+    "LOOMIC_AGENT_ATTEMPT_LEASE_MS",
+    "agentAttemptLeaseMs",
+    "private",
+    ["api"],
+  ),
+  descriptor(
+    "LOOMIC_AGENT_ATTEMPT_RENEW_INTERVAL_MS",
+    "agentAttemptRenewIntervalMs",
+    "private",
+    ["api"],
+  ),
   descriptor("OPENAI_API_KEY", "openAIApiKey", "secret", ["api", "worker"]),
   descriptor("OPENAI_API_BASE", "openAIApiBase", "private", ["api", "worker"]),
   descriptor("GOOGLE_API_KEY", "googleApiKey", "secret", ["api", "worker"]),
@@ -279,6 +314,19 @@ export const serverEnvironmentSchema = z.object({
   SUPABASE_PROJECT_ID: optionalString,
   SUPABASE_JWT_SECRET: optionalString,
   LOOMIC_AGENT_MODEL: optionalString,
+  LOOMIC_AGENT_MODEL_INACTIVITY_MS: strictInteger(1_000, 3_600_000).default(
+    30_000,
+  ),
+  LOOMIC_AGENT_TOOL_DEADLINE_MS: strictInteger(1_000, 3_600_000).default(
+    600_000,
+  ),
+  LOOMIC_AGENT_OVERALL_DEADLINE_MS: strictInteger(1_000, 7_200_000).default(
+    900_000,
+  ),
+  LOOMIC_AGENT_ATTEMPT_LEASE_MS: strictInteger(5_000, 300_000).default(60_000),
+  LOOMIC_AGENT_ATTEMPT_RENEW_INTERVAL_MS: strictInteger(1_000, 60_000).default(
+    15_000,
+  ),
   OPENAI_API_KEY: optionalString,
   OPENAI_API_BASE: optionalUrl,
   GOOGLE_API_KEY: optionalString,

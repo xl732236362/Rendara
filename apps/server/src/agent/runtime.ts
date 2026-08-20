@@ -25,7 +25,11 @@ import {
   runWithDeadline,
 } from "../application/agent/agent-run-errors.js";
 import type { ApplyCanvasOperations } from "../application/canvas/apply-canvas-operations.js";
-import type { AttachGeneratedAsset } from "../application/canvas/attach-generated-asset.js";
+import type { GeneratedAssetAttachmentRecovery } from "../application/canvas/attach-generated-asset.js";
+import type {
+  AgentAttachmentContext,
+  AgentAttachmentPlacement,
+} from "../application/generation/ports.js";
 import type { SubmitGeneration } from "../application/generation/submit-generation.js";
 import type { ServerEnv } from "../config/env.js";
 import { AppError } from "../errors/app-error.js";
@@ -56,6 +60,7 @@ import {
   PRODUCTION_AGENT_CAPABILITIES,
   createAgentAuthority,
 } from "./capabilities.js";
+import type { AgentExecutionContext } from "./execution-context.js";
 import {
   type LoomicAgent,
   type LoomicAgentFactory,
@@ -63,6 +68,7 @@ import {
   createLoomicAgent,
 } from "./loomic-agent.js";
 import type { AgentPersistenceService } from "./persistence/index.js";
+import { createRunDeadlineGuard } from "./run-deadlines.js";
 import { adaptDeepAgentStream, toPublicToolEvent } from "./stream-adapter.js";
 import type { SubmitImageJobFn } from "./tools/image-generate.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
@@ -248,6 +254,8 @@ type RuntimeRunRecord = RunCreateRequest & {
   userId?: string;
   attemptId?: string;
   fencingToken?: number;
+  leaseValid?: boolean;
+  leaseRenewal?: { stop(): Promise<void>; isValid(): boolean };
 };
 
 type CreateAgentRuntimeOptions = {
@@ -255,7 +263,7 @@ type CreateAgentRuntimeOptions = {
   builtinSkillCatalog?: BuiltinSkillCatalog;
   agentPersistenceService?: AgentPersistenceService;
   applyCanvasOperations?: ApplyCanvasOperations;
-  attachGeneratedAsset?: AttachGeneratedAsset;
+  generatedAssetAttachments?: GeneratedAssetAttachmentRecovery;
   agentFactory?: LoomicAgentFactory;
   agentRunMetadataService?: AgentRunMetadataService;
   connectionManager?: ConnectionManager;
@@ -278,11 +286,67 @@ type CreateAgentRuntimeOptions = {
 
 export type AgentRunService = ReturnType<typeof createAgentRunService>;
 
+export function startAttemptLeaseRenewal(options: {
+  repository: Pick<AgentExecutionRepository, "renewAttempt">;
+  attemptId: string;
+  fencingToken: number;
+  leaseOwner: string;
+  leaseMs: number;
+  renewEveryMs: number;
+  now?: () => Date;
+  onFenceInvalid(error: unknown): void;
+}) {
+  const now = options.now ?? (() => new Date());
+  let valid = true;
+  let stopped = false;
+  let activeRenewal: Promise<void> | undefined;
+
+  const renew = () => {
+    if (stopped || !valid || activeRenewal) return;
+    activeRenewal = options.repository
+      .renewAttempt({
+        attemptId: options.attemptId,
+        fencingToken: options.fencingToken,
+        leaseOwner: options.leaseOwner,
+        leaseMs: options.leaseMs,
+        now: now(),
+      })
+      .then(() => undefined)
+      .catch((error: unknown) => {
+        if (!valid) return;
+        valid = false;
+        clearInterval(timer);
+        options.onFenceInvalid(error);
+      })
+      .finally(() => {
+        activeRenewal = undefined;
+      });
+  };
+
+  const timer = setInterval(renew, options.renewEveryMs);
+  timer.unref();
+  return {
+    isValid: () => valid,
+    async stop() {
+      if (!stopped) {
+        stopped = true;
+        clearInterval(timer);
+      }
+      await activeRenewal;
+    },
+  };
+}
+
 export function createAgentRunService(options: CreateAgentRuntimeOptions) {
   const now = options.now ?? (() => new Date().toISOString());
   const runs = new Map<string, RuntimeRunRecord>();
   const runIdFactory = options.runIdFactory ?? (() => randomUUID());
-  const firstEventTimeoutMs = options.firstEventTimeoutMs ?? 30_000;
+  const modelInactivityMs =
+    options.firstEventTimeoutMs ?? options.env.agentModelInactivityMs;
+  const toolDeadlineMs = options.env.agentToolDeadlineMs;
+  const overallDeadlineMs = options.env.agentOverallDeadlineMs;
+  const attemptLeaseMs = options.env.agentAttemptLeaseMs;
+  const attemptRenewIntervalMs = options.env.agentAttemptRenewIntervalMs;
   const persistenceTimeoutMs = options.persistenceTimeoutMs ?? 10_000;
   const createUserClientForCanvas = options.createUserClient;
   const resolveCanvasScope = createUserClientForCanvas
@@ -563,14 +627,33 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               effectiveSkillNames: eligibleSkills,
             });
         }
+        const leaseOwner = `runtime-${randomUUID()}`;
         const lease = await options.agentExecutionRepository.claimAttempt({
           attemptId: executionContext.attemptId,
-          leaseOwner: `runtime-${randomUUID()}`,
-          leaseMs: 15 * 60_000,
+          leaseOwner,
+          leaseMs: attemptLeaseMs,
           now: new Date(now()),
         });
         run.attemptId = lease.attemptId;
         run.fencingToken = lease.fencingToken;
+        run.leaseValid = true;
+        run.leaseRenewal = startAttemptLeaseRenewal({
+          repository: options.agentExecutionRepository,
+          attemptId: lease.attemptId,
+          fencingToken: lease.fencingToken,
+          leaseOwner,
+          leaseMs: attemptLeaseMs,
+          renewEveryMs: attemptRenewIntervalMs,
+          now: () => new Date(now()),
+          onFenceInvalid: (error) => {
+            run.leaseValid = false;
+            rlog.error("agent.attempt.lease_renewal_failed", {
+              attemptId: lease.attemptId,
+              errorCode: runtimeFailureCode(error),
+            });
+            run.controller.abort(new Error("attempt_lease_renewal_failed"));
+          },
+        });
         executionContext =
           (await options.agentExecutionRepository.getExecutionContext(runId)) ??
           executionContext;
@@ -646,7 +729,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         const canvasId = run.canvasId;
         const sessionId = run.sessionId;
         const runId = run.runId;
-        const resolveGenerationWorkspaceId = createGenerationWorkspaceResolver({
+        const resolveGenerationScope = createGenerationWorkspaceResolver({
           accessToken,
           ...(canvasId ? { canvasId } : {}),
           createUserClient: createClient,
@@ -670,10 +753,22 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           if (effect?.status === "completed") {
             return effect.result as Awaited<ReturnType<SubmitImageJobFn>>;
           }
-          const workspaceId = await resolveGenerationWorkspaceId();
+          const scope = await resolveGenerationScope();
+          assertGenerationScope(executionContext, scope, canMutateCanvas);
+          const { workspaceId } = scope;
+          const attachment = canMutateCanvas
+            ? createAgentAttachmentContext({
+                run,
+                effect,
+                input,
+                logicalToolCallId: input.logicalToolCallId,
+                mediaType: "image",
+              })
+            : undefined;
           let submitted: Awaited<ReturnType<SubmitGeneration>>;
           try {
-            submitted = await submitGeneration(
+            submitted = await submitGenerationWithOptionalAttachment(
+              submitGeneration,
               { userId, workspaceId, accessToken },
               {
                 idempotency_key: agentGenerationKey(
@@ -692,7 +787,11 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                   : {}),
                 ...(canvasId ? { canvas_id: canvasId } : {}),
                 ...(sessionId ? { session_id: sessionId } : {}),
+                ...(attachment && scope.projectId
+                  ? { project_id: scope.projectId }
+                  : {}),
               },
+              attachment,
             );
           } catch (error) {
             handleBillingSubmissionError(error, run);
@@ -724,99 +823,40 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
 
             if (current.status === "succeeded" && current.result) {
               const result = current.result as {
-                signed_url?: string;
-                object_path?: string;
+                asset_id?: string;
                 width?: number;
                 height?: number;
                 mime_type?: string;
               };
               jobLap("job_poll_done", { pollCount, status: "succeeded" });
-
-              // Write element directly to canvas (backend-driven insertion)
-              let elementId: string | undefined;
-              if (
-                canvasId &&
-                result.object_path &&
-                canMutateCanvas &&
-                options.attachGeneratedAsset
-              ) {
-                try {
-                  const placementInput = input as typeof input & {
-                    placementX?: number;
-                    placementY?: number;
-                    placementWidth?: number;
-                    placementHeight?: number;
-                  };
-                  const explicitPlacement =
-                    placementInput.placementX != null &&
-                    placementInput.placementY != null
-                      ? {
-                          x: placementInput.placementX,
-                          y: placementInput.placementY,
-                          width: placementInput.placementWidth ?? 512,
-                          height: placementInput.placementHeight ?? 512,
-                        }
-                      : undefined;
-                  const insertResult = await options.attachGeneratedAsset(
-                    { userId, workspaceId, accessToken },
-                    {
-                      canvasId,
-                      jobId: job.id,
-                      effectKey: "generated_asset_attached",
-                      ...(run.attemptId && run.fencingToken !== undefined
-                        ? {
-                            agentEffect: {
-                              runId,
-                              attemptId: run.attemptId,
-                              fencingToken: run.fencingToken,
-                              logicalToolCallId: input.logicalToolCallId,
-                              inputDigest: createHash("sha256")
-                                .update(stableJson(input))
-                                .digest("hex"),
-                              result: {
-                                jobId: job.id,
-                                elementId: job.id,
-                                imageUrl: result.signed_url ?? "",
-                                width: result.width ?? 1024,
-                                height: result.height ?? 1024,
-                                mimeType: result.mime_type ?? "image/png",
-                              },
-                            },
-                          }
-                        : {}),
-                      asset: {
-                        type: "image",
-                        objectPath: result.object_path,
-                        width: result.width ?? 1024,
-                        height: result.height ?? 1024,
-                        mimeType: result.mime_type ?? "image/png",
-                        title: input.title,
-                      },
-                      ...(explicitPlacement
-                        ? { placement: explicitPlacement }
-                        : {}),
-                    },
-                  );
-                  elementId = insertResult.elementId;
-
-                  jobLap("canvas_element_inserted", { elementId });
-                } catch (insertErr) {
-                  // Graceful degradation: log error but still return result
-                  console.error(
-                    "[submitImageJob] canvas insert failed:",
-                    insertErr,
-                  );
-                }
+              if (!result.asset_id) {
+                throw new Error("generation_asset_id_missing");
               }
-
-              const completed = {
-                jobId: job.id,
-                ...(elementId != null ? { elementId } : {}),
-                imageUrl: result.signed_url ?? "",
+              const artifact = {
+                type: "image" as const,
+                title: input.title,
+                url: `/api/assets/${result.asset_id}`,
                 width: result.width ?? 1024,
                 height: result.height ?? 1024,
                 mimeType: result.mime_type ?? "image/png",
+                jobId: job.id,
               };
+              const completed =
+                canMutateCanvas && canvasId
+                  ? options.generatedAssetAttachments
+                    ? {
+                        ...(await options.generatedAssetAttachments.getStatus(
+                          { userId, workspaceId, accessToken },
+                          { canvasId, jobId: job.id },
+                        )),
+                        artifact,
+                      }
+                    : pendingAttachmentResult(job.id, canvasId, artifact)
+                  : {
+                      attachmentStatus: "not_requested" as const,
+                      jobId: job.id,
+                      artifact,
+                    };
               await completeRuntimeEffect(
                 options.agentExecutionRepository,
                 run,
@@ -832,10 +872,9 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               current.status === "canceled"
             ) {
               jobLap("job_poll_done", { pollCount, status: current.status });
-              return {
-                jobId: job.id,
-                error: current.error_message ?? `Job ${current.status}`,
-              };
+              throw new Error(
+                current.error_message ?? `Generation job ${current.status}`,
+              );
             }
 
             // "failed" with attempts exhausted
@@ -847,18 +886,14 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                 pollCount,
                 status: "failed_max_retries",
               });
-              return {
-                jobId: job.id,
-                error: current.error_message ?? "Job failed after max retries",
-              };
+              throw new Error(
+                current.error_message ?? "Generation job failed after retries",
+              );
             }
           }
 
           jobLap("job_poll_done", { pollCount, status: "timeout" });
-          return {
-            jobId: job.id,
-            error: `Job timed out after ${MAX_WAIT / 1000}s`,
-          };
+          throw new Error(`Generation job timed out after ${MAX_WAIT / 1000}s`);
         };
 
         submitVideoJob = async (input) => {
@@ -879,10 +914,22 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           if (effect?.status === "completed") {
             return effect.result as Awaited<ReturnType<SubmitVideoJobFn>>;
           }
-          const workspaceId = await resolveGenerationWorkspaceId();
+          const scope = await resolveGenerationScope();
+          assertGenerationScope(executionContext, scope, canMutateCanvas);
+          const { workspaceId } = scope;
+          const attachment = canMutateCanvas
+            ? createAgentAttachmentContext({
+                run,
+                effect,
+                input,
+                logicalToolCallId: input.logicalToolCallId,
+                mediaType: "video",
+              })
+            : undefined;
           let submitted: Awaited<ReturnType<SubmitGeneration>>;
           try {
-            submitted = await submitGeneration(
+            submitted = await submitGenerationWithOptionalAttachment(
+              submitGeneration,
               { userId, workspaceId, accessToken },
               {
                 idempotency_key: agentGenerationKey(
@@ -907,7 +954,11 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                   : {}),
                 ...(canvasId ? { canvas_id: canvasId } : {}),
                 ...(sessionId ? { session_id: sessionId } : {}),
+                ...(attachment && scope.projectId
+                  ? { project_id: scope.projectId }
+                  : {}),
               },
+              attachment,
             );
           } catch (error) {
             handleBillingSubmissionError(error, run);
@@ -940,109 +991,43 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
 
             if (current.status === "succeeded" && current.result) {
               const result = current.result as {
-                signed_url?: string;
+                asset_id?: string;
                 duration_seconds?: number;
                 width?: number;
                 height?: number;
                 mime_type?: string;
               };
               jobLap("job_poll_done", { pollCount, status: "succeeded" });
-
-              // Write element directly to canvas (backend-driven insertion)
-              let elementId: string | undefined;
-              if (
-                canvasId &&
-                result.signed_url &&
-                canMutateCanvas &&
-                options.attachGeneratedAsset
-              ) {
-                try {
-                  const placementInput = input as typeof input & {
-                    placementX?: number;
-                    placementY?: number;
-                    placementWidth?: number;
-                    placementHeight?: number;
-                  };
-                  const explicitPlacement =
-                    placementInput.placementX != null &&
-                    placementInput.placementY != null
-                      ? {
-                          x: placementInput.placementX,
-                          y: placementInput.placementY,
-                          width: placementInput.placementWidth ?? 640,
-                          height: placementInput.placementHeight ?? 360,
-                        }
-                      : undefined;
-                  const insertResult = await options.attachGeneratedAsset(
-                    { userId, workspaceId, accessToken },
-                    {
-                      canvasId,
-                      jobId: job.id,
-                      effectKey: "generated_asset_attached",
-                      ...(run.attemptId && run.fencingToken !== undefined
-                        ? {
-                            agentEffect: {
-                              runId,
-                              attemptId: run.attemptId,
-                              fencingToken: run.fencingToken,
-                              logicalToolCallId: input.logicalToolCallId,
-                              inputDigest: createHash("sha256")
-                                .update(stableJson(input))
-                                .digest("hex"),
-                              result: {
-                                jobId: job.id,
-                                elementId: job.id,
-                                videoUrl: result.signed_url ?? "",
-                                width: result.width ?? 1280,
-                                height: result.height ?? 720,
-                                mimeType: result.mime_type ?? "video/mp4",
-                                ...(result.duration_seconds != null
-                                  ? {
-                                      durationSeconds: result.duration_seconds,
-                                    }
-                                  : {}),
-                              },
-                            },
-                          }
-                        : {}),
-                      asset: {
-                        type: "video",
-                        signedUrl: result.signed_url,
-                        width: result.width ?? 1280,
-                        height: result.height ?? 720,
-                        mimeType: result.mime_type ?? "video/mp4",
-                        ...(result.duration_seconds != null
-                          ? { durationSeconds: result.duration_seconds }
-                          : {}),
-                      },
-                      ...(explicitPlacement
-                        ? { placement: explicitPlacement }
-                        : {}),
-                    },
-                  );
-                  elementId = insertResult.elementId;
-
-                  jobLap("canvas_element_inserted", { elementId });
-                } catch (insertErr) {
-                  // Graceful degradation: log error but still return result
-                  console.error(
-                    "[submitVideoJob] canvas insert failed:",
-                    insertErr,
-                  );
-                }
+              if (!result.asset_id) {
+                throw new Error("generation_asset_id_missing");
               }
-
-              const completed = {
-                jobId: job.id,
-                ...(elementId != null ? { elementId } : {}),
-                videoUrl: result.signed_url ?? "",
+              const artifact = {
+                type: "video" as const,
+                url: `/api/assets/${result.asset_id}`,
                 width: result.width ?? 1280,
                 height: result.height ?? 720,
                 mimeType: result.mime_type ?? "video/mp4",
+                jobId: job.id,
                 ...(result.duration_seconds != null
                   ? { durationSeconds: result.duration_seconds }
                   : {}),
               };
+              const completed =
+                canMutateCanvas && canvasId
+                  ? options.generatedAssetAttachments
+                    ? {
+                        ...(await options.generatedAssetAttachments.getStatus(
+                          { userId, workspaceId, accessToken },
+                          { canvasId, jobId: job.id },
+                        )),
+                        artifact,
+                      }
+                    : pendingAttachmentResult(job.id, canvasId, artifact)
+                  : {
+                      attachmentStatus: "not_requested" as const,
+                      jobId: job.id,
+                      artifact,
+                    };
               await completeRuntimeEffect(
                 options.agentExecutionRepository,
                 run,
@@ -1058,10 +1043,9 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               current.status === "canceled"
             ) {
               jobLap("job_poll_done", { pollCount, status: current.status });
-              return {
-                jobId: job.id,
-                error: current.error_message ?? `Job ${current.status}`,
-              };
+              throw new Error(
+                current.error_message ?? `Generation job ${current.status}`,
+              );
             }
 
             if (
@@ -1072,18 +1056,14 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                 pollCount,
                 status: "failed_max_retries",
               });
-              return {
-                jobId: job.id,
-                error: current.error_message ?? "Job failed after max retries",
-              };
+              throw new Error(
+                current.error_message ?? "Generation job failed after retries",
+              );
             }
           }
 
           jobLap("job_poll_done", { pollCount, status: "timeout" });
-          return {
-            jobId: job.id,
-            error: `Job timed out after ${MAX_WAIT / 1000}s`,
-          };
+          throw new Error(`Generation job timed out after ${MAX_WAIT / 1000}s`);
         };
       }
 
@@ -1339,26 +1319,47 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         stream,
         supervisor: agent.toolSupervisor,
       })[Symbol.asyncIterator]();
+      let adaptedStreamClosed = false;
+      const closeAdaptedStream = async () => {
+        if (adaptedStreamClosed) return;
+        adaptedStreamClosed = true;
+        await adaptedStream.return?.(undefined);
+      };
+      const deadlineGuard = createRunDeadlineGuard({
+        modelInactivityMs,
+        toolDeadlineMs,
+        overallDeadlineMs,
+        abort: () => run.controller.abort(),
+        closeIterator: closeAdaptedStream,
+      });
       let receivedModelEvent = false;
       const modelStartedAt = Date.now();
       try {
         while (true) {
-          const next = receivedModelEvent
-            ? await adaptedStream.next()
-            : await runWithDeadline({
-                operation: () => adaptedStream.next(),
-                timeoutError: () =>
-                  new AgentRunError({
-                    code: "agent_first_event_timeout",
-                    message: "Agent model did not produce an event in time.",
-                    retryable: true,
-                    statusCode: 504,
-                  }),
-                timeoutMs: firstEventTimeoutMs,
-              });
+          const next = await Promise.race([
+            adaptedStream.next(),
+            deadlineGuard.wait(),
+          ]);
           if (next.done) break;
           const event = next.value;
-          if (event.type !== "run.started" && !receivedModelEvent) {
+          if (event.type === "tool.started") {
+            deadlineGuard.onToolStarted(event.toolCallId);
+          } else if (
+            event.type === "tool.completed" ||
+            event.type === "tool.failed"
+          ) {
+            deadlineGuard.onToolFinished(event.toolCallId);
+          } else if (
+            event.type === "message.delta" ||
+            event.type === "thinking.delta"
+          ) {
+            deadlineGuard.onModelActivity();
+          }
+          if (
+            (event.type === "message.delta" ||
+              event.type === "thinking.delta") &&
+            !receivedModelEvent
+          ) {
             receivedModelEvent = true;
             rlog.info("agent.model.first_event", {
               durationMs: Date.now() - modelStartedAt,
@@ -1451,13 +1452,13 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           throw streamError;
         }
         if (streamError instanceof AgentRunError) {
-          rlog.warn("agent.model.first_event.failed", {
+          rlog.warn("agent.run.deadline_failed", {
             durationMs: Date.now() - modelStartedAt,
             errorCode: runtimeFailureCode(streamError),
             retryable: streamError.retryable,
           });
           run.controller.abort();
-          void adaptedStream.return?.(undefined).catch(() => undefined);
+          void closeAdaptedStream().catch(() => undefined);
         }
         // Catch DB / checkpoint errors that bubble up from the LangGraph stream
         // (e.g. Supabase circuit-breaker, connection pool exhaustion).
@@ -1481,7 +1482,31 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           options.finalizationRetryDelayMs,
         );
         return;
+      } finally {
+        deadlineGuard.stop();
       }
+    },
+  };
+}
+
+function pendingAttachmentResult<T extends Record<string, unknown>>(
+  jobId: string,
+  canvasId: string,
+  artifact: T,
+) {
+  return {
+    attachmentStatus: "pending" as const,
+    jobId,
+    artifact,
+    recovery: {
+      kind: "watch_generated_asset" as const,
+      jobId,
+      canvasId,
+    },
+    error: {
+      code: "generated_asset_pending",
+      message: "Generated media is still being attached to the canvas.",
+      retryable: true,
     },
   };
 }
@@ -1504,6 +1529,7 @@ async function beginRuntimeEffect(
   logicalToolCallId: string,
   input: unknown,
 ) {
+  if (run.leaseValid === false) throw new Error("run_not_active");
   if (!repository || !run.attemptId || run.fencingToken === undefined) {
     return null;
   }
@@ -1512,7 +1538,7 @@ async function beginRuntimeEffect(
     attemptId: run.attemptId,
     fencingToken: run.fencingToken,
     logicalToolCallId,
-    inputDigest: createHash("sha256").update(stableJson(input)).digest("hex"),
+    inputDigest: runtimeInputDigest(input),
   });
 }
 
@@ -1523,14 +1549,123 @@ async function completeRuntimeEffect(
   input: unknown,
   result: unknown,
 ): Promise<void> {
+  if (run.leaseValid === false) throw new Error("run_not_active");
   if (!repository || !run.attemptId || run.fencingToken === undefined) return;
   await repository.completeEffect({
     runId: run.runId,
     attemptId: run.attemptId,
     fencingToken: run.fencingToken,
     logicalToolCallId,
-    inputDigest: createHash("sha256").update(stableJson(input)).digest("hex"),
+    inputDigest: runtimeInputDigest(input),
     result,
+  });
+}
+
+function runtimeInputDigest(input: unknown): string {
+  return createHash("sha256").update(stableJson(input)).digest("hex");
+}
+
+function submitGenerationWithOptionalAttachment(
+  submitGeneration: SubmitGeneration,
+  principal: Parameters<SubmitGeneration>[0],
+  request: unknown,
+  attachment: AgentAttachmentContext | undefined,
+): ReturnType<SubmitGeneration> {
+  return attachment
+    ? submitGeneration(principal, request, attachment)
+    : submitGeneration(principal, request);
+}
+
+function createAgentAttachmentContext(options: {
+  run: RuntimeRunRecord;
+  effect: Awaited<ReturnType<typeof beginRuntimeEffect>>;
+  input: unknown;
+  logicalToolCallId: string;
+  mediaType: "image" | "video";
+}): AgentAttachmentContext {
+  if (
+    options.effect?.status !== "reserved" ||
+    !options.run.attemptId ||
+    options.run.fencingToken === undefined
+  ) {
+    throw attachmentInfrastructureUnavailable();
+  }
+  return {
+    intentId: deterministicAttachmentIntentId(
+      options.run.runId,
+      options.mediaType,
+      options.logicalToolCallId,
+    ),
+    runId: options.run.runId,
+    attemptId: options.run.attemptId,
+    fencingToken: options.run.fencingToken,
+    logicalToolCallId: options.logicalToolCallId,
+    inputDigest: runtimeInputDigest(options.input),
+    effectKind: "generated_asset_attached",
+    mediaType: options.mediaType,
+    placement: attachmentPlacement(options.input, options.mediaType),
+  };
+}
+
+function deterministicAttachmentIntentId(
+  runId: string,
+  mediaType: "image" | "video",
+  logicalToolCallId: string,
+): string {
+  const bytes = createHash("sha256")
+    .update(`${runId}:${mediaType}:${logicalToolCallId}`)
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function attachmentPlacement(
+  input: unknown,
+  mediaType: "image" | "video",
+): AgentAttachmentPlacement {
+  const placement = input as {
+    placementX?: number;
+    placementY?: number;
+    placementWidth?: number;
+    placementHeight?: number;
+  };
+  if (placement.placementX == null || placement.placementY == null) {
+    return { kind: "auto_right" };
+  }
+  return {
+    kind: "explicit",
+    x: placement.placementX,
+    y: placement.placementY,
+    width: placement.placementWidth ?? (mediaType === "image" ? 512 : 640),
+    height: placement.placementHeight ?? (mediaType === "image" ? 512 : 360),
+  };
+}
+
+function assertGenerationScope(
+  executionContext: Readonly<AgentExecutionContext> | null | undefined,
+  scope: GenerationWorkspaceScope,
+  requiresAttachment: boolean,
+): void {
+  if (!requiresAttachment) return;
+  if (
+    !scope.projectId ||
+    !executionContext?.projectId ||
+    scope.projectId !== executionContext.projectId ||
+    scope.workspaceId !== executionContext.workspaceId
+  ) {
+    throw attachmentInfrastructureUnavailable();
+  }
+}
+
+function attachmentInfrastructureUnavailable(): AppError {
+  return new AppError({
+    code: "application_error",
+    statusCode: 503,
+    message: "Generated asset attachment context is unavailable.",
+    expose: false,
   });
 }
 
@@ -1572,14 +1707,14 @@ function createGenerationWorkspaceResolver(options: {
   accessToken: string;
   canvasId?: string;
   createUserClient: (accessToken: string) => unknown;
-}): () => Promise<string> {
-  let resolution: Promise<string> | undefined;
+}): () => Promise<GenerationWorkspaceScope> {
+  let resolution: Promise<GenerationWorkspaceScope> | undefined;
   return () => {
     resolution ??= resolve();
     return resolution;
   };
 
-  async function resolve(): Promise<string> {
+  async function resolve(): Promise<GenerationWorkspaceScope> {
     const client = options.createUserClient(
       options.accessToken,
     ) as UserSupabaseClient;
@@ -1591,13 +1726,19 @@ function createGenerationWorkspaceResolver(options: {
         .maybeSingle();
       const canvas = data as unknown as {
         id?: string;
+        project_id?: string;
         projects?: { workspace_id?: string };
       } | null;
       const workspaceId = canvas?.projects?.workspace_id;
-      if (error || canvas?.id !== options.canvasId || !workspaceId) {
+      if (
+        error ||
+        canvas?.id !== options.canvasId ||
+        !canvas.project_id ||
+        !workspaceId
+      ) {
         throw new Error("Canvas not found or access denied");
       }
-      return workspaceId;
+      return { projectId: canvas.project_id, workspaceId };
     }
 
     const { data, error } = await client
@@ -1607,9 +1748,14 @@ function createGenerationWorkspaceResolver(options: {
       .limit(1)
       .single();
     if (error || !data?.id) throw new Error("No personal workspace found");
-    return data.id;
+    return { workspaceId: data.id };
   }
 }
+
+type GenerationWorkspaceScope = {
+  workspaceId: string;
+  projectId?: string;
+};
 
 function isTerminalStatus(
   status: RuntimeRunStatus,
@@ -1624,6 +1770,11 @@ async function finalizeRuntimeRun(
   metadata: Readonly<Record<string, unknown>>,
   retryDelayMs?: number,
 ): Promise<AgentTerminalStatus | null> {
+  await run.leaseRenewal?.stop();
+  // exactOptionalPropertyTypes requires absence rather than assigning undefined.
+  // biome-ignore lint/performance/noDelete: runtime records are short-lived.
+  delete run.leaseRenewal;
+  if (run.leaseValid === false) throw new Error("run_not_active");
   if (!repository || !run.attemptId || run.fencingToken === undefined) {
     return null;
   }
@@ -1738,10 +1889,19 @@ async function updatePersistedRunStatus(
 
 function runtimeFailureCode(
   error: unknown,
-): "agent_first_event_timeout" | "agent_persistence_timeout" | "run_failed" {
+):
+  | "agent_first_event_timeout"
+  | "agent_model_inactivity_timeout"
+  | "agent_tool_deadline_exceeded"
+  | "agent_overall_deadline_exceeded"
+  | "agent_persistence_timeout"
+  | "run_failed" {
   if (
     error instanceof AgentRunError &&
     (error.code === "agent_first_event_timeout" ||
+      error.code === "agent_model_inactivity_timeout" ||
+      error.code === "agent_tool_deadline_exceeded" ||
+      error.code === "agent_overall_deadline_exceeded" ||
       error.code === "agent_persistence_timeout")
   ) {
     return error.code;

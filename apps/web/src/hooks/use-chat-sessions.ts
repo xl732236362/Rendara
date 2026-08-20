@@ -87,11 +87,13 @@ export function mapServerMessages(
             type: "tool",
             toolCallId: ta.toolCallId,
             toolName: ta.toolName,
-            status: ta.status as "running" | "completed",
+            status: ta.status,
             ...(ta.input ? { input: ta.input } : {}),
             ...(ta.output ? { output: ta.output } : {}),
             ...(ta.outputSummary ? { outputSummary: ta.outputSummary } : {}),
             ...(ta.artifacts ? { artifacts: ta.artifacts } : {}),
+            ...(ta.error ? { error: ta.error } : {}),
+            ...(ta.recovery ? { recovery: ta.recovery } : {}),
           });
         }
       }
@@ -148,6 +150,11 @@ export function useChatSessions({
         setMessages(next);
       }
     },
+    [],
+  );
+
+  const getSessionMessages = useCallback(
+    (sessionId: string) => msgCacheRef.current.get(sessionId) ?? [],
     [],
   );
 
@@ -342,6 +349,7 @@ export function useChatSessions({
     streaming,
     setStreaming,
     updateSessionMessages,
+    getSessionMessages,
     handleSelectSession,
     handleNewChat,
     handleDeleteSession,

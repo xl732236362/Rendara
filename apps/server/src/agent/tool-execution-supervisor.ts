@@ -30,6 +30,7 @@ type CompletedPayload = Pick<
 >;
 
 type FailedPayload = CanonicalToolFailed["error"];
+type FailedMetadata = Pick<CanonicalToolFailed, "artifacts" | "recovery">;
 
 type StoredRecord = {
   readonly record: CanonicalToolRecord;
@@ -47,6 +48,7 @@ export interface ToolExecutionSupervisor {
   stageFailed(
     logicalToolCallId: string,
     error: FailedPayload,
+    metadata?: FailedMetadata,
   ): CanonicalToolFailed;
   acknowledge(record: CanonicalToolRecord): "projected" | "duplicate";
   projectionStatus(record: CanonicalToolRecord): "pending" | "projected";
@@ -127,7 +129,11 @@ export function createToolExecutionSupervisor(
     logicalToolCallId: string,
     terminal:
       | { type: "loomic.tool.completed"; payload: CompletedPayload }
-      | { type: "loomic.tool.failed"; payload: FailedPayload },
+      | {
+          type: "loomic.tool.failed";
+          payload: FailedPayload;
+          metadata?: FailedMetadata;
+        },
     privilegedClosing: boolean,
   ): CanonicalToolCompleted | CanonicalToolFailed {
     const call = calls.get(logicalToolCallId);
@@ -150,6 +156,7 @@ export function createToolExecutionSupervisor(
             ...common({ logicalToolCallId, ...call }),
             type: terminal.type,
             error: terminal.payload,
+            ...terminal.metadata,
           });
     call.state = "finishing";
     return record;
@@ -188,12 +195,16 @@ export function createToolExecutionSupervisor(
       ) as CanonicalToolCompleted;
     },
 
-    stageFailed(logicalToolCallId, error) {
+    stageFailed(logicalToolCallId, error, metadata) {
       if (admission !== "open") throw new Error("tool_supervisor_closing");
       requireOpenCall(logicalToolCallId);
       return stageTerminal(
         logicalToolCallId,
-        { type: "loomic.tool.failed", payload: error },
+        {
+          type: "loomic.tool.failed",
+          payload: error,
+          ...(metadata ? { metadata } : {}),
+        },
         false,
       ) as CanonicalToolFailed;
     },

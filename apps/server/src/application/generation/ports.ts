@@ -11,6 +11,28 @@ export type GenerationPrincipal = {
   accessToken?: string;
 };
 
+export type AgentAttachmentPlacement =
+  | { kind: "auto_right" }
+  | {
+      kind: "explicit";
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+
+export type AgentAttachmentContext = {
+  intentId: string;
+  runId: string;
+  attemptId: string;
+  fencingToken: number;
+  logicalToolCallId: string;
+  inputDigest: string;
+  effectKind: "generated_asset_attached";
+  mediaType: "image" | "video";
+  placement: AgentAttachmentPlacement;
+};
+
 export type AtomicJobSubmissionCommand = {
   principal: GenerationPrincipal;
   workspaceId: string;
@@ -24,6 +46,7 @@ export type AtomicJobSubmissionCommand = {
   creditsCost: number;
   description: string;
   payload: Record<string, unknown>;
+  attachmentIntent?: AgentAttachmentContext;
 };
 
 export type GenerationSubmissionOutcome = {
@@ -104,4 +127,7 @@ export type GenerationApplicationPorts = {
   tiers: TierAuthorizationPort;
   credits?: CreditBalancePort;
   referenceAssets?: ReferenceAssetAuthorizationPort;
+  attachmentIntents?: {
+    isReady(): boolean;
+  };
 };

@@ -9,17 +9,26 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useCanvasImageGeneration } from "../hooks/use-canvas-image-generation";
 import type { WebSocketHandle } from "../hooks/use-websocket";
-import { ApiApplicationError } from "../lib/api-client";
 import { blobToDataURL, isVideoUrl } from "../lib/canvas-elements";
 import { normalizeCanvasElements } from "../lib/canvas-normalize";
 import {
   type CanvasContent,
   type DurableSceneMutation,
+  canonicalJson,
+  createCanvasDirtySignatureFactory,
+  createCanvasPersistenceCoordinator,
   createDurableSceneMutation,
+  normalizeDurableCanvasContent,
   serializeCanvasFiles,
 } from "../lib/canvas-persistence";
 import { getServerBaseUrl } from "../lib/env";
-import { getAssetUrl, saveCanvas, uploadThumbnail } from "../lib/server-api";
+import {
+  ApiApplicationError,
+  fetchCanvas,
+  getAssetUrl,
+  saveCanvas,
+  uploadThumbnail,
+} from "../lib/server-api";
 import { CanvasToolMenu } from "./canvas-tool-menu";
 import { VideoCanvasElement } from "./canvas/video-canvas-element";
 import { ErrorBoundary } from "./error-boundary";
@@ -70,15 +79,64 @@ type CanvasEditorProps = {
     files: Record<string, Record<string, unknown>>;
   };
   onApiReady?: (api: any) => void;
-  onPersistenceReady?: (mutation: DurableSceneMutation | null) => void;
+  onPersistenceReady?: (handle: CanvasPersistenceHandle | null) => void;
   ws?: WebSocketHandle;
   leftPanelOpen?: boolean;
   onSelectionChange?: (elements: CanvasSelectedElement[]) => void;
 };
 
+export type CanvasPersistenceHandle = {
+  mutate: DurableSceneMutation;
+  sync(request: { eventId: string; revision: number }): Promise<void>;
+  reconcile(reason: "focus" | "reconnect" | "run_terminal"): Promise<void>;
+};
+
 const SAVE_DEBOUNCE_MS = 1500;
 const THUMBNAIL_DEBOUNCE_MS = 10_000;
 const THUMBNAIL_MAX_SIZE = 400;
+
+function readDurableCanvasContent(
+  api: any,
+  elements: readonly any[] = api.getSceneElements(),
+  appState: any = api.getAppState(),
+): CanvasContent {
+  return {
+    elements: elements.filter((element: any) => !element.isDeleted),
+    appState: {
+      viewBackgroundColor: appState.viewBackgroundColor,
+      gridModeEnabled: appState.gridModeEnabled,
+    },
+    files: serializeCanvasFiles(api.getFiles()),
+  };
+}
+
+async function resolveRuntimeCanvasFiles(
+  files: Record<string, Record<string, unknown>>,
+  accessToken: string,
+) {
+  const resolved: Record<string, Record<string, unknown>> = {};
+  await Promise.all(
+    Object.entries(files).map(async ([fileId, file]) => {
+      if (typeof file.dataURL === "string") {
+        resolved[fileId] = file;
+        return;
+      }
+      if (typeof file.assetId !== "string" || !file.assetId) return;
+      const { url } = await getAssetUrl(accessToken, file.assetId);
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("canvas_asset_fetch_failed");
+      const blob = await response.blob();
+      resolved[fileId] = {
+        ...file,
+        id: file.id ?? fileId,
+        mimeType: file.mimeType ?? blob.type,
+        created: file.created ?? Date.now(),
+        dataURL: await blobToDataURL(blob),
+      };
+    }),
+  );
+  return resolved;
+}
 
 export function CanvasEditor({
   canvasId,
@@ -100,14 +158,23 @@ export function CanvasEditor({
   accessTokenRef.current = accessToken;
   const canvasIdRef = useRef(canvasId);
   canvasIdRef.current = canvasId;
-  const revisionRef = useRef(initialRevision);
-  const saveChainRef = useRef<Promise<void>>(Promise.resolve());
   const conflictPausedRef = useRef(false);
-  const suppressNextAutosaveRef = useRef(false);
+  const suppressedSceneSignatureRef = useRef<string | null>(null);
+  const persistenceCoordinatorRef = useRef<ReturnType<
+    typeof createCanvasPersistenceCoordinator
+  > | null>(null);
+  const dirtySignatureRef = useRef(createCanvasDirtySignatureFactory());
+  const lastDirtySignatureRef = useRef<string | null>(null);
+  const dirtyGenerationRef = useRef(0);
+  const pendingDurableChangeRef = useRef(false);
   const [revisionConflict, setRevisionConflict] = useState(false);
   useEffect(() => {
-    revisionRef.current = initialRevision;
     conflictPausedRef.current = false;
+    persistenceCoordinatorRef.current = null;
+    suppressedSceneSignatureRef.current = null;
+    lastDirtySignatureRef.current = null;
+    dirtyGenerationRef.current = 0;
+    pendingDurableChangeRef.current = false;
     setRevisionConflict(false);
   }, [canvasId, initialRevision]);
   const [excalidrawApi, setExcalidrawApi] = useState<any>(null);
@@ -125,39 +192,15 @@ export function CanvasEditor({
     initialContent.elements.filter((e) => !e.isDeleted).length,
   );
 
-  // Track pending save payload so we can flush on tab close / unmount
-  const pendingSaveRef = useRef<CanvasContent | null>(null);
-
   // Ref to hold initialContent.files for storageUrl lookup in handleChange
   // without adding the full initialContent to the dependency array.
   const initialFilesRef = useRef(initialContent.files);
   initialFilesRef.current = initialContent.files;
 
   const enqueueSave = useCallback((content: CanvasContent) => {
-    if (conflictPausedRef.current) return Promise.resolve();
-    const operation = saveChainRef.current.then(async () => {
-      if (conflictPausedRef.current) return;
-      try {
-        const saved = await saveCanvas(
-          accessTokenRef.current,
-          canvasIdRef.current,
-          revisionRef.current,
-          content,
-        );
-        revisionRef.current = saved.revision;
-      } catch (error) {
-        if (
-          error instanceof ApiApplicationError &&
-          error.code === "canvas_revision_conflict"
-        ) {
-          conflictPausedRef.current = true;
-          setRevisionConflict(true);
-        }
-        throw error;
-      }
-    });
-    saveChainRef.current = operation.catch(() => undefined);
-    return operation;
+    const coordinator = persistenceCoordinatorRef.current;
+    if (!coordinator || conflictPausedRef.current) return Promise.resolve();
+    return coordinator.observe(content);
   }, []);
 
   // Separate inline files (ready) from storage URLs (need async fetch)
@@ -244,6 +287,109 @@ export function CanvasEditor({
     [onApiReady],
   );
 
+  const scheduleThumbnail = useCallback(() => {
+    if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current);
+    thumbnailTimerRef.current = setTimeout(async () => {
+      const api = excalidrawApi;
+      if (!api) return;
+      try {
+        const { exportToBlob } = await import("@excalidraw/excalidraw");
+        const sceneElements = api
+          .getSceneElements()
+          .filter((element: any) => !element.isDeleted);
+        if (sceneElements.length === 0) return;
+        const blob = await exportToBlob({
+          elements: sceneElements,
+          appState: { exportBackground: true },
+          files: api.getFiles(),
+          mimeType: "image/webp",
+          quality: 0.8,
+          maxWidthOrHeight: THUMBNAIL_MAX_SIZE,
+        });
+        await uploadThumbnail(accessTokenRef.current, projectId, blob);
+        console.info("[canvas.persistence] thumbnail_committed", {
+          canvasId: canvasIdRef.current,
+          size: blob.size,
+        });
+      } catch (error) {
+        console.warn("[canvas.persistence] thumbnail_failed", {
+          canvasId: canvasIdRef.current,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+        });
+      }
+    }, THUMBNAIL_DEBOUNCE_MS);
+  }, [excalidrawApi, projectId]);
+
+  useEffect(() => {
+    if (!excalidrawApi) return;
+    const coordinator = createCanvasPersistenceCoordinator({
+      initial: { revision: initialRevision, content: initialContent },
+      save: async ({ expectedRevision, content }) =>
+        saveCanvas(
+          accessTokenRef.current,
+          canvasIdRef.current,
+          expectedRevision,
+          content,
+        ),
+      fetch: async () => {
+        const { canvas } = await fetchCanvas(
+          accessTokenRef.current,
+          canvasIdRef.current,
+        );
+        return {
+          revision: canvas.revision,
+          content: {
+            elements: canvas.content.elements ?? [],
+            appState: canvas.content.appState ?? {},
+            files: canvas.content.files ?? {},
+          },
+        };
+      },
+      getLiveContent: () => readDurableCanvasContent(excalidrawApi),
+      applyRemote: async (content) => {
+        const runtimeFiles = await resolveRuntimeCanvasFiles(
+          content.files,
+          accessTokenRef.current,
+        );
+        if (Object.keys(runtimeFiles).length > 0) {
+          excalidrawApi.addFiles(Object.values(runtimeFiles));
+        }
+        suppressedSceneSignatureRef.current = canonicalJson(
+          normalizeDurableCanvasContent(content),
+        );
+        excalidrawApi.updateScene({
+          elements: content.elements,
+          appState: content.appState,
+          captureUpdate: "IMMEDIATELY",
+        });
+      },
+      onConflict: ({ reason, baseRevision, remoteRevision }) => {
+        conflictPausedRef.current = true;
+        setRevisionConflict(true);
+        console.warn("[canvas.persistence] synchronization_conflict", {
+          canvasId: canvasIdRef.current,
+          reason,
+          baseRevision,
+          remoteRevision,
+        });
+      },
+      onCommitted: ({ origin, revision }) => {
+        scheduleThumbnail();
+        console.info("[canvas.persistence] snapshot_committed", {
+          canvasId: canvasIdRef.current,
+          origin,
+          revision,
+        });
+      },
+    });
+    persistenceCoordinatorRef.current = coordinator;
+    return () => {
+      if (persistenceCoordinatorRef.current === coordinator) {
+        persistenceCoordinatorRef.current = null;
+      }
+    };
+  }, [excalidrawApi, initialContent, initialRevision, scheduleThumbnail]);
+
   // Normalize agent-created elements on initial load.
   // Uses DOM text measurement to fix server-side approximation errors.
   useEffect(() => {
@@ -300,85 +446,70 @@ export function CanvasEditor({
       // which would wipe the persisted canvas via FULL REPLACE.
       if (!hydratedRef.current) return;
 
-      // --- 1. Debounced save ---
-      if (suppressNextAutosaveRef.current) {
-        suppressNextAutosaveRef.current = false;
+      // Durable persistence uses a compact identity/version signature so
+      // selection and viewport callbacks never serialize legacy base64 files.
+      if (persistenceCoordinatorRef.current?.snapshot().stopped) {
+        pendingDurableChangeRef.current = false;
       } else {
-        if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-
-        // Mark that a save is pending. The full payload is built lazily inside
-        // the timeout to avoid constructing the files map on every drag frame.
-        pendingSaveRef.current = {
-          elements: [] as any,
-          appState: {},
-          files: {},
-        };
-
-        saveTimerRef.current = setTimeout(() => {
-          // Build the full payload only when the debounce fires
-          const files = excalidrawApi
-            ? serializeCanvasFiles(
-                excalidrawApi.getFiles() as Record<string, Record<string, any>>,
-              )
-            : {};
-          const content = {
-            elements: elements.filter((el: any) => !el.isDeleted) as Record<
-              string,
-              unknown
-            >[],
-            appState: {
-              viewBackgroundColor: appState.viewBackgroundColor,
-              gridModeEnabled: appState.gridModeEnabled,
-            },
-            files,
-          };
-          pendingSaveRef.current = content;
-
-          enqueueSave(content)
-            .then(() => {
-              if (pendingSaveRef.current === content) {
-                pendingSaveRef.current = null;
-              }
-            })
-            .catch((err) => console.error("[canvas-editor] save failed:", err));
-        }, SAVE_DEBOUNCE_MS);
+        const suppressedSignature = suppressedSceneSignatureRef.current;
+        if (suppressedSignature !== null) {
+          suppressedSceneSignatureRef.current = null;
+          const callbackContent = readDurableCanvasContent(
+            excalidrawApi,
+            elements,
+          );
+          if (
+            canonicalJson(normalizeDurableCanvasContent(callbackContent)) ===
+            suppressedSignature
+          ) {
+            return;
+          }
+        }
+        const signature = dirtySignatureRef.current({
+          elements: elements as Record<string, unknown>[],
+          appState,
+          files: (excalidrawApi?.getFiles() ?? {}) as Record<
+            string,
+            Record<string, unknown>
+          >,
+        });
+        if (signature !== lastDirtySignatureRef.current) {
+          lastDirtySignatureRef.current = signature;
+          dirtyGenerationRef.current += 1;
+          pendingDurableChangeRef.current = true;
+          if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+          const generation = dirtyGenerationRef.current;
+          saveTimerRef.current = setTimeout(() => {
+            if (!excalidrawApi) return;
+            const content = readDurableCanvasContent(excalidrawApi);
+            enqueueSave(content)
+              .then(() => {
+                if (dirtyGenerationRef.current === generation) {
+                  pendingDurableChangeRef.current = false;
+                }
+              })
+              .catch((error) => {
+                console.error("[canvas.persistence] save_failed", {
+                  canvasId: canvasIdRef.current,
+                  ...(error instanceof ApiApplicationError
+                    ? {
+                        code: error.code,
+                        status: error.status,
+                        correlationId: error.correlationId,
+                      }
+                    : {
+                        code: "unknown_error",
+                        status: 0,
+                        correlationId: undefined,
+                      }),
+                });
+              });
+          }, SAVE_DEBOUNCE_MS);
+        }
       }
 
-      // --- 2. Debounced thumbnail (runs much less frequently than save) ---
-      if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current);
-      thumbnailTimerRef.current = setTimeout(async () => {
-        if (!excalidrawApi) return;
-        try {
-          const { exportToBlob } = await import("@excalidraw/excalidraw");
-          const sceneElements = excalidrawApi.getSceneElements();
-          const sceneFiles = excalidrawApi.getFiles();
-          if (!sceneElements.length) return;
-
-          const blob = await exportToBlob({
-            elements: sceneElements,
-            appState: { exportBackground: true },
-            files: sceneFiles,
-            mimeType: "image/webp",
-            quality: 0.8,
-            maxWidthOrHeight: THUMBNAIL_MAX_SIZE,
-          });
-
-          console.log(
-            "[canvas-editor] uploading thumbnail, blob size:",
-            blob.size,
-          );
-          await uploadThumbnail(accessTokenRef.current, projectId, blob);
-          console.log("[canvas-editor] thumbnail uploaded OK");
-        } catch (err) {
-          console.warn(
-            "[canvas-editor] thumbnail generation/upload failed:",
-            err,
-          );
-        }
-      }, THUMBNAIL_DEBOUNCE_MS);
-
-      // --- 3. Selection change detection ---
-      // Cheap string comparison avoids unnecessary downstream re-renders.
+      // Selection remains transient UI state and is intentionally outside the
+      // persistence coordinator.
       const selectedIds = appState.selectedElementIds
         ? Object.keys(appState.selectedElementIds as Record<string, boolean>)
             .filter(
@@ -418,14 +549,11 @@ export function CanvasEditor({
                   if (file?.dataURL) {
                     base.dataUrl = file.dataURL;
                   }
-                  // Prefer storage URL over base64 dataUrl for message attachments.
-                  // Sources: 1) element customData (model-generated images)
-                  //          2) initial canvas content files (server-resolved URLs)
-                  const sUrl =
+                  const storageUrl =
                     el.customData?.storageUrl ??
                     initialFilesRef.current[el.fileId]?.storageUrl;
-                  if (typeof sUrl === "string" && sUrl) {
-                    base.storageUrl = sUrl;
+                  if (typeof storageUrl === "string" && storageUrl) {
+                    base.storageUrl = storageUrl;
                   }
                 }
                 return base;
@@ -435,7 +563,7 @@ export function CanvasEditor({
         }
       }
     },
-    [canvasId, projectId, excalidrawApi, enqueueSave],
+    [excalidrawApi, enqueueSave],
   );
 
   const durableMutation = useMemo(() => {
@@ -444,11 +572,15 @@ export function CanvasEditor({
       cancelPendingSave() {
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
         saveTimerRef.current = null;
-        pendingSaveRef.current = null;
+        pendingDurableChangeRef.current = false;
       },
       getSceneElements: () => excalidrawApi.getSceneElements(),
       updateScene(elements) {
-        suppressNextAutosaveRef.current = true;
+        suppressedSceneSignatureRef.current = canonicalJson(
+          normalizeDurableCanvasContent(
+            readDurableCanvasContent(excalidrawApi, elements),
+          ),
+        );
         excalidrawApi.updateScene({
           elements,
           captureUpdate: "IMMEDIATELY",
@@ -466,13 +598,34 @@ export function CanvasEditor({
         };
       },
       enqueueSave,
+      isStopped: () =>
+        persistenceCoordinatorRef.current?.snapshot().stopped ?? false,
     });
   }, [enqueueSave, excalidrawApi]);
 
+  const persistenceHandle = useMemo<CanvasPersistenceHandle | null>(() => {
+    if (!durableMutation) return null;
+    return {
+      mutate: durableMutation,
+      async sync(request) {
+        await persistenceCoordinatorRef.current?.syncToRevision(
+          request.revision,
+        );
+      },
+      async reconcile(reason) {
+        console.info("[canvas.persistence] reconciliation_requested", {
+          canvasId: canvasIdRef.current,
+          reason,
+        });
+        await persistenceCoordinatorRef.current?.reconcile();
+      },
+    };
+  }, [durableMutation]);
+
   useEffect(() => {
-    onPersistenceReady?.(durableMutation);
+    onPersistenceReady?.(persistenceHandle);
     return () => onPersistenceReady?.(null);
-  }, [durableMutation, onPersistenceReady]);
+  }, [onPersistenceReady, persistenceHandle]);
 
   const { startAttempt: startImageGeneration } = useCanvasImageGeneration({
     accessToken,
@@ -480,7 +633,7 @@ export function CanvasEditor({
     projectId,
     canvasId,
     excalidrawApi,
-    durableMutation,
+    durableMutation: persistenceHandle?.mutate ?? null,
   });
 
   // Register screenshot RPC handler so the server can request canvas captures
@@ -577,8 +730,6 @@ export function CanvasEditor({
     if (!hydratedRef.current) return null;
     try {
       const sceneElements = excalidrawApi.getSceneElements();
-      const rawFiles = excalidrawApi.getFiles() as Record<string, any>;
-      const appState = excalidrawApi.getAppState();
 
       // Safety: refuse to save empty when we loaded with elements — prevents
       // race conditions from wiping canvas content during page teardown.
@@ -590,15 +741,7 @@ export function CanvasEditor({
         );
         return null;
       }
-      const files = serializeCanvasFiles(rawFiles);
-      return {
-        elements: sceneElements.filter((el: any) => !el.isDeleted),
-        appState: {
-          viewBackgroundColor: appState.viewBackgroundColor,
-          gridModeEnabled: appState.gridModeEnabled,
-        },
-        files,
-      };
+      return readDurableCanvasContent(excalidrawApi, sceneElements);
     } catch (err) {
       console.warn(
         "[canvas-editor] failed to build save payload on flush:",
@@ -615,9 +758,9 @@ export function CanvasEditor({
   // Flush pending save on page close (beforeunload) and component unmount
   useEffect(() => {
     const flushBeforeUnload = () => {
-      if (!pendingSaveRef.current) return;
+      if (!pendingDurableChangeRef.current) return;
+      if (persistenceCoordinatorRef.current?.snapshot().stopped) return;
 
-      // Build the real payload since pendingSaveRef may hold a placeholder
       const payload = buildSavePayloadRef.current();
       if (!payload) return;
 
@@ -634,7 +777,9 @@ export function CanvasEditor({
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            expectedRevision: revisionRef.current,
+            expectedRevision:
+              persistenceCoordinatorRef.current?.snapshot().base.revision ??
+              initialRevision,
             content: payload,
           }),
           keepalive: true,
@@ -642,7 +787,6 @@ export function CanvasEditor({
       } catch {
         // Best-effort -- nothing we can do if it fails during page teardown
       }
-      pendingSaveRef.current = null;
     };
 
     window.addEventListener("beforeunload", flushBeforeUnload);
@@ -655,15 +799,18 @@ export function CanvasEditor({
       if (thumbnailTimerRef.current) clearTimeout(thumbnailTimerRef.current);
 
       // Flush pending save on component unmount (e.g. SPA navigation)
-      if (pendingSaveRef.current) {
+      if (
+        pendingDurableChangeRef.current &&
+        !persistenceCoordinatorRef.current?.snapshot().stopped
+      ) {
         const payload = buildSavePayloadRef.current();
         if (payload) {
           enqueueSave(payload).catch(console.error);
         }
-        pendingSaveRef.current = null;
+        pendingDurableChangeRef.current = false;
       }
     };
-  }, [enqueueSave]);
+  }, [enqueueSave, initialRevision]);
 
   // Render custom embeddable content for video elements on canvas.
   // Excalidraw calls this for every embeddable element; we intercept video URLs

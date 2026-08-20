@@ -61,7 +61,11 @@ import {
   type CanvasService,
   createCanvasService,
 } from "./features/canvas/canvas-service.js";
-import { createGeneratedAssetPort } from "./features/canvas/generated-asset-application-adapter.js";
+import {
+  createGeneratedAssetAttachmentRecoveryPort,
+  createGeneratedAssetPort,
+} from "./features/canvas/generated-asset-application-adapter.js";
+import { createGeneratedAssetAttachmentRepository } from "./features/canvas/generated-asset-attachment-repository.js";
 import {
   type ChatService,
   createChatService,
@@ -207,6 +211,9 @@ function snapshotUseCases(candidate: Readonly<UseCases>): Readonly<UseCases> {
     canvas: Object.freeze({
       applyOperations: canvas.applyOperations,
       attachGeneratedAsset: canvas.attachGeneratedAsset,
+      ...(canvas.generatedAssetAttachments
+        ? { generatedAssetAttachments: canvas.generatedAssetAttachments }
+        : {}),
     }),
     ...(generation
       ? {
@@ -444,9 +451,49 @@ export function buildAppFromEnv(
     error: (message: string, context: Record<string, unknown>) =>
       app.log.error(context, message),
   };
+  const attachmentRepository = createGeneratedAssetAttachmentRepository({
+    getAdminClient,
+  });
+  let attachmentInfrastructureReady = false;
+  const refreshAttachmentReadiness = async () => {
+    try {
+      attachmentInfrastructureReady =
+        await attachmentRepository.isInfrastructureReady({
+          now: new Date(),
+          maxHeartbeatAgeSeconds: 30,
+        });
+      app.log.info(
+        { ready: attachmentInfrastructureReady },
+        "generated asset attachment readiness refreshed",
+      );
+    } catch (error) {
+      attachmentInfrastructureReady = false;
+      app.log.warn(
+        { err: error },
+        "generated asset attachment readiness probe failed",
+      );
+    }
+  };
   const generationPorts = jobService
-    ? createJobServiceGenerationPorts({ jobService, toAuthenticatedUser })
+    ? createJobServiceGenerationPorts({
+        jobService,
+        toAuthenticatedUser,
+        isAttachmentInfrastructureReady: () => attachmentInfrastructureReady,
+      })
     : undefined;
+  if (jobService) {
+    app.addHook("onReady", async () => {
+      await refreshAttachmentReadiness();
+    });
+    const attachmentReadinessTimer = setInterval(
+      () => void refreshAttachmentReadiness(),
+      5_000,
+    );
+    attachmentReadinessTimer.unref();
+    app.addHook("onClose", async () => {
+      clearInterval(attachmentReadinessTimer);
+    });
+  }
   const useCases: Readonly<UseCases> =
     injectedUseCases ??
     Object.freeze({
@@ -473,6 +520,9 @@ export function buildAppFromEnv(
             createUserClient,
             getAdminClient,
           }),
+        }),
+        generatedAssetAttachments: createGeneratedAssetAttachmentRecoveryPort({
+          getAdminClient,
         }),
       }),
       ...(generationPorts
@@ -643,7 +693,9 @@ export function buildAppFromEnv(
   const agentRuns = createAgentRunService({
     agentExecutionRepository,
     applyCanvasOperations: useCases.canvas.applyOperations,
-    attachGeneratedAsset: useCases.canvas.attachGeneratedAsset,
+    ...(useCases.canvas.generatedAssetAttachments
+      ? { generatedAssetAttachments: useCases.canvas.generatedAssetAttachments }
+      : {}),
     agentPersistenceService,
     ...(options.agentFactory ? { agentFactory: options.agentFactory } : {}),
     agentRunMetadataService,
@@ -801,6 +853,12 @@ export function buildAppFromEnv(
           }
         : {}),
       viewerService,
+      ...(useCases.canvas.generatedAssetAttachments
+        ? {
+            generatedAssetAttachments:
+              useCases.canvas.generatedAssetAttachments,
+          }
+        : {}),
     });
   }
 

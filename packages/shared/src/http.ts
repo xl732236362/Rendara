@@ -149,6 +149,7 @@ export const errorEnvelopeSchema = z.object({
   error: z.object({
     code: boundaryErrorCodeSchema,
     message: z.string().min(1),
+    correlationId: z.string().min(1).max(128).optional(),
     details: z.record(z.string(), z.unknown()).optional(),
   }),
 });

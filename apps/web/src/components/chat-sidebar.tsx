@@ -9,6 +9,7 @@ import type {
   ImageGenerationPreference,
   MessageMention,
   StreamEvent,
+  ToolBlock,
   VideoArtifact,
   VideoGenerationPreference,
 } from "@loomic/shared";
@@ -28,7 +29,13 @@ import { useVideoModelPreference } from "../hooks/use-video-model-preference";
 import type { RunCallbacks, WebSocketHandle } from "../hooks/use-websocket";
 import { fetchBrandKit } from "../lib/brand-kit-api";
 import { claimDailyCredits } from "../lib/credits-api";
-import { fetchImageModels, saveMessage } from "../lib/server-api";
+import {
+  fetchGeneratedAssetAttachment,
+  fetchImageModels,
+  fetchOutstandingGeneratedAssetAttachments,
+  retryGeneratedAssetAttachment,
+  saveMessage,
+} from "../lib/server-api";
 import type { CanvasSelectedElement } from "./canvas-editor";
 import {
   type BrandKitMentionItem,
@@ -93,8 +100,6 @@ export function ChatSidebar({
   canvasId,
   open,
   onToggle,
-  onImageGenerated,
-  onVideoGenerated,
   onCanvasSync,
   onStreamEvent,
   initialPrompt,
@@ -121,6 +126,7 @@ export function ChatSidebar({
     streaming,
     setStreaming,
     updateSessionMessages,
+    getSessionMessages,
     handleSelectSession,
     handleNewChat,
     handleDeleteSession,
@@ -167,6 +173,7 @@ export function ChatSidebar({
   const selectedCanvasElementsRef = useRef(selectedCanvasElements);
   selectedCanvasElementsRef.current = selectedCanvasElements;
   const prevConnectedRef = useRef(false);
+  const persistedAssistantIdsRef = useRef(new Set<string>());
 
   const {
     attachments: imageAttachments,
@@ -197,6 +204,221 @@ export function ChatSidebar({
 
   const { showTierLimit } = useTierLimitToast();
   const { toast: showToast } = useToast();
+
+  const persistAssistantMessage = useCallback(
+    (sessionId: string, assistantId: string) => {
+      if (persistedAssistantIdsRef.current.has(assistantId)) return;
+      const assistant = getSessionMessages(sessionId).find(
+        (message) => message.id === assistantId && message.role === "assistant",
+      );
+      if (!assistant) return;
+      persistedAssistantIdsRef.current.add(assistantId);
+      const content = assistant.contentBlocks
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("");
+      void saveMessage(accessTokenRef.current, sessionId, {
+        role: "assistant",
+        content,
+        contentBlocks: assistant.contentBlocks,
+      }).catch(() => {
+        persistedAssistantIdsRef.current.delete(assistantId);
+        console.warn("[chat] assistant message persistence failed", {
+          assistantId,
+          sessionId,
+          errorCode: "assistant_message_persistence_failed",
+        });
+      });
+    },
+    [accessTokenRef, getSessionMessages],
+  );
+  const syncedAttachmentRevisionsRef = useRef(new Map<string, number>());
+
+  const syncAttachedStatuses = useCallback(
+    (
+      statuses: Awaited<
+        ReturnType<typeof fetchOutstandingGeneratedAssetAttachments>
+      >["attachments"],
+    ) => {
+      for (const status of statuses) {
+        if (status.attachmentStatus !== "attached") continue;
+        if (
+          syncedAttachmentRevisionsRef.current.get(status.jobId) ===
+          status.canvasRevision
+        ) {
+          continue;
+        }
+        syncedAttachmentRevisionsRef.current.set(
+          status.jobId,
+          status.canvasRevision,
+        );
+        onCanvasSync?.({
+          type: "canvas.sync",
+          eventId: `attachment-${status.jobId}`,
+          canvasId,
+          revision: status.canvasRevision,
+          timestamp: new Date().toISOString(),
+        });
+      }
+    },
+    [canvasId, onCanvasSync],
+  );
+
+  const applyAttachmentStatuses = useCallback(
+    (
+      sessionId: string,
+      statuses: Awaited<
+        ReturnType<typeof fetchOutstandingGeneratedAssetAttachments>
+      >["attachments"],
+    ) => {
+      const byJob = new Map(statuses.map((status) => [status.jobId, status]));
+      updateSessionMessages(sessionId, (prev) => {
+        const knownJobs = new Set<string>();
+        const updated = prev.map((message) => ({
+          ...message,
+          contentBlocks: message.contentBlocks.map((block) => {
+            if (block.type !== "tool" || !block.recovery) return block;
+            knownJobs.add(block.recovery.jobId);
+            const status = byJob.get(block.recovery.jobId);
+            if (!status) return block;
+            if (status.attachmentStatus === "attached") {
+              return {
+                ...block,
+                status: "completed" as const,
+                outputSummary: "Attached to canvas",
+                output: {
+                  elementId: status.elementId,
+                  canvasRevision: status.canvasRevision,
+                },
+                error: undefined,
+                recovery: undefined,
+              };
+            }
+            if (
+              status.attachmentStatus === "pending" ||
+              status.attachmentStatus === "not_attached"
+            ) {
+              return {
+                ...block,
+                status: "failed" as const,
+                outputSummary: status.error.message,
+                error: block.error ?? {
+                  code: status.error.code,
+                  message: status.error.message,
+                  correlationId: status.jobId,
+                },
+                recovery: status.recovery,
+              };
+            }
+            return block;
+          }),
+        }));
+        for (const status of statuses) {
+          if (
+            knownJobs.has(status.jobId) ||
+            (status.attachmentStatus !== "pending" &&
+              status.attachmentStatus !== "not_attached")
+          ) {
+            continue;
+          }
+          updated.push({
+            id: `attachment-recovery-${status.jobId}`,
+            role: "assistant",
+            contentBlocks: [
+              {
+                type: "tool",
+                toolCallId: `attachment-recovery-${status.jobId}`,
+                toolName: "generated_asset_attachment",
+                status: "failed",
+                outputSummary: status.error.message,
+                error: {
+                  code: status.error.code,
+                  message: status.error.message,
+                  correlationId: status.jobId,
+                },
+                recovery: status.recovery,
+              },
+            ],
+          });
+        }
+        return updated;
+      });
+    },
+    [updateSessionMessages],
+  );
+
+  const refreshAttachmentRecovery = useCallback(
+    async (sessionId: string) => {
+      try {
+        const recoveryBlocks = getSessionMessages(sessionId).flatMap(
+          (message) =>
+            message.contentBlocks.filter(
+              (block): block is ToolBlock =>
+                block.type === "tool" && !!block.recovery,
+            ),
+        );
+        const jobIds = [
+          ...new Set(recoveryBlocks.map((block) => block.recovery?.jobId)),
+        ].filter((jobId): jobId is string => !!jobId);
+        const [outstanding, ...known] = await Promise.all([
+          fetchOutstandingGeneratedAssetAttachments(
+            accessTokenRef.current,
+            canvasId,
+            sessionId,
+          ),
+          ...jobIds.map((jobId) =>
+            fetchGeneratedAssetAttachment(
+              accessTokenRef.current,
+              canvasId,
+              jobId,
+            ).then((result) => result.attachment),
+          ),
+        ]);
+        const statuses = [...outstanding.attachments, ...known];
+        applyAttachmentStatuses(sessionId, statuses);
+        syncAttachedStatuses(statuses);
+      } catch (error) {
+        console.warn("[chat] attachment recovery refresh failed", {
+          canvasId,
+          sessionId,
+          errorCode: "attachment_recovery_refresh_failed",
+        });
+      }
+    },
+    [
+      accessTokenRef,
+      applyAttachmentStatuses,
+      canvasId,
+      getSessionMessages,
+      syncAttachedStatuses,
+    ],
+  );
+
+  const handleRetryAttachment = useCallback(
+    async (block: ToolBlock) => {
+      if (block.recovery?.kind !== "attach_generated_asset") return;
+      const result = await retryGeneratedAssetAttachment(
+        accessTokenRef.current,
+        canvasId,
+        block.recovery.jobId,
+      );
+      const sessionId = activeSessionIdRef.current;
+      if (sessionId) applyAttachmentStatuses(sessionId, [result.attachment]);
+      syncAttachedStatuses([result.attachment]);
+    },
+    [
+      accessTokenRef,
+      activeSessionIdRef,
+      applyAttachmentStatuses,
+      canvasId,
+      syncAttachedStatuses,
+    ],
+  );
+
+  useEffect(() => {
+    if (sessionsLoading || !activeSessionId) return;
+    void refreshAttachmentRecovery(activeSessionId);
+  }, [activeSessionId, refreshAttachmentRecovery, sessionsLoading]);
 
   // ── Sidebar resize ──
   const SIDEBAR_MIN = 300;
@@ -537,29 +759,6 @@ export function ChatSidebar({
           // Forward event to parent for fallback job polling (timed-out generation recovery)
           onStreamEvent?.(event);
 
-          // Fire canvas insertion callbacks for image/video artifacts.
-          // Skip if the backend already inserted the element (elementId in output).
-          const backendInserted =
-            event.type === "tool.completed" &&
-            event.output &&
-            typeof (event.output as Record<string, unknown>).elementId ===
-              "string";
-          if (
-            event.type === "tool.completed" &&
-            event.artifacts &&
-            event.toolName !== "screenshot_canvas" &&
-            !backendInserted
-          ) {
-            for (const artifact of event.artifacts) {
-              if (artifact.type === "image" && onImageGenerated) {
-                onImageGenerated(artifact as ImageArtifact);
-              }
-              if (artifact.type === "video" && onVideoGenerated) {
-                onVideoGenerated(artifact as VideoArtifact);
-              }
-            }
-          }
-
           // Preview model hint: suggest switching when run fails
           if (event.type === "run.failed") {
             const currentModel = agentModelRef.current ?? "";
@@ -576,6 +775,8 @@ export function ChatSidebar({
             event.type === "run.failed" ||
             event.type === "run.canceled"
           ) {
+            persistAssistantMessage(currentSessionId, assistantId);
+            void refreshAttachmentRecovery(currentSessionId);
             resolveStream();
           }
         });
@@ -685,8 +886,6 @@ export function ChatSidebar({
       canvasId,
       applyStreamEvent,
       updateSessionMessages,
-      onImageGenerated,
-      onVideoGenerated,
       onCanvasSync,
       onStreamEvent,
       readyAttachments,
@@ -695,6 +894,8 @@ export function ChatSidebar({
       autoTitleSession,
       accessTokenRef,
       activeSessionIdRef,
+      refreshAttachmentRecovery,
+      persistAssistantMessage,
     ],
   );
 
@@ -880,34 +1081,13 @@ export function ChatSidebar({
             applyStreamEvent(evt, assistantId, sessionId);
             onStreamEvent?.(evt);
 
-            // Fire canvas insertion callbacks for artifacts arriving after reconnect.
-            // Skip if the backend already inserted the element (elementId in output).
-            const wsBackendInserted =
-              evt.type === "tool.completed" &&
-              evt.output &&
-              typeof (evt.output as Record<string, unknown>).elementId ===
-                "string";
-            if (
-              evt.type === "tool.completed" &&
-              evt.artifacts &&
-              evt.toolName !== "screenshot_canvas" &&
-              !wsBackendInserted
-            ) {
-              for (const artifact of evt.artifacts) {
-                if (artifact.type === "image" && onImageGenerated) {
-                  onImageGenerated(artifact as ImageArtifact);
-                }
-                if (artifact.type === "video" && onVideoGenerated) {
-                  onVideoGenerated(artifact as VideoArtifact);
-                }
-              }
-            }
-
             if (
               evt.type === "run.completed" ||
               evt.type === "run.failed" ||
               evt.type === "run.canceled"
             ) {
+              persistAssistantMessage(sessionId, assistantId);
+              void refreshAttachmentRecovery(sessionId);
               setStreaming(false);
               unsub();
             }
@@ -922,14 +1102,14 @@ export function ChatSidebar({
     sessionsLoading,
     applyStreamEvent,
     onStreamEvent,
-    onImageGenerated,
-    onVideoGenerated,
     onCanvasSync,
     activeSessionIdRef,
     reloadMessages,
     updateSessionMessages,
     setStreaming,
     initialPrompt,
+    refreshAttachmentRecovery,
+    persistAssistantMessage,
   ]);
 
   // ── Collapsed state ──
@@ -1039,6 +1219,7 @@ export function ChatSidebar({
                     msg.role === "assistant" &&
                     msg === messages[messages.length - 1]
                   }
+                  onRetryAttachment={handleRetryAttachment}
                 />
                 {pendingAcceptanceRetry?.assistantId === msg.id && (
                   <button

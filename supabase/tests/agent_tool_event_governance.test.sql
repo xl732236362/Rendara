@@ -1,7 +1,7 @@
 begin;
 
 create extension if not exists pgtap with schema extensions;
-select plan(16);
+select plan(17);
 
 select has_column('public', 'agent_runs', 'current_attempt_id',
   'runs identify their one current attempt');
@@ -92,6 +92,11 @@ select public.accept_agent_run(
   workspace_id, project_id, canvas_id, '["image.generate"]', 'policy-1',
   'catalog-1', '["json-image-prompt"]'
 ) from governance_fixture;
+
+select lives_ok(
+  $$set constraints all immediate$$,
+  'acceptance satisfies deferred run and attempt terminal alignment triggers');
+set constraints all deferred;
 
 select is((select current_attempt_id from public.agent_runs
   where id = '31000000-0000-4000-8000-000000000006'),

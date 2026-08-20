@@ -8,11 +8,14 @@ import {
   boundaryErrorCodeSchema,
   errorCodeSchema,
   errorCodeValues,
+  generatedAssetAttachmentListResponseSchema,
+  generatedAssetAttachmentStatusResponseSchema,
   healthResponseSchema,
   runCancelResponseSchema,
   runCreateRequestSchema,
   runCreateResponseSchema,
   streamEventSchema,
+  toolBlockSchema,
   wsErrorMessageSchema,
 } from "./index.js";
 import * as sharedExports from "./index.js";
@@ -72,6 +75,11 @@ describe("@loomic/shared contracts", () => {
     for (const error of [
       { code: "unauthorized", message: "Authentication is required." },
       { code: "project_create_failed", message: "Unable to create project." },
+      {
+        code: "application_error",
+        message: "An unexpected error occurred",
+        correlationId: "request-7f4c",
+      },
       {
         code: "invalid_request",
         message: "Request validation failed.",
@@ -840,6 +848,74 @@ describe("@loomic/shared contracts", () => {
     }
   });
 
+  it("preserves bounded recovery metadata on failed tool events and blocks", () => {
+    const recovery = {
+      kind: "attach_generated_asset" as const,
+      jobId: "22222222-2222-4222-8222-222222222222",
+      canvasId: "11111111-1111-4111-8111-111111111111",
+    };
+    const error = {
+      code: "generated_asset_not_attached",
+      message: "Generated, but not attached.",
+      correlationId: "correlation_123",
+    };
+    const event = streamEventSchema.parse({
+      type: "tool.failed",
+      runId: "run_123",
+      toolCallId: "tool_123",
+      toolName: "generate_image",
+      error,
+      recovery,
+      artifacts: [
+        {
+          type: "image",
+          url: "https://example.com/generated.png",
+          mimeType: "image/png",
+          width: 1024,
+          height: 1024,
+          jobId: recovery.jobId,
+        },
+      ],
+      timestamp: "2026-03-23T12:00:00.000Z",
+    });
+    expect(event).toMatchObject({ recovery, artifacts: [{ type: "image" }] });
+
+    expect(
+      toolBlockSchema.parse({
+        type: "tool",
+        toolCallId: "tool_123",
+        toolName: "generate_image",
+        status: "failed",
+        error,
+        recovery,
+      }),
+    ).toMatchObject({ status: "failed", recovery });
+  });
+
+  it("bounds attachment status and outstanding intent responses", () => {
+    const attached = {
+      attachmentStatus: "attached" as const,
+      jobId: "22222222-2222-4222-8222-222222222222",
+      elementId: "22222222-2222-4222-8222-222222222222",
+      canvasRevision: 4,
+    };
+    expect(
+      generatedAssetAttachmentStatusResponseSchema.parse({
+        attachment: attached,
+      }),
+    ).toEqual({ attachment: attached });
+    expect(
+      generatedAssetAttachmentListResponseSchema.parse({
+        attachments: [attached],
+      }),
+    ).toEqual({ attachments: [attached] });
+    expect(() =>
+      generatedAssetAttachmentListResponseSchema.parse({
+        attachments: Array.from({ length: 101 }, () => attached),
+      }),
+    ).toThrow();
+  });
+
   it("keeps stable messageId and toolCallId correlation fields", () => {
     const messageEvent = streamEventSchema.parse({
       type: "message.delta",
@@ -937,6 +1013,9 @@ describe("@loomic/shared contracts", () => {
       "agent_runtime_registration_failed",
       "agent_persistence_timeout",
       "agent_first_event_timeout",
+      "agent_model_inactivity_timeout",
+      "agent_tool_deadline_exceeded",
+      "agent_overall_deadline_exceeded",
     ]);
     expect(JSON.parse(JSON.stringify(errorCodeValues))).toEqual(
       errorCodeValues,

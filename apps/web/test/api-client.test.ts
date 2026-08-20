@@ -10,6 +10,7 @@ import {
   ApiTimeoutError,
   apiFetch,
 } from "../src/lib/api-client";
+import { registerApiAuthExpiryHandler } from "../src/lib/auth-expiry";
 
 const mockFetch = vi.fn<typeof fetch>();
 
@@ -205,6 +206,38 @@ describe("apiFetch", () => {
     expect(String(error)).not.toContain("upstream secret");
   });
 
+  it("preserves a safe correlation id on private server failures", async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse(
+        {
+          error: {
+            code: "application_error",
+            message: "An unexpected error occurred",
+            correlationId: "request-canvas-save-1",
+          },
+        },
+        {
+          status: 500,
+          headers: { "x-correlation-id": "request-canvas-save-1" },
+        },
+      ),
+    );
+
+    const error = await apiFetch({
+      method: "PUT",
+      path: "/api/canvases/canvas-1",
+      responseSchema: z.unknown(),
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      name: "ApiApplicationError",
+      code: "application_error",
+      status: 500,
+      correlationId: "request-canvas-save-1",
+      message: "An unexpected error occurred",
+    });
+  });
+
   it("specializes every 401 as an auth error", async () => {
     mockFetch.mockResolvedValue(
       jsonResponse(
@@ -234,6 +267,46 @@ describe("apiFetch", () => {
         responseSchema: z.unknown(),
       }),
     ).rejects.toBeInstanceOf(ApiAuthError);
+  });
+
+  it("notifies the registered auth boundary only for HTTP 401", async () => {
+    const onAuthExpired = vi.fn();
+    const unregister = registerApiAuthExpiryHandler(onAuthExpired);
+    mockFetch
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { error: { code: "unauthorized", message: "expired" } },
+          { status: 401 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          { error: { code: "forbidden", message: "forbidden" } },
+          { status: 403 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(
+          {
+            error: {
+              code: "application_error",
+              message: "An unexpected error occurred",
+            },
+          },
+          { status: 500 },
+        ),
+      );
+
+    for (let index = 0; index < 3; index += 1) {
+      await apiFetch({
+        method: "GET",
+        path: "/api/canvas-boundary",
+        responseSchema: z.unknown(),
+      }).catch(() => undefined);
+    }
+
+    expect(onAuthExpired).toHaveBeenCalledOnce();
+    unregister();
   });
 
   it("distinguishes timeout from caller abort", async () => {

@@ -1,12 +1,22 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import {
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
-import type { ImageArtifact, StreamEvent, VideoArtifact } from "@loomic/shared";
+import type { StreamEvent } from "@loomic/shared";
 import { BrandKitSelector } from "../../components/brand-kit-selector";
 import { CanvasBottomBar } from "../../components/canvas-bottom-bar";
-import type { CanvasSelectedElement } from "../../components/canvas-editor";
+import type {
+  CanvasPersistenceHandle,
+  CanvasSelectedElement,
+} from "../../components/canvas-editor";
 import { CanvasEditor } from "../../components/canvas-editor";
 import { CanvasEmptyHint } from "../../components/canvas-empty-hint";
 import { CanvasFilesPanel } from "../../components/canvas-files-panel";
@@ -21,11 +31,15 @@ import { useJobFallbackPolling } from "../../hooks/use-job-fallback-polling";
 import { useWebSocket } from "../../hooks/use-websocket";
 import { useAuth } from "../../lib/auth-context";
 import {
-  insertImageOnCanvas,
-  insertVideoOnCanvas,
-} from "../../lib/canvas-elements";
-import { createCanvasSyncCoordinator } from "../../lib/canvas-sync-coordinator";
-import { ApiAuthError, fetchCanvas, fetchProject } from "../../lib/server-api";
+  createAuthExpiryHandler,
+  registerApiAuthExpiryHandler,
+} from "../../lib/auth-expiry";
+import {
+  ApiApplicationError,
+  ApiAuthError,
+  fetchCanvas,
+  fetchProject,
+} from "../../lib/server-api";
 
 function CanvasPageContent() {
   const searchParams = useSearchParams();
@@ -66,9 +80,7 @@ function CanvasPageContent() {
   >([]);
 
   const excalidrawApiRef = useRef<any>(null);
-  const canvasSyncCoordinatorRef = useRef<ReturnType<
-    typeof createCanvasSyncCoordinator
-  > | null>(null);
+  const canvasPersistenceRef = useRef<CanvasPersistenceHandle | null>(null);
   const [excalidrawApi, setExcalidrawApi] = useState<any>(null);
 
   const signOutRef = useRef(signOut);
@@ -95,22 +107,21 @@ function CanvasPageContent() {
   accessTokenRef.current = accessToken;
 
   const getToken = useCallback(() => accessTokenRef.current ?? null, []);
-  const authExpiryHandledRef = useRef(false);
-  const handleAuthExpired = useCallback(() => {
-    if (authExpiryHandledRef.current) return;
-    authExpiryHandledRef.current = true;
-
-    const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    console.warn("[auth] session expired; redirecting to login", { returnTo });
-    void signOutRef.current().finally(() => {
-      routerRef.current.replace(
-        `/login?${new URLSearchParams({
-          error: "session_expired",
-          returnTo,
-        }).toString()}`,
-      );
-    });
-  }, []);
+  const handleAuthExpired = useMemo(
+    () =>
+      createAuthExpiryHandler({
+        signOut: () => signOutRef.current(),
+        navigateToLogin: (path) => routerRef.current.replace(path),
+        getReturnTo: () =>
+          `${window.location.pathname}${window.location.search}${window.location.hash}`,
+        logger: console,
+      }),
+    [],
+  );
+  useEffect(
+    () => registerApiAuthExpiryHandler(handleAuthExpired),
+    [handleAuthExpired],
+  );
   const ws = useWebSocket(getToken, { onAuthExpired: handleAuthExpired });
 
   const handleApiReady = useCallback((api: any) => {
@@ -118,62 +129,35 @@ function CanvasPageContent() {
     setExcalidrawApi(api);
   }, []);
 
-  const handleImageGenerated = useCallback((artifact: ImageArtifact) => {
-    const api = excalidrawApiRef.current;
-    const token = accessTokenRef.current;
-    if (!api || !token) return;
-    insertImageOnCanvas(api, artifact, token).catch((err) => {
-      console.warn("Failed to insert image on canvas:", err);
-    });
-  }, []);
-
-  const handleVideoGenerated = useCallback((artifact: VideoArtifact) => {
-    const api = excalidrawApiRef.current;
-    if (!api) return;
-    insertVideoOnCanvas(api, artifact).catch((err) => {
-      console.warn("Failed to insert video on canvas:", err);
-    });
-  }, []);
+  const handlePersistenceReady = useCallback(
+    (handle: CanvasPersistenceHandle | null) => {
+      canvasPersistenceRef.current = handle;
+    },
+    [],
+  );
 
   // Must be defined BEFORE useJobFallbackPolling which references it
   const handleCanvasSync = useCallback(
     async (event: Extract<StreamEvent, { type: "canvas.sync" }>) => {
-      const api = excalidrawApiRef.current;
-      const token = accessTokenRef.current;
-      if (!api || !token || !canvasData || event.canvasId !== canvasData.id)
-        return;
+      if (!canvasData || event.canvasId !== canvasData.id) return;
       try {
-        if (!canvasSyncCoordinatorRef.current) {
-          canvasSyncCoordinatorRef.current = createCanvasSyncCoordinator({
-            appliedRevision: canvasData.revision,
-            fetchAndApply: async () => {
-              const { canvas } = await fetchCanvas(token, canvasData.id);
-              const elements = canvas.content.elements ?? [];
-              const files = (canvas.content as Record<string, unknown>).files as
-                | Record<
-                    string,
-                    {
-                      id: string;
-                      dataURL: string;
-                      mimeType: string;
-                      created: number;
-                    }
-                  >
-                | undefined;
-              if (files && Object.keys(files).length > 0) {
-                api.addFiles(Object.values(files));
-              }
-              api.updateScene({ elements, captureUpdate: "IMMEDIATELY" });
-              setCanvasData((current) =>
-                current ? { ...current, revision: canvas.revision } : current,
-              );
-              return canvas.revision;
-            },
-          });
-        }
-        await canvasSyncCoordinatorRef.current.request(event);
+        await canvasPersistenceRef.current?.sync(event);
       } catch (err) {
-        console.warn("Failed to sync canvas:", err);
+        console.warn("[canvas.persistence] sync_failed", {
+          canvasId: event.canvasId,
+          revision: event.revision,
+          ...(err instanceof ApiApplicationError
+            ? {
+                code: err.code,
+                status: err.status,
+                correlationId: err.correlationId,
+              }
+            : {
+                code: "unknown_error",
+                status: 0,
+                correlationId: undefined,
+              }),
+        });
       }
     },
     [canvasData],
@@ -254,7 +238,7 @@ function CanvasPageContent() {
             files: (c.content as any).files ?? {},
           },
         });
-        canvasSyncCoordinatorRef.current = null;
+        canvasPersistenceRef.current = null;
         setPageLoading(false);
         // Fetch project to get brand_kit_id and name
         fetchProject(token, c.projectId)
@@ -279,6 +263,36 @@ function CanvasPageContent() {
     // canvasId changes. Token refresh (e.g. tab switch) must NOT trigger a reload.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, userId, canvasId, handleAuthExpired]);
+
+  useEffect(() => {
+    const reconcileOnFocus = () => {
+      void canvasPersistenceRef.current?.reconcile("focus");
+    };
+    window.addEventListener("focus", reconcileOnFocus);
+    return () => window.removeEventListener("focus", reconcileOnFocus);
+  }, []);
+
+  const previouslyConnectedRef = useRef(false);
+  useEffect(() => {
+    if (ws.connected && !previouslyConnectedRef.current) {
+      void canvasPersistenceRef.current?.reconcile("reconnect");
+    }
+    previouslyConnectedRef.current = ws.connected;
+  }, [ws.connected]);
+
+  const handleStreamEvent = useCallback(
+    (event: StreamEvent) => {
+      checkForTimedOutJobs(event);
+      if (
+        event.type === "run.completed" ||
+        event.type === "run.failed" ||
+        event.type === "run.canceled"
+      ) {
+        void canvasPersistenceRef.current?.reconcile("run_terminal");
+      }
+    },
+    [checkForTimedOutJobs],
+  );
 
   if (!canvasId) {
     return (
@@ -338,6 +352,7 @@ function CanvasPageContent() {
           initialRevision={canvasData.revision}
           initialContent={canvasData.content}
           onApiReady={handleApiReady}
+          onPersistenceReady={handlePersistenceReady}
           ws={ws}
           leftPanelOpen={layersOpen || filesOpen}
           onSelectionChange={setSelectedCanvasElements}
@@ -370,10 +385,8 @@ function CanvasPageContent() {
         canvasId={canvasData.id}
         open={chatOpen}
         onToggle={handleToggleChat}
-        onImageGenerated={handleImageGenerated}
-        onVideoGenerated={handleVideoGenerated}
         onCanvasSync={handleCanvasSync}
-        onStreamEvent={checkForTimedOutJobs}
+        onStreamEvent={handleStreamEvent}
         initialPrompt={initialPrompt}
         initialSessionId={initialSessionId}
         onSessionChange={handleSessionChange}

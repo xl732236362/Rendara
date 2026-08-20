@@ -5,6 +5,8 @@ import {
   type CreateImageJobRequest,
   type GenerateImageResponse,
   type GenerateVideoResponse,
+  type GeneratedAssetAttachmentListResponse,
+  type GeneratedAssetAttachmentStatusResponse,
   type GenerationModelInfo,
   type JobResponse,
   type MessageCreateResponse,
@@ -32,6 +34,8 @@ import {
   generateImageResponseSchema,
   generateVideoRequestSchema,
   generateVideoResponseSchema,
+  generatedAssetAttachmentListResponseSchema,
+  generatedAssetAttachmentStatusResponseSchema,
   imageModelListResponseSchema,
   jobResponseSchema,
   messageCreateResponseSchema,
@@ -44,6 +48,7 @@ import {
   projectDetailResponseSchema,
   projectListResponseSchema,
   projectUpdateRequestSchema,
+  retryGeneratedAssetAttachmentRequestSchema,
   runCreateRequestSchema,
   runCreateResponseSchema,
   sessionCreateResponseSchema,
@@ -440,6 +445,47 @@ export function fetchJob(
     path: `/api/jobs/${jobId}`,
     accessToken,
     responseSchema: jobResponseSchema,
+  });
+}
+
+export function fetchGeneratedAssetAttachment(
+  accessToken: string,
+  canvasId: string,
+  jobId: string,
+): Promise<GeneratedAssetAttachmentStatusResponse> {
+  return apiFetch({
+    method: "GET",
+    path: `/api/jobs/${jobId}/attachment?canvasId=${encodeURIComponent(canvasId)}`,
+    accessToken,
+    responseSchema: generatedAssetAttachmentStatusResponseSchema,
+  });
+}
+
+export function fetchOutstandingGeneratedAssetAttachments(
+  accessToken: string,
+  canvasId: string,
+  sessionId: string,
+): Promise<GeneratedAssetAttachmentListResponse> {
+  return apiFetch({
+    method: "GET",
+    path: `/api/canvases/${canvasId}/generated-asset-attachments?sessionId=${encodeURIComponent(sessionId)}`,
+    accessToken,
+    responseSchema: generatedAssetAttachmentListResponseSchema,
+  });
+}
+
+export function retryGeneratedAssetAttachment(
+  accessToken: string,
+  canvasId: string,
+  jobId: string,
+): Promise<GeneratedAssetAttachmentStatusResponse> {
+  return apiFetch({
+    method: "POST",
+    path: `/api/jobs/${jobId}/attachment/retry`,
+    accessToken,
+    requestSchema: retryGeneratedAssetAttachmentRequestSchema,
+    body: { canvasId },
+    responseSchema: generatedAssetAttachmentStatusResponseSchema,
   });
 }
 

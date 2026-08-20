@@ -5,9 +5,14 @@ import { isGraphBubbleUp } from "@langchain/langgraph";
 import { ToolInvocationError, createMiddleware } from "langchain";
 import { z } from "zod";
 
+import {
+  generatedAssetRecoverySchema,
+  toolArtifactSchema,
+} from "@loomic/shared";
 import type { AgentExecutionRepository } from "../features/agent-runs/agent-execution-repository.js";
 import type { AgentCapability } from "./capabilities.js";
 import type { AgentExecutionContext } from "./execution-context.js";
+import { GeneratedAssetAttachmentError } from "./generated-media-result.js";
 import type { ToolExecutionSupervisor } from "./tool-execution-supervisor.js";
 import {
   type CanonicalToolRecord,
@@ -25,6 +30,8 @@ const recoverableToolErrorSchema = z
     code: z.string().min(1).max(64),
     message: z.string().min(1).max(512),
     correlationId: z.string().min(1),
+    recovery: generatedAssetRecoverySchema.optional(),
+    artifacts: z.array(toolArtifactSchema).max(10).optional(),
   })
   .strict();
 
@@ -155,6 +162,14 @@ export function createToolGovernanceMiddleware(
               message: recoverable.message,
               correlationId: recoverable.correlationId,
             },
+            {
+              ...(recoverable.recovery
+                ? { recovery: recoverable.recovery }
+                : {}),
+              ...(recoverable.artifacts
+                ? { artifacts: recoverable.artifacts }
+                : {}),
+            },
           );
           await publishAndWait(failed);
           return result;
@@ -168,6 +183,34 @@ export function createToolGovernanceMiddleware(
         return result;
       } catch (cause) {
         if (isGraphBubbleUp(cause)) throw cause;
+        if (cause instanceof GeneratedAssetAttachmentError) {
+          const { error, recovery, artifact } = cause.result;
+          const artifacts = artifact ? [artifact] : undefined;
+          const failed = dependencies.supervisor.stageFailed(
+            logicalToolCallId,
+            {
+              code: error.code,
+              message: error.message,
+              correlationId,
+            },
+            { recovery, ...(artifacts ? { artifacts } : {}) },
+          );
+          await publishAndWait(failed);
+          return new ToolMessage({
+            content: error.message,
+            name: toolName,
+            status: "error",
+            tool_call_id: logicalToolCallId,
+            artifact: {
+              type: "loomic.tool_error",
+              code: error.code,
+              message: error.message,
+              correlationId,
+              recovery,
+              ...(artifacts ? { artifacts } : {}),
+            },
+          });
+        }
         if (cause instanceof ToolInvocationError) {
           const recoverable = {
             code: "invalid_arguments",

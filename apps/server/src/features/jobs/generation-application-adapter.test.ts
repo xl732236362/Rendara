@@ -65,6 +65,51 @@ describe("createJobServiceGenerationPorts", () => {
     });
   });
 
+  it("passes the private attachment intent through to JobService unchanged", async () => {
+    const submitJob = vi.fn(async () => ({
+      job: { id: jobId, status: "queued" as const },
+      debitTransactionId: "77777777-7777-4777-8777-777777777777",
+      replayed: false,
+    }));
+    const ports = createJobServiceGenerationPorts({
+      jobService: { submitJob, cancelJob: vi.fn() } as unknown as JobService,
+      toAuthenticatedUser: () => user,
+    });
+    const attachmentIntent = {
+      intentId: "66666666-6666-4666-8666-666666666666",
+      runId: "77777777-7777-4777-8777-777777777777",
+      attemptId: "88888888-8888-4888-8888-888888888888",
+      fencingToken: 7,
+      logicalToolCallId: "tool-1",
+      inputDigest:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      effectKind: "generated_asset_attached" as const,
+      mediaType: "image" as const,
+      placement: { kind: "auto_right" as const },
+    };
+
+    await ports.jobs.submit({
+      principal,
+      workspaceId: principal.workspaceId,
+      projectId: "22222222-2222-4222-8222-222222222222",
+      canvasId: "33333333-3333-4333-8333-333333333333",
+      sessionId: "99999999-9999-4999-8999-999999999999",
+      jobType: "image_generation",
+      idempotencyKey: "request-agent-1",
+      requestFingerprint:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      creditsCost: 7,
+      description: "Image generation: image/default",
+      payload: { prompt: "draw", model: "image/default" },
+      attachmentIntent,
+    });
+
+    expect(submitJob).toHaveBeenCalledWith(
+      user,
+      expect.objectContaining({ attachmentIntent }),
+    );
+  });
+
   it.each([
     "queued",
     "running",

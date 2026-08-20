@@ -22,11 +22,19 @@ export default defineConfig({
   ],
   webServer: [
     {
+      command: "node tests/e2e/fixtures/agent-provider.mjs",
+      url: "http://127.0.0.1:3199/health",
+      reuseExistingServer: false,
+      timeout: 120_000,
+    },
+    {
       command: "pnpm --filter @loomic/server dev:server",
       url: "http://127.0.0.1:3101/api/health",
       env: {
         LOOMIC_SERVER_PORT: "3101",
         LOOMIC_WEB_ORIGIN: "http://127.0.0.1:3100",
+        OPENAI_API_KEY: "e2e-fixture-key",
+        OPENAI_API_BASE: "http://127.0.0.1:3199/v1",
       },
       reuseExistingServer: false,
       timeout: 120_000,

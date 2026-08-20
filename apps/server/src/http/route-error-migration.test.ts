@@ -175,7 +175,7 @@ describe("route error migration", () => {
     });
 
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: { code: "canvas_not_found", message: "Canvas not found." },
     });
     await app.close();
@@ -200,7 +200,7 @@ describe("route error migration", () => {
     });
 
     expect(response.statusCode).toBe(500);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "application_error",
         message: "An unexpected error occurred",
@@ -227,7 +227,7 @@ describe("route error migration", () => {
       url: "/api/canvases/canvas-1",
     });
     expect(response.statusCode).toBe(500);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: {
         code: "application_error",
         message: "An unexpected error occurred",

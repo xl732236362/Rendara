@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import { MemoryAgentExecutionRepository } from "../features/agent-runs/agent-execution-repository.js";
 import type { AgentExecutionContext } from "./execution-context.js";
+import { GeneratedAssetAttachmentError } from "./generated-media-result.js";
 import { createToolExecutionSupervisor } from "./tool-execution-supervisor.js";
 import {
   LoomicToolBoundaryError,
@@ -168,5 +169,52 @@ describe("tool governance middleware", () => {
     ).rejects.toThrow("tool_call_id_required");
     expect(handler).not.toHaveBeenCalled();
     expect(supervisor.records()).toEqual([]);
+  });
+
+  it("turns a typed attachment failure into one safe error ToolMessage", async () => {
+    const { request, supervisor, wrapToolCall } = await harness();
+    const jobId = "11111111-1111-4111-8111-111111111111";
+    const canvasId = "22222222-2222-4222-8222-222222222222";
+    const error = new GeneratedAssetAttachmentError({
+      attachmentStatus: "not_attached",
+      jobId,
+      recovery: {
+        kind: "attach_generated_asset",
+        jobId,
+        canvasId,
+      },
+      error: {
+        code: "generated_asset_not_attached",
+        message: "Generated media was not attached.",
+        retryable: true,
+      },
+      artifact: {
+        type: "image",
+        url: `/api/assets/${jobId}`,
+        mimeType: "image/png",
+        width: 100,
+        height: 100,
+        jobId,
+      },
+    });
+
+    const result = await wrapToolCall(request as never, async () => {
+      throw error;
+    });
+
+    expect(ToolMessage.isInstance(result)).toBe(true);
+    expect(result).toMatchObject({
+      status: "error",
+      artifact: {
+        type: "loomic.tool_error",
+        recovery: { kind: "attach_generated_asset", jobId, canvasId },
+      },
+    });
+    expect(supervisor.records().at(-1)).toMatchObject({
+      type: "loomic.tool.failed",
+      error: { code: "generated_asset_not_attached" },
+      recovery: { kind: "attach_generated_asset", jobId, canvasId },
+      artifacts: [expect.objectContaining({ type: "image", jobId })],
+    });
   });
 });

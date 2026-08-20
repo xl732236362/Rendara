@@ -55,7 +55,21 @@ export function createWorkerJobLifecycle(options: {
   workerId: string;
   leaseSeconds: number;
   logger: LifecycleLogger;
+  attachmentReconciler?: { wake(): void };
 }) {
+  const settleAndWake = async (
+    command: Parameters<typeof options.jobs.settle>[0],
+  ) => {
+    const settlement = await options.jobs.settle(command);
+    if (
+      settlement.job.status === "succeeded" ||
+      settlement.job.status === "canceled" ||
+      settlement.job.status === "dead_letter"
+    ) {
+      options.attachmentReconciler?.wake();
+    }
+    return settlement;
+  };
   return {
     async process(
       message: LifecycleMessage,
@@ -116,7 +130,7 @@ export function createWorkerJobLifecycle(options: {
           claim.lease_token,
         );
         if (effect.kind === "completed") {
-          await options.jobs.settle({
+          await settleAndWake({
             jobId: message.jobId,
             leaseToken: claim.lease_token,
             outcome: "succeeded",
@@ -126,7 +140,7 @@ export function createWorkerJobLifecycle(options: {
           return { disposition: "succeeded" };
         }
         if (effect.kind === "ambiguous") {
-          await options.jobs.settle({
+          await settleAndWake({
             jobId: message.jobId,
             leaseToken: claim.lease_token,
             outcome: "dead_letter",
@@ -138,7 +152,7 @@ export function createWorkerJobLifecycle(options: {
           return { disposition: "dead_lettered" };
         }
         if (effect.kind === "canceled") {
-          await options.jobs.settle({
+          await settleAndWake({
             jobId: message.jobId,
             leaseToken: claim.lease_token,
             outcome: "canceled",
@@ -160,7 +174,7 @@ export function createWorkerJobLifecycle(options: {
             NON_RETRYABLE_CODES.has(errorCode);
           let settlement;
           try {
-            settlement = await options.jobs.settle({
+            settlement = await settleAndWake({
               jobId: message.jobId,
               leaseToken: claim.lease_token,
               outcome: deadLetter ? "dead_letter" : "failed",
@@ -195,7 +209,7 @@ export function createWorkerJobLifecycle(options: {
 
         let settlement;
         try {
-          settlement = await options.jobs.settle({
+          settlement = await settleAndWake({
             jobId: message.jobId,
             leaseToken: claim.lease_token,
             outcome: "succeeded",

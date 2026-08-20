@@ -24,6 +24,7 @@ type ChatMessageProps = {
   role: "user" | "assistant";
   contentBlocks: ContentBlock[];
   isStreaming?: boolean;
+  onRetryAttachment?: (block: ToolBlock) => Promise<void>;
 };
 
 /**
@@ -38,7 +39,12 @@ type ChatMessageProps = {
  * each independently memoized for fine-grained update control.
  */
 export const ChatMessage = React.memo(
-  function ChatMessage({ role, contentBlocks, isStreaming }: ChatMessageProps) {
+  function ChatMessage({
+    role,
+    contentBlocks,
+    isStreaming,
+    onRetryAttachment,
+  }: ChatMessageProps) {
     const isUser = role === "user";
 
     if (isUser) {
@@ -49,6 +55,7 @@ export const ChatMessage = React.memo(
       <AssistantMessage
         contentBlocks={contentBlocks}
         isStreaming={isStreaming ?? false}
+        {...(onRetryAttachment ? { onRetryAttachment } : {})}
       />
     );
   },
@@ -58,7 +65,8 @@ export const ChatMessage = React.memo(
     return (
       prev.role === next.role &&
       prev.contentBlocks === next.contentBlocks &&
-      prev.isStreaming === next.isStreaming
+      prev.isStreaming === next.isStreaming &&
+      prev.onRetryAttachment === next.onRetryAttachment
     );
   },
 );
@@ -172,9 +180,11 @@ const UserMessage = React.memo(function UserMessage({
 const AssistantMessage = React.memo(function AssistantMessage({
   contentBlocks,
   isStreaming,
+  onRetryAttachment,
 }: {
   contentBlocks: ContentBlock[];
   isStreaming: boolean;
+  onRetryAttachment?: (block: ToolBlock) => Promise<void>;
 }) {
   // Find the last text block index for streaming cursor placement
   const lastTextIdx = useMemo(() => {
@@ -245,7 +255,13 @@ const AssistantMessage = React.memo(function AssistantMessage({
         }
 
         if (block.type === "tool") {
-          return <ToolBlockView key={block.toolCallId} block={block} />;
+          return (
+            <ToolBlockView
+              key={block.toolCallId}
+              block={block}
+              {...(onRetryAttachment ? { onRetryAttachment } : {})}
+            />
+          );
         }
 
         // ImageBlock -- skip in assistant messages (user-side only)

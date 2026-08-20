@@ -4,12 +4,14 @@ import {
   type SubscriptionPlan,
   generationSubmissionRequestSchema,
 } from "@loomic/shared";
+import { z } from "zod";
 
 import { createHash } from "node:crypto";
 import { AppError } from "../../errors/app-error.js";
 import { normalizeGenerationError } from "./legacy-error.js";
 import { parseSubmissionOutcome } from "./outcome-validation.js";
 import type {
+  AgentAttachmentContext,
   AtomicJobSubmissionCommand,
   GenerationApplicationPorts,
   GenerationPrincipal,
@@ -19,13 +21,41 @@ import type {
 export type SubmitGeneration = (
   principal: GenerationPrincipal,
   request: unknown,
+  attachment?: AgentAttachmentContext,
 ) => Promise<GenerationSubmissionResponse>;
+
+const attachmentPlacementSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("auto_right") }).strict(),
+  z
+    .object({
+      kind: z.literal("explicit"),
+      x: z.number().finite(),
+      y: z.number().finite(),
+      width: z.number().finite().positive(),
+      height: z.number().finite().positive(),
+    })
+    .strict(),
+]);
+
+const agentAttachmentContextSchema = z
+  .object({
+    intentId: z.string().uuid(),
+    runId: z.string().uuid(),
+    attemptId: z.string().uuid(),
+    fencingToken: z.number().int().nonnegative().safe(),
+    logicalToolCallId: z.string().trim().min(1).max(200),
+    inputDigest: z.string().regex(/^[0-9a-f]{64}$/),
+    effectKind: z.literal("generated_asset_attached"),
+    mediaType: z.enum(["image", "video"]),
+    placement: attachmentPlacementSchema,
+  })
+  .strict();
 
 export function createSubmitGeneration(options: {
   ports: GenerationApplicationPorts;
   logger: StructuredLogger;
 }): SubmitGeneration {
-  return async (principal, rawRequest) => {
+  return async (principal, rawRequest, rawAttachment) => {
     const parsed = generationSubmissionRequestSchema.safeParse(rawRequest);
     if (!parsed.success) {
       throw new AppError({
@@ -38,6 +68,18 @@ export function createSubmitGeneration(options: {
     }
 
     const request = parsed.data;
+    const attachment = parseAttachmentContext(rawAttachment);
+    if (attachment) {
+      if (!options.ports.attachmentIntents?.isReady()) {
+        throw new AppError({
+          code: "application_error",
+          statusCode: 503,
+          message: "Generated asset attachment infrastructure is unavailable.",
+          expose: false,
+        });
+      }
+      validateAttachmentScope(request, attachment);
+    }
     let model: string | undefined;
     let jobId: string | undefined;
     let plan: SubscriptionPlan | undefined;
@@ -84,7 +126,13 @@ export function createSubmitGeneration(options: {
       stage = "atomic_submission";
       const submission = parseSubmissionOutcome(
         await options.ports.jobs.submit(
-          toSubmissionCommand(principal, request, model, creditsCost),
+          toSubmissionCommand(
+            principal,
+            request,
+            model,
+            creditsCost,
+            attachment,
+          ),
         ),
       );
       jobId = submission.jobId;
@@ -178,6 +226,7 @@ function toSubmissionCommand(
   request: GenerationSubmissionRequest,
   model: string,
   creditsCost: number,
+  attachment?: AgentAttachmentContext,
 ): AtomicJobSubmissionCommand {
   const {
     type,
@@ -209,7 +258,50 @@ function toSubmissionCommand(
     creditsCost,
     description: `${type === "image_generation" ? "Image" : "Video"} generation: ${model}`,
     payload: { ...mediaPayload, model },
+    ...(attachment ? { attachmentIntent: attachment } : {}),
   };
+}
+
+function parseAttachmentContext(
+  attachment: AgentAttachmentContext | undefined,
+): AgentAttachmentContext | undefined {
+  if (attachment === undefined) return undefined;
+  const parsed = agentAttachmentContextSchema.safeParse(attachment);
+  if (!parsed.success) {
+    throw new AppError({
+      code: "invalid_request",
+      statusCode: 400,
+      message: "Invalid Agent attachment context.",
+      expose: false,
+    });
+  }
+  return parsed.data;
+}
+
+function validateAttachmentScope(
+  request: GenerationSubmissionRequest,
+  attachment: AgentAttachmentContext,
+): void {
+  if (!request.project_id || !request.canvas_id || !request.session_id) {
+    throw new AppError({
+      code: "invalid_request",
+      statusCode: 400,
+      message:
+        "Agent attachment generation requires project, canvas, and session scope.",
+      expose: false,
+    });
+  }
+  const expectedMediaType =
+    request.type === "image_generation" ? "image" : "video";
+  if (attachment.mediaType !== expectedMediaType) {
+    throw new AppError({
+      code: "invalid_request",
+      statusCode: 400,
+      message:
+        "Agent attachment media type does not match the generation request.",
+      expose: false,
+    });
+  }
 }
 
 function createRequestFingerprint(value: unknown): string {

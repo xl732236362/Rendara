@@ -105,6 +105,36 @@ describe("job state repository", () => {
     });
   });
 
+  it("submits an Agent attachment intent in the same RPC", async () => {
+    const { repository, adminRpc } = setup({
+      data: {
+        job,
+        debit_transaction_id: job.credits_transaction_id,
+        replayed: false,
+      },
+      error: null,
+    });
+    const attachmentIntent = {
+      intentId: "66666666-6666-4666-8666-666666666666",
+      runId: "77777777-7777-4777-8777-777777777777",
+      attemptId: "88888888-8888-4888-8888-888888888888",
+      fencingToken: 7,
+      logicalToolCallId: "tool-1",
+      inputDigest:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      effectKind: "generated_asset_attached" as const,
+      mediaType: "image" as const,
+      placement: { kind: "auto_right" as const },
+    };
+
+    await repository.submit(user, { ...command, attachmentIntent });
+
+    expect(adminRpc).toHaveBeenCalledWith(
+      "submit_generation_job",
+      expect.objectContaining({ p_attachment_intent: attachmentIntent }),
+    );
+  });
+
   it.each([
     ["idempotency_conflict", "idempotency_conflict", 409],
     ["insufficient_credits", "insufficient_credits", 402],

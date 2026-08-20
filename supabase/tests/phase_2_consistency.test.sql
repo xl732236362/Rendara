@@ -561,7 +561,7 @@ select is(
 select ok(
   not has_function_privilege(
     'authenticated',
-    'public.commit_canvas_revision(uuid,uuid,bigint,jsonb,uuid,text,text,jsonb)',
+    'public.commit_canvas_revision(uuid,uuid,bigint,jsonb,uuid,text)',
     'execute'
   ),
   'authenticated clients cannot supply trusted Job effect or outbox fields'

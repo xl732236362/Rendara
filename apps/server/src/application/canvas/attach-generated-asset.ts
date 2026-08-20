@@ -1,3 +1,4 @@
+import type { GeneratedAssetAttachmentStatus } from "@loomic/shared";
 import { z } from "zod";
 import type { CanvasOperationPrincipal } from "./apply-canvas-operations.js";
 
@@ -48,6 +49,21 @@ export type AttachGeneratedAssetCommand = z.infer<typeof requestSchema> & {
 export type AttachGeneratedAsset = ReturnType<
   typeof createAttachGeneratedAsset
 >;
+
+export type GeneratedAssetAttachmentRecovery = Readonly<{
+  getStatus(
+    principal: CanvasOperationPrincipal,
+    command: { canvasId: string; jobId: string },
+  ): Promise<GeneratedAssetAttachmentStatus>;
+  listOutstanding(
+    principal: CanvasOperationPrincipal,
+    command: { canvasId: string; sessionId: string },
+  ): Promise<GeneratedAssetAttachmentStatus[]>;
+  retry(
+    principal: CanvasOperationPrincipal,
+    command: { canvasId: string; jobId: string },
+  ): Promise<GeneratedAssetAttachmentStatus>;
+}>;
 
 export function createAttachGeneratedAsset(options: {
   authorization: {

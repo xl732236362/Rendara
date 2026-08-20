@@ -1,3 +1,4 @@
+import { ToolMessage } from "@langchain/core/messages";
 import { tool } from "langchain";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -5,6 +6,10 @@ import { z } from "zod";
 import { MemoryAgentExecutionRepository } from "../../features/agent-runs/agent-execution-repository.js";
 import { ProviderRegistry } from "../../generation/providers/registry.js";
 import type { AgentExecutionContext } from "../execution-context.js";
+import {
+  GeneratedAssetAttachmentError,
+  generatedMediaToolResultSchema,
+} from "../generated-media-result.js";
 import { createImageGenerateTool } from "./image-generate.js";
 import { guardToolCall } from "./tool-guard.js";
 
@@ -221,7 +226,20 @@ describe("Agent tool boundary", () => {
   });
 
   it("passes the stable LangChain tool-call ID to generation submission", async () => {
-    const submitImageJob = vi.fn(async () => ({ jobId: "job-1" }));
+    const jobId = "11111111-1111-4111-8111-111111111111";
+    const submitImageJob = vi.fn(async () => ({
+      attachmentStatus: "not_requested" as const,
+      jobId,
+      artifact: {
+        type: "image" as const,
+        title: "Image",
+        url: `/api/assets/${jobId}`,
+        mimeType: "image/png",
+        width: 1024,
+        height: 1024,
+        jobId,
+      },
+    }));
     const imageTool = createImageGenerateTool({
       providerRegistry: new ProviderRegistry().seal(),
       submitImageJob,
@@ -244,5 +262,141 @@ describe("Agent tool boundary", () => {
     expect(submitImageJob).toHaveBeenCalledWith(
       expect.objectContaining({ logicalToolCallId: "tool-call-stable" }),
     );
+  });
+
+  it("returns attached proof through LangChain content_and_artifact", async () => {
+    const jobId = "11111111-1111-4111-8111-111111111111";
+    const toolCallId = "tool-call-attached";
+    const artifact = {
+      type: "image" as const,
+      title: "Image",
+      url: `/api/assets/${jobId}`,
+      mimeType: "image/png",
+      width: 1024,
+      height: 768,
+      jobId,
+    };
+    const imageTool = createImageGenerateTool({
+      providerRegistry: new ProviderRegistry().seal(),
+      submitImageJob: async () => ({
+        attachmentStatus: "attached",
+        jobId,
+        elementId: jobId,
+        canvasRevision: 12,
+        artifact,
+      }),
+    });
+
+    const result = await imageTool.invoke({
+      type: "tool_call",
+      id: toolCallId,
+      name: "generate_image",
+      args: { title: "Image", prompt: "prompt", model: "model" },
+    });
+
+    expect(ToolMessage.isInstance(result)).toBe(true);
+    expect(result).toMatchObject({
+      status: "success",
+      tool_call_id: toolCallId,
+      artifact: {
+        attachmentStatus: "attached",
+        elementId: jobId,
+        canvasRevision: 12,
+        artifact,
+      },
+    });
+    expect(String(result.content)).toContain("attached to the canvas");
+  });
+
+  it("does not claim attachment for generate-only jobs", async () => {
+    const jobId = "11111111-1111-4111-8111-111111111111";
+    const imageTool = createImageGenerateTool({
+      providerRegistry: new ProviderRegistry().seal(),
+      submitImageJob: async () => ({
+        attachmentStatus: "not_requested",
+        jobId,
+        artifact: {
+          type: "image",
+          url: `/api/assets/${jobId}`,
+          mimeType: "image/png",
+          width: 100,
+          height: 100,
+          jobId,
+        },
+      }),
+    });
+    const result = await imageTool.invoke({
+      type: "tool_call",
+      id: "tool-call-generate-only",
+      name: "generate_image",
+      args: { title: "Image", prompt: "prompt", model: "model" },
+    });
+    expect(String(result.content)).not.toContain("attached");
+    expect(result).toMatchObject({
+      artifact: { attachmentStatus: "not_requested" },
+    });
+  });
+
+  it("throws a typed attachment error for pending and failed intents", async () => {
+    const jobId = "11111111-1111-4111-8111-111111111111";
+    const canvasId = "22222222-2222-4222-8222-222222222222";
+    for (const attachmentStatus of ["pending", "not_attached"] as const) {
+      const recoveryKind =
+        attachmentStatus === "pending"
+          ? "watch_generated_asset"
+          : "attach_generated_asset";
+      const imageTool = createImageGenerateTool({
+        providerRegistry: new ProviderRegistry().seal(),
+        submitImageJob: async () => ({
+          attachmentStatus,
+          jobId,
+          recovery: { kind: recoveryKind, jobId, canvasId },
+          error: {
+            code:
+              attachmentStatus === "pending"
+                ? "generated_asset_pending"
+                : "generated_asset_not_attached",
+            message:
+              attachmentStatus === "pending"
+                ? "Generated media is still being attached."
+                : "Generated media was not attached.",
+            retryable: true,
+          },
+        }),
+      });
+      const error = await imageTool
+        .invoke({
+          type: "tool_call",
+          id: `tool-call-${attachmentStatus}`,
+          name: "generate_image",
+          args: { title: "Image", prompt: "prompt", model: "model" },
+        })
+        .catch((value: unknown) => value);
+      expect(error).toBeInstanceOf(GeneratedAssetAttachmentError);
+    }
+  });
+
+  it("rejects unsafe or arbitrary generated media artifacts", () => {
+    const jobId = "11111111-1111-4111-8111-111111111111";
+    expect(
+      generatedMediaToolResultSchema.safeParse({
+        attachmentStatus: "not_requested",
+        jobId,
+        artifact: {
+          type: "image",
+          url: "data:image/png;base64,secret",
+          mimeType: "image/png",
+          width: 1,
+          height: 1,
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      generatedMediaToolResultSchema.safeParse({
+        attachmentStatus: "not_requested",
+        jobId,
+        artifact: { type: "private_payload", secret: "x" },
+      }).success,
+    ).toBe(false);
   });
 });

@@ -1,6 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
+import { RefreshCw } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -137,11 +138,15 @@ function findSidebarRect(el: HTMLElement | null): DOMRect | null {
 
 export const ToolBlockView = React.memo(function ToolBlockView({
   block,
+  onRetryAttachment,
 }: {
   block: ToolBlock;
+  onRetryAttachment?: (block: ToolBlock) => Promise<void>;
 }) {
   const [panelOpen, setPanelOpen] = useState(false);
   const [panelRight, setPanelRight] = useState(416);
+  const [retrying, setRetrying] = useState(false);
+  const [retryFailed, setRetryFailed] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const config = getToolConfig(block.toolName);
@@ -186,6 +191,22 @@ export const ToolBlockView = React.memo(function ToolBlockView({
   }, []);
 
   const handleClosePanel = useCallback(() => setPanelOpen(false), []);
+  const canRetryAttachment =
+    block.status === "failed" &&
+    block.recovery?.kind === "attach_generated_asset" &&
+    onRetryAttachment !== undefined;
+  const handleRetryAttachment = useCallback(async () => {
+    if (!canRetryAttachment || retrying) return;
+    setRetrying(true);
+    setRetryFailed(false);
+    try {
+      await onRetryAttachment(block);
+    } catch {
+      setRetryFailed(true);
+    } finally {
+      setRetrying(false);
+    }
+  }, [block, canRetryAttachment, onRetryAttachment, retrying]);
 
   return (
     <div ref={containerRef} className="space-y-1.5">
@@ -221,6 +242,34 @@ export const ToolBlockView = React.memo(function ToolBlockView({
       {/* Layer 2b-err: Media generation failed */}
       {isMediaTool && isCompleted && !imageArtifact && mediaError && (
         <MediaErrorCard isVideoTool={isVideoTool} error={mediaError} />
+      )}
+
+      {block.status === "failed" && block.recovery && (
+        <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3">
+          <div className="text-sm font-medium text-foreground">
+            {block.error?.message ?? "Generated, but not attached"}
+          </div>
+          {canRetryAttachment && (
+            <button
+              type="button"
+              aria-label="Retry attachment"
+              title="Retry attachment"
+              disabled={retrying}
+              onClick={() => void handleRetryAttachment()}
+              className="mt-2 inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${retrying ? "animate-spin" : ""}`}
+              />
+              Retry attachment
+            </button>
+          )}
+          {retryFailed && (
+            <div className="mt-2 text-xs text-destructive" role="status">
+              Attachment retry failed.
+            </div>
+          )}
+        </div>
       )}
 
       {/* Layer 2b: Image generation card with inline preview */}
