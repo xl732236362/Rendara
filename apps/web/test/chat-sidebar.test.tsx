@@ -947,6 +947,19 @@ describe("ChatSidebar", () => {
     await waitFor(() => expect(listeners).toHaveLength(2));
 
     listeners[1]?.({
+      type: "message.delta",
+      runId: "run_123",
+      messageId: "message-1",
+      delta: " tail",
+      timestamp: "2026-08-20T00:00:00.500Z",
+    });
+    await waitFor(() =>
+      expect(
+        screen.getAllByText("Recovered assistant response. tail"),
+      ).toHaveLength(1),
+    );
+
+    listeners[1]?.({
       type: "assistant.persistence_failed",
       runId: "run_123",
       timestamp: "2026-08-20T00:00:01.000Z",
@@ -963,7 +976,7 @@ describe("ChatSidebar", () => {
       "session-real",
       expect.objectContaining({
         role: "assistant",
-        content: "Recovered assistant response.",
+        content: "Recovered assistant response. tail",
       }),
     );
   });

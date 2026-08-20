@@ -1269,6 +1269,11 @@ export function ChatSidebar({
             if (remainingReplayEvents === 0) unsub();
             return;
           }
+          const assistantId = assistantIdByRunIdRef.current.get(evt.runId);
+          if (assistantId) {
+            applyStreamEvent(evt, assistantId, sessionId);
+            onStreamEvent?.(evt);
+          }
           if (evt.type === "assistant.persistence_failed") {
             persistAssistantFallback(sessionId, evt.runId);
             if (remainingReplayEvents === 0) unsub();
