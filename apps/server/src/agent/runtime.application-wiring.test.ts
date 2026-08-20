@@ -859,7 +859,10 @@ describe("Agent runtime application wiring", () => {
     });
     await expect(imagePromise).resolves.toMatchObject({
       attachmentStatus: "not_requested",
-      artifact: { url: `/api/assets/${assetId}` },
+      artifact: {
+        source: { kind: "asset", assetId },
+        url: `/api/assets/${assetId}`,
+      },
     });
     const videoPromise = submitVideoJob({
       logicalToolCallId: "tool-video-1",

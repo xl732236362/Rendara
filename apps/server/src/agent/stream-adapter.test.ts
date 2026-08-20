@@ -117,6 +117,7 @@ describe("Agent stream adapter", () => {
         artifacts: [
           {
             type: "image",
+            source: { kind: "asset", assetId: jobId },
             url: `/api/assets/${jobId}`,
             mimeType: "image/png",
             width: 100,

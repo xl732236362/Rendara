@@ -233,6 +233,7 @@ describe("Agent tool boundary", () => {
       artifact: {
         type: "image" as const,
         title: "Image",
+        source: { kind: "asset" as const, assetId: jobId },
         url: `/api/assets/${jobId}`,
         mimeType: "image/png",
         width: 1024,
@@ -270,6 +271,7 @@ describe("Agent tool boundary", () => {
     const artifact = {
       type: "image" as const,
       title: "Image",
+      source: { kind: "asset" as const, assetId: jobId },
       url: `/api/assets/${jobId}`,
       mimeType: "image/png",
       width: 1024,
@@ -317,6 +319,7 @@ describe("Agent tool boundary", () => {
         jobId,
         artifact: {
           type: "image",
+          source: { kind: "asset", assetId: jobId },
           url: `/api/assets/${jobId}`,
           mimeType: "image/png",
           width: 100,

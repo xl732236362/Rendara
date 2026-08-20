@@ -235,6 +235,7 @@ describe("tool governance middleware", () => {
       },
       artifact: {
         type: "image",
+        source: { kind: "asset", assetId: jobId },
         url: `/api/assets/${jobId}`,
         mimeType: "image/png",
         width: 100,

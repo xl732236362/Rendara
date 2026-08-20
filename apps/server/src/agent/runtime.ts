@@ -838,6 +838,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                 url: `/api/assets/${result.asset_id}`,
                 width: result.width ?? 1024,
                 height: result.height ?? 1024,
+                source: { kind: "asset" as const, assetId: result.asset_id },
                 mimeType: result.mime_type ?? "image/png",
                 jobId: job.id,
               };
