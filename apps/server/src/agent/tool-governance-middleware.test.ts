@@ -198,6 +198,30 @@ describe("tool governance middleware", () => {
     });
   });
 
+  it("preserves typed placement failures as bounded tool errors", async () => {
+    const { request, supervisor, wrapToolCall } = await harness();
+    const failure = Object.assign(
+      new Error("Relative image placement requires the attachment backend."),
+      { code: "relative_placement_requires_attachment_backend" },
+    );
+
+    const returned = await wrapToolCall(request as never, async () => {
+      throw failure;
+    });
+
+    expect(returned).toMatchObject({
+      status: "error",
+      artifact: {
+        type: "loomic.tool_error",
+        code: "relative_placement_requires_attachment_backend",
+      },
+    });
+    expect(supervisor.records().at(-1)).toMatchObject({
+      type: "loomic.tool.failed",
+      error: { code: "relative_placement_requires_attachment_backend" },
+    });
+  });
+
   it("projects a returned error ToolMessage as failed without ending correction", async () => {
     const { request, supervisor, wrapToolCall } = await harness();
     const result = new ToolMessage({

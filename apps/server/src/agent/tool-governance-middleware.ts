@@ -225,6 +225,25 @@ export function createToolGovernanceMiddleware(
             },
           });
         }
+        const typedFailure = typedToolFailure(cause);
+        if (typedFailure) {
+          const failed = dependencies.supervisor.stageFailed(
+            logicalToolCallId,
+            { ...typedFailure, correlationId },
+          );
+          await publishAndWait(failed);
+          return new ToolMessage({
+            content: typedFailure.message,
+            name: toolName,
+            status: "error",
+            tool_call_id: logicalToolCallId,
+            artifact: {
+              type: "loomic.tool_error",
+              ...typedFailure,
+              correlationId,
+            },
+          });
+        }
         if (cause instanceof ToolInvocationError) {
           const recoverable = {
             code: "invalid_arguments",
@@ -270,6 +289,25 @@ export function createToolGovernanceMiddleware(
       }
     },
   });
+}
+
+function typedToolFailure(
+  error: unknown,
+): { code: string; message: string } | undefined {
+  let current: unknown = error;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (!(current instanceof Error)) return undefined;
+    const code = (current as Error & { code?: unknown }).code;
+    if (
+      (code === "relative_placement_requires_attachment_backend" ||
+        code === "generated_media_effect_invalid") &&
+      current.message.length > 0
+    ) {
+      return { code, message: current.message.slice(0, 512) };
+    }
+    current = current.cause;
+  }
+  return undefined;
 }
 
 async function assertAuthority(
