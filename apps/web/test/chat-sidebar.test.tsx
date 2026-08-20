@@ -9,7 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatSidebar } from "../src/components/chat-sidebar";
 import { TierLimitToastProvider } from "../src/components/credits/tier-limit-toast";
 import { ToastProvider } from "../src/components/toast";
-import { mapServerMessages } from "../src/hooks/use-chat-sessions";
+import {
+  mapServerMessages,
+  mergeReloadedMessages,
+} from "../src/hooks/use-chat-sessions";
 import type { WebSocketHandle } from "../src/hooks/use-websocket";
 
 const {
@@ -73,6 +76,28 @@ function createMockWs(): WebSocketHandle {
 }
 
 describe("ChatSidebar", () => {
+  it("drops a local assistant placeholder when the server has persisted its response", () => {
+    const merged = mergeReloadedMessages(
+      [
+        {
+          id: "server-assistant",
+          role: "assistant",
+          contentBlocks: [{ type: "text", text: "completed response" }],
+        },
+      ],
+      [
+        {
+          id: "assistant-local",
+          role: "assistant",
+          contentBlocks: [{ type: "text", text: "completed response" }],
+        },
+      ],
+      new Set(["assistant-local"]),
+    );
+
+    expect(merged.map((message) => message.id)).toEqual(["server-assistant"]);
+  });
+
   let mockWs: WebSocketHandle;
 
   beforeEach(() => {
@@ -178,6 +203,32 @@ describe("ChatSidebar", () => {
       }),
       expect.anything(),
     );
+  });
+
+  it("shows a stop control for an acknowledged run and cancels that run", async () => {
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    const input = await screen.findByPlaceholderText(/start with an idea/i);
+    await userEvent.type(input, "hello loom{Enter}");
+
+    const stopButton = await screen.findByRole("button", {
+      name: "停止运行",
+    });
+    await userEvent.click(stopButton);
+
+    expect(mockWs.cancelRun).toHaveBeenCalledWith("run_123");
   });
 
   it("retries acceptance with the same request without duplicating the user message", async () => {

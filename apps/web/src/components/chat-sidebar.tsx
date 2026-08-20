@@ -163,6 +163,7 @@ export function ChatSidebar({
     assistantId: string;
     retry: () => void;
   } | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const chatInputRef = useRef<import("./chat-input").ChatInputHandle>(null);
 
   const initialPromptSent = useRef(false);
@@ -176,7 +177,10 @@ export function ChatSidebar({
   const fallbackPersistedRunIdsRef = useRef(new Set<string>());
   const assistantIdByRunIdRef = useRef(new Map<string, string>());
   const runListenerByRunIdRef = useRef(
-    new Map<string, { assistantId: string; cleanup: () => void }>(),
+    new Map<
+      string,
+      { assistantId: string; cleanup: () => void; resolve?: () => void }
+    >(),
   );
 
   // A remounted sidebar owns fresh listeners. Release any listeners from this
@@ -863,7 +867,9 @@ export function ChatSidebar({
               runListenerByRunIdRef.current.set(id, {
                 assistantId,
                 cleanup: cleanupRunListener,
+                resolve: resolveStream,
               });
+              setActiveRunId(id);
               resolve(id);
             },
             onError: (error) => {
@@ -939,6 +945,7 @@ export function ChatSidebar({
           }),
         );
       } finally {
+        setActiveRunId(null);
         setStreaming(false);
       }
     },
@@ -1121,6 +1128,7 @@ export function ChatSidebar({
         const replayed = resumePayload.replayed;
         const replayCount =
           typeof replayed === "number" && replayed >= 0 ? replayed : 0;
+        const replayGap = resumePayload.replayGap === true;
         const ownsResumedRun =
           resumedRunId !== null && resumedRunSessionId === sessionId;
 
@@ -1133,8 +1141,20 @@ export function ChatSidebar({
           return;
         }
 
+        if (replayGap) {
+          console.warn("[chat] replay cursor fell behind retained buffer", {
+            canvasId,
+            sessionId,
+          });
+          void reloadMessages(
+            sessionId,
+            new Set(assistantIdByRunIdRef.current.values()),
+          );
+        }
+
         if (resumedRunId) {
           setStreaming(true);
+          setActiveRunId(resumedRunId);
 
           const activeListener =
             runListenerByRunIdRef.current.get(resumedRunId);
@@ -1167,6 +1187,19 @@ export function ChatSidebar({
         }
 
         if (!resumedRunId && replayCount === 0) return;
+
+        // The original listener remains subscribed across a reconnect. When
+        // there is no active run, let one replay listener own all known runs so
+        // missed events cannot be applied once by each listener.
+        const replayResolvers = new Map<string, () => void>();
+        if (!resumedRunId) {
+          for (const [runId, listener] of runListenerByRunIdRef.current) {
+            if (listener.resolve) replayResolvers.set(runId, listener.resolve);
+          }
+          for (const listener of [...runListenerByRunIdRef.current.values()]) {
+            listener.cleanup();
+          }
+        }
 
         // The server clears activeRunId before replaying terminal events. Register
         // after every resume ACK so its preceding persistence marker is not lost.
@@ -1210,6 +1243,7 @@ export function ChatSidebar({
               evt.type === "run.canceled"
             ) {
               void refreshAttachmentRecovery(sessionId);
+              setActiveRunId(null);
               setStreaming(false);
               cleanupResumedListener();
             }
@@ -1247,6 +1281,7 @@ export function ChatSidebar({
           ) {
             onStreamEvent?.(evt);
             void refreshAttachmentRecovery(sessionId);
+            replayResolvers.get(evt.runId)?.();
             unsub();
             return;
           }
@@ -1424,6 +1459,18 @@ export function ChatSidebar({
         <ChatInput
           ref={chatInputRef}
           onSend={handleSend}
+          running={streaming}
+          {...(activeRunId
+            ? {
+                onStop: () => {
+                  console.info("[chat] canceling active Agent run", {
+                    runId: activeRunId,
+                  });
+                  abortRef.current = true;
+                  ws.cancelRun(activeRunId);
+                },
+              }
+            : {})}
           disabled={streaming || sessionsLoading}
           attachments={imageAttachments}
           onAddFiles={addFiles}

@@ -6,6 +6,13 @@ export type BufferedEvent = {
   seq: number;
 };
 
+export type BufferedEventStatus = {
+  events: BufferedEvent[];
+  gap: boolean;
+  earliestSeq: number | null;
+  latestSeq: number;
+};
+
 /**
  * Per-canvas ring buffer for recent StreamEvents.
  * Enables event replay on client reconnection.
@@ -28,7 +35,7 @@ export class CanvasEventBuffer {
     if (!buf) {
       buf = [];
       this.buffers.set(canvasId, buf);
-      this.seqCounters.set(canvasId, 0);
+      if (!this.seqCounters.has(canvasId)) this.seqCounters.set(canvasId, 0);
     }
 
     const seq = (this.seqCounters.get(canvasId) ?? 0) + 1;
@@ -63,6 +70,20 @@ export class CanvasEventBuffer {
     return buf.filter((e) => e.seq > afterSeq);
   }
 
+  getAfterWithStatus(canvasId: string, afterSeq = 0): BufferedEventStatus {
+    const buf = this.buffers.get(canvasId) ?? [];
+    const earliestSeq = buf[0]?.seq ?? null;
+    const latestSeq = this.getLatestSeq(canvasId);
+    const gap =
+      afterSeq > 0 && earliestSeq !== null && earliestSeq > afterSeq + 1;
+    return {
+      events: gap ? [] : buf.filter((entry) => entry.seq > afterSeq),
+      gap,
+      earliestSeq,
+      latestSeq,
+    };
+  }
+
   getLatestSeq(canvasId: string): number {
     return this.seqCounters.get(canvasId) ?? 0;
   }
@@ -72,7 +93,6 @@ export class CanvasEventBuffer {
     for (const [canvasId, lastTime] of this.lastWrite) {
       if (now - lastTime > this.ttlMs) {
         this.buffers.delete(canvasId);
-        this.seqCounters.delete(canvasId);
         this.lastWrite.delete(canvasId);
         this.domainEventIds.delete(canvasId);
       }

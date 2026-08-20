@@ -1,8 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { ConnectionManager } from "./connection-manager.js";
 
 describe("ConnectionManager identity", () => {
+  it("does not remove a replacement when an old socket closes", () => {
+    const manager = new ConnectionManager();
+    const first = { readyState: 1, send: vi.fn() } as never;
+    const replacement = { readyState: 1, send: vi.fn() } as never;
+
+    expect(manager.register("connection-1", "user-1", first)).toBe(true);
+    expect(manager.register("connection-1", "user-1", replacement)).toBe(true);
+    manager.remove("connection-1", first);
+
+    expect(manager.getEntry("connection-1")?.ws).toBe(replacement);
+  });
   it("does not let another user replace an existing connection id", () => {
     const manager = new ConnectionManager();
     const originalSocket = { readyState: 1 } as never;

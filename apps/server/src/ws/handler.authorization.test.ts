@@ -15,6 +15,7 @@ import {
   authorizeRunCancel,
   authorizeRunResources,
   bindAuthenticatedSocket,
+  toRecoveryAssistantPayload,
 } from "./handler.js";
 
 const user: AuthenticatedUser = {
@@ -51,6 +52,25 @@ describe("WebSocket run authorization", () => {
 });
 
 describe("WebSocket resource commands", () => {
+  it("deep-bounds tool fields in assistant recovery payloads", () => {
+    const payload = toRecoveryAssistantPayload(
+      [],
+      [
+        {
+          type: "tool",
+          toolCallId: "tool-1",
+          toolName: "tool",
+          status: "completed",
+          output: { giant: "x".repeat(20_000) },
+        },
+      ],
+    );
+
+    expect(JSON.stringify(payload).length).toBeLessThan(10_000);
+    expect(
+      (payload.contentBlocks[0] as { output?: { giant?: string } }).output,
+    ).toMatchObject({ giant: expect.stringContaining("truncated") });
+  });
   it("includes the active run session in the canvas resume acknowledgement", async () => {
     const socket = new FakeSocket();
     const connectionManager = new ConnectionManager();
@@ -529,6 +549,65 @@ describe("WebSocket resource commands", () => {
       seq: 2,
       event: { type: "message.delta", delta: "second" },
     });
+    socket.emit("close");
+  });
+
+  it("acknowledges replay gaps without sending a partial tail", async () => {
+    const socket = new FakeSocket();
+    const eventBuffer = new CanvasEventBuffer({ maxPerCanvas: 1 });
+    eventBuffer.push("canvas-1", {
+      type: "message.delta",
+      runId: "run-1",
+      messageId: "message-1",
+      delta: "old",
+      timestamp: "2026-08-20T00:00:00.000Z",
+    });
+    eventBuffer.push("canvas-1", {
+      type: "message.delta",
+      runId: "run-1",
+      messageId: "message-1",
+      delta: "new",
+      timestamp: "2026-08-20T00:00:01.000Z",
+    });
+    eventBuffer.push("canvas-1", {
+      type: "message.delta",
+      runId: "run-1",
+      messageId: "message-1",
+      delta: "latest",
+      timestamp: "2026-08-20T00:00:02.000Z",
+    });
+
+    await bindAuthenticatedSocket(
+      socket as never,
+      "token",
+      { url: "/api/ws", headers: { host: "localhost" } } as never,
+      {
+        agentRuns: fakeAgentRuns() as never,
+        authorization: fakeAuthorization("canvas-1"),
+        auth: { authenticate: async () => user },
+        connectionManager: new ConnectionManager(),
+        eventBuffer,
+      },
+    );
+    socket.emit(
+      "message",
+      JSON.stringify({
+        type: "command",
+        action: "canvas.resume",
+        payload: { canvasId: "canvas-1", lastSeq: 1 },
+      }),
+    );
+    await nextTurn();
+
+    const messages = socket.messages.map((message) => JSON.parse(message));
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "command.ack",
+        payload: expect.objectContaining({ replayGap: true }),
+      }),
+    );
+    expect(messages.some((message) => message.type === "event")).toBe(false);
+
     socket.emit("close");
   });
 

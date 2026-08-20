@@ -20,6 +20,38 @@ export type Message = {
   contentBlocks: ContentBlock[];
 };
 
+function messageText(message: Message): string {
+  return message.contentBlocks
+    .filter((block) => block.type === "text")
+    .map((block) => block.text)
+    .join("");
+}
+
+export function mergeReloadedMessages(
+  serverMessages: Message[],
+  cachedMessages: Message[],
+  preserveLocalMessageIds: ReadonlySet<string>,
+): Message[] {
+  const serverAssistantText = new Set(
+    serverMessages
+      .filter((message) => message.role === "assistant")
+      .map(messageText)
+      .filter(Boolean),
+  );
+  const preserved = cachedMessages.filter(
+    (message) =>
+      preserveLocalMessageIds.has(message.id) &&
+      !serverMessages.some(
+        (serverMessage) => serverMessage.id === message.id,
+      ) &&
+      !(
+        message.role === "assistant" &&
+        serverAssistantText.has(messageText(message))
+      ),
+  );
+  return [...serverMessages, ...preserved];
+}
+
 // ── LRU message cache ────────────────────────────────────────
 // Limits memory usage by evicting the least-recently-accessed
 // session's messages when the cache exceeds MAX_CACHED_SESSIONS.
@@ -327,21 +359,17 @@ export function useChatSessions({
       }
       try {
         const msgRes = await fetchMessages(accessTokenRef.current, sessionId);
-        if (msgRes.messages && msgRes.messages.length > 0) {
-          const mapped = mapServerMessages(msgRes.messages);
-          const serverMessageIds = new Set(mapped.map((message) => message.id));
-          const preserved = (msgCacheRef.current.get(sessionId) ?? []).filter(
-            (message) =>
-              preserveLocalMessageIds.has(message.id) &&
-              !serverMessageIds.has(message.id),
-          );
-          const next = [...mapped, ...preserved];
-          msgCacheRef.current.set(sessionId, next);
-          // Only update React state if the session is still active
-          // (user may have switched sessions during the async fetch)
-          if (activeSessionIdRef.current === sessionId) {
-            setMessages(next);
-          }
+        const mapped = mapServerMessages(msgRes.messages ?? []);
+        const next = mergeReloadedMessages(
+          mapped,
+          msgCacheRef.current.get(sessionId) ?? [],
+          preserveLocalMessageIds,
+        );
+        msgCacheRef.current.set(sessionId, next);
+        // Only update React state if the session is still active
+        // (user may have switched sessions during the async fetch)
+        if (activeSessionIdRef.current === sessionId) {
+          setMessages(next);
         }
       } catch (err) {
         console.warn("[chat] Failed to reload messages on reconnect:", err);

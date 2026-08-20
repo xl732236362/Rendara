@@ -324,6 +324,7 @@ export function useWebSocket(
 
   const startRun = useCallback(
     (payload: RunCreateRequest, callbacks?: RunCallbacks): boolean => {
+      resumedCanvasIdRef.current = payload.canvasId;
       if (callbacks)
         runListeners.current.set(payload.clientRequestId, callbacks);
       const sent = sendCommand(

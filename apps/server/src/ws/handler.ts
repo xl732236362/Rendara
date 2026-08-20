@@ -268,8 +268,11 @@ export async function bindAuthenticatedSocket(
           // Re-bind only after authorization so replay data never crosses tenants.
           connectionManager.bindCanvas(connectionId, p.canvasId);
 
-          const missed =
-            options.eventBuffer?.getAfter(p.canvasId, p.lastSeq) ?? [];
+          const replay = options.eventBuffer?.getAfterWithStatus(
+            p.canvasId,
+            p.lastSeq,
+          ) ?? { events: [], gap: false, earliestSeq: null, latestSeq: 0 };
+          const missed = replay.events;
           const activeRun = connectionManager.getActiveRun(p.canvasId);
           log.info("canvas_resume", {
             userId: authenticatedUser.id,
@@ -278,6 +281,7 @@ export async function bindAuthenticatedSocket(
             activeRunId: activeRun?.runId ?? null,
             activeRunSessionId: activeRun?.sessionId ?? null,
             replayed: missed.length,
+            replayGap: replay.gap,
           });
 
           // IMPORTANT: Send ACK FIRST so client registers event listener
@@ -288,6 +292,8 @@ export async function bindAuthenticatedSocket(
             payload: {
               canvasId: p.canvasId,
               latestSeq: options.eventBuffer?.getLatestSeq(p.canvasId) ?? 0,
+              earliestSeq: replay.earliestSeq,
+              replayGap: replay.gap,
               activeRunId: activeRun?.runId ?? null,
               activeRunSessionId: activeRun?.sessionId ?? null,
               replayed: missed.length,
@@ -295,7 +301,7 @@ export async function bindAuthenticatedSocket(
           });
 
           // THEN replay missed events from buffer
-          for (const entry of missed) {
+          for (const entry of replay.gap ? [] : missed) {
             connectionManager.sendTo(connectionId, {
               type: "event",
               event: entry.event,
@@ -310,7 +316,7 @@ export async function bindAuthenticatedSocket(
   socket.on("close", () => {
     log.info("disconnected", { userId: authenticatedUser.id, connectionId });
     clearInterval(pingInterval);
-    connectionManager.remove(connectionId);
+    connectionManager.remove(connectionId, socket);
   });
 
   socket.on("error", () => {
@@ -612,7 +618,7 @@ function appendThinkingBlock(blocks: ContentBlock[], thinking: string): void {
   blocks.push({ type: "thinking", thinking });
 }
 
-function toRecoveryAssistantPayload(
+export function toRecoveryAssistantPayload(
   assistantText: string[],
   assistantBlocks: ContentBlock[],
 ): { content: string; contentBlocks: ContentBlock[] } {
@@ -625,9 +631,71 @@ function toRecoveryAssistantPayload(
         return { ...block, text: block.text.slice(0, 4_000) };
       if (block.type === "thinking")
         return { ...block, thinking: block.thinking.slice(0, 4_000) };
+      if (block.type === "tool") {
+        return {
+          ...block,
+          ...(block.input
+            ? {
+                input: boundRecoveryValue(block.input) as Record<
+                  string,
+                  unknown
+                >,
+              }
+            : {}),
+          ...(block.output
+            ? {
+                output: boundRecoveryValue(block.output) as Record<
+                  string,
+                  unknown
+                >,
+              }
+            : {}),
+          ...(block.outputSummary
+            ? { outputSummary: block.outputSummary.slice(0, 4_000) }
+            : {}),
+          ...(block.recovery
+            ? {
+                recovery: boundRecoveryValue(
+                  block.recovery,
+                ) as typeof block.recovery,
+              }
+            : {}),
+          ...(block.artifacts
+            ? {
+                artifacts: block.artifacts
+                  .slice(0, MAX_PERSISTED_TOOL_ARTIFACTS)
+                  .map((artifact) =>
+                    boundRecoveryValue(artifact),
+                  ) as typeof block.artifacts,
+              }
+            : {}),
+        };
+      }
       return block;
     }),
   };
+}
+
+const MAX_RECOVERY_STRING_LENGTH = 4_000;
+const MAX_RECOVERY_OBJECT_ENTRIES = 32;
+
+function boundRecoveryValue(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") {
+    return value.length > MAX_RECOVERY_STRING_LENGTH
+      ? `${value.slice(0, MAX_RECOVERY_STRING_LENGTH - 14)}...[truncated]`
+      : value;
+  }
+  if (depth >= 4 || value === null || typeof value !== "object") return value;
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, MAX_RECOVERY_OBJECT_ENTRIES)
+      .map((entry) => boundRecoveryValue(entry, depth + 1));
+  }
+  return Object.fromEntries(
+    Object.entries(value)
+      .slice(0, MAX_RECOVERY_OBJECT_ENTRIES)
+      .map(([key, entry]) => [key, boundRecoveryValue(entry, depth + 1)]),
+  );
 }
 
 function boundedErrorMessage(error: unknown): string {

@@ -63,9 +63,10 @@ export class ConnectionManager {
   }
 
   /** Remove a connection from all indexes. */
-  remove(connectionId: string): void {
+  remove(connectionId: string, expectedWs?: WebSocket): void {
     const entry = this.connections.get(connectionId);
     if (!entry) return;
+    if (expectedWs && entry.ws !== expectedWs) return;
     this.removeFromIndexes(connectionId, entry);
     this.connections.delete(connectionId);
   }

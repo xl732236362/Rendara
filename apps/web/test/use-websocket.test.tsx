@@ -157,6 +157,48 @@ describe("useWebSocket Agent correlation", () => {
     unmount();
   });
 
+  it("tracks live run sequences before the first explicit resume", async () => {
+    const { result, unmount } = renderHook(() => useWebSocket(() => "token"));
+    await waitFor(() => expect(result.current.connected).toBe(true));
+    const onAck = vi.fn();
+    const onError = vi.fn();
+    const onEvent = vi.fn();
+    const unsubscribe = result.current.onEvent(onEvent);
+
+    act(() => {
+      result.current.startRun(
+        {
+          canvasId: "canvas-1",
+          clientRequestId: "request-live",
+          conversationId: "conversation-1",
+          prompt: "hello",
+          sessionId: "session-1",
+        },
+        { onAck, onError },
+      );
+      FakeWebSocket.instances[0]?.receive({
+        type: "event",
+        seq: 2,
+        event: {
+          type: "message.delta",
+          runId: "run-1",
+          messageId: "message-1",
+          delta: "live",
+          timestamp: "2026-08-20T00:00:00.000Z",
+        },
+      });
+      result.current.resumeCanvas("canvas-1");
+    });
+
+    const resume = FakeWebSocket.instances
+      .at(-1)
+      ?.send.mock.calls.map(([payload]) => JSON.parse(payload as string))
+      .find((message) => message.action === "canvas.resume");
+    expect(resume.payload.lastSeq).toBe(2);
+    unsubscribe();
+    unmount();
+  });
+
   it("keeps an active stream recoverable when finalization is unconfirmed", async () => {
     const { result, unmount } = renderHook(() => useWebSocket(() => "token"));
     await waitFor(() => expect(result.current.connected).toBe(true));
