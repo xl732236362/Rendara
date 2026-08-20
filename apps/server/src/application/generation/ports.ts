@@ -19,6 +19,14 @@ export type AgentAttachmentPlacement =
       y: number;
       width: number;
       height: number;
+    }
+  | {
+      kind: "relative";
+      elementId: string;
+      relation: "above" | "below" | "left" | "right";
+      gap: number;
+      maxWidth?: number;
+      maxHeight?: number;
     };
 
 export type AgentAttachmentContext = {

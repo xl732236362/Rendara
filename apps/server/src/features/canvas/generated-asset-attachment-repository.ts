@@ -18,6 +18,16 @@ const placementSchema = z.discriminatedUnion("kind", [
       height: z.number().finite().positive(),
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal("relative"),
+      elementId: z.string().trim().min(1).max(256),
+      relation: z.enum(["above", "below", "left", "right"]),
+      gap: z.number().finite().min(0).max(400).default(48),
+      maxWidth: z.number().finite().min(1).max(4_096).optional(),
+      maxHeight: z.number().finite().min(1).max(4_096).optional(),
+    })
+    .strict(),
 ]);
 
 const intentSchema = z

@@ -124,6 +124,66 @@ describe("SubmitGeneration", () => {
     );
   });
 
+  it("preserves relative image placement defaults and rejects it for video", async () => {
+    const { ports, submit } = setup();
+    const attachment = {
+      intentId: "66666666-6666-4666-8666-666666666666",
+      runId: "77777777-7777-4777-8777-777777777777",
+      attemptId: "88888888-8888-4888-8888-888888888888",
+      fencingToken: 7,
+      logicalToolCallId: "tool-relative",
+      inputDigest:
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      effectKind: "generated_asset_attached" as const,
+      mediaType: "image" as const,
+      placement: {
+        kind: "relative" as const,
+        elementId: "text-1",
+        relation: "below" as const,
+        gap: 48,
+      },
+    };
+    await submit(
+      principal,
+      {
+        type: "image_generation",
+        idempotency_key: "agent-image-relative",
+        project_id: ids.project,
+        canvas_id: ids.canvas,
+        session_id: "99999999-9999-4999-8999-999999999999",
+        prompt: "draw",
+      },
+      attachment,
+    );
+    expect(ports.jobs.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attachmentIntent: expect.objectContaining({
+          placement: {
+            kind: "relative",
+            elementId: "text-1",
+            relation: "below",
+            gap: 48,
+          },
+        }),
+      }),
+    );
+
+    await expect(
+      submit(
+        principal,
+        {
+          type: "video_generation",
+          idempotency_key: "agent-video-relative",
+          project_id: ids.project,
+          canvas_id: ids.canvas,
+          session_id: "99999999-9999-4999-8999-999999999999",
+          prompt: "draw",
+        },
+        { ...attachment, mediaType: "video" as const },
+      ),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+  });
+
   it("fails closed before authorization or submission when attachment infrastructure is unavailable", async () => {
     const { ports, submit } = setup({ attachmentReady: false });
 

@@ -11,6 +11,10 @@ import {
   generatedMediaToolResultSchema,
 } from "../generated-media-result.js";
 import { createImageGenerateTool } from "./image-generate.js";
+import {
+  RelativePlacementRequiresAttachmentBackendError,
+  runImageGenerate,
+} from "./image-generate.js";
 import { guardToolCall } from "./tool-guard.js";
 
 const context: AgentExecutionContext = {
@@ -263,6 +267,108 @@ describe("Agent tool boundary", () => {
     expect(submitImageJob).toHaveBeenCalledWith(
       expect.objectContaining({ logicalToolCallId: "tool-call-stable" }),
     );
+  });
+
+  it("accepts bounded relative placement and forwards it unchanged", async () => {
+    const jobId = "11111111-1111-4111-8111-111111111111";
+    const submitImageJob = vi.fn(async (input) => ({
+      attachmentStatus: "not_requested" as const,
+      jobId,
+      artifact: {
+        type: "image" as const,
+        title: input.title,
+        source: { kind: "asset" as const, assetId: jobId },
+        url: `/api/assets/${jobId}`,
+        mimeType: "image/png",
+        width: 1024,
+        height: 1024,
+        jobId,
+      },
+    }));
+    const imageTool = createImageGenerateTool({
+      providerRegistry: new ProviderRegistry().seal(),
+      submitImageJob,
+    });
+    const args = {
+      title: "Image",
+      prompt: "prompt",
+      model: "model",
+      placement: {
+        kind: "relative" as const,
+        elementId: "text-1",
+        relation: "below" as const,
+        gap: 24,
+        maxWidth: 400,
+      },
+    };
+    await imageTool.invoke(args, {
+      toolCall: {
+        type: "tool_call",
+        id: "tool-relative",
+        name: "generate_image",
+        args,
+      },
+    } as never);
+    expect(submitImageJob).toHaveBeenCalledWith(
+      expect.objectContaining({ placement: args.placement }),
+    );
+  });
+
+  it("rejects relative placement before a direct provider is invoked", async () => {
+    const generate = vi.fn(async () => ({
+      url: "https://example.com/generated.png",
+      mimeType: "image/png",
+      width: 100,
+      height: 80,
+    }));
+    const registry = new ProviderRegistry()
+      .registerImageProvider({
+        name: "provider",
+        models: [{ id: "model", displayName: "Model", description: "test" }],
+        generate,
+      })
+      .seal();
+    await expect(
+      runImageGenerate(
+        {
+          title: "Image",
+          prompt: "prompt",
+          model: "model",
+          placement: {
+            kind: "relative",
+            elementId: "text-1",
+            relation: "below",
+            gap: 48,
+          },
+        },
+        undefined,
+        undefined,
+        undefined,
+        registry,
+      ),
+    ).rejects.toBeInstanceOf(RelativePlacementRequiresAttachmentBackendError);
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it("rejects placement bounds instead of falling back to auto placement", () => {
+    const imageTool = createImageGenerateTool({
+      providerRegistry: new ProviderRegistry().seal(),
+    });
+    for (const placement of [
+      { kind: "explicit", x: Number.NaN, y: 0, width: 1, height: 1 },
+      { kind: "explicit", x: 0, y: 0, width: 16_385, height: 1 },
+      { kind: "relative", elementId: "", relation: "below" },
+      { kind: "relative", elementId: "text", relation: "below", gap: 401 },
+    ]) {
+      expect(
+        imageTool.schema.safeParse({
+          title: "Image",
+          prompt: "prompt",
+          model: "model",
+          placement,
+        }).success,
+      ).toBe(false);
+    }
   });
 
   it("returns attached proof through LangChain content_and_artifact", async () => {

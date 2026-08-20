@@ -382,8 +382,19 @@ function templateDimensions(
   }
   const width = positiveDimension(result?.width);
   const height = positiveDimension(result?.height);
-  const maxSize = intent.media_type === "image" ? 600 : 800;
-  const ratio = Math.min(1, maxSize / width, maxSize / height);
+  const maxWidth =
+    intent.placement_policy.kind === "relative"
+      ? (intent.placement_policy.maxWidth ?? 600)
+      : intent.media_type === "image"
+        ? 600
+        : 800;
+  const maxHeight =
+    intent.placement_policy.kind === "relative"
+      ? (intent.placement_policy.maxHeight ?? 600)
+      : intent.media_type === "image"
+        ? 600
+        : 800;
+  const ratio = Math.min(1, maxWidth / width, maxHeight / height);
   return {
     x: 0,
     y: 0,

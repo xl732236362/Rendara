@@ -24,15 +24,26 @@ export type SubmitGeneration = (
   attachment?: AgentAttachmentContext,
 ) => Promise<GenerationSubmissionResponse>;
 
+const canvasCoordinate = z.number().finite().min(-1_000_000).max(1_000_000);
 const attachmentPlacementSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("auto_right") }).strict(),
   z
     .object({
       kind: z.literal("explicit"),
-      x: z.number().finite(),
-      y: z.number().finite(),
-      width: z.number().finite().positive(),
-      height: z.number().finite().positive(),
+      x: canvasCoordinate,
+      y: canvasCoordinate,
+      width: z.number().finite().min(1).max(16_384),
+      height: z.number().finite().min(1).max(16_384),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("relative"),
+      elementId: z.string().trim().min(1).max(256),
+      relation: z.enum(["above", "below", "left", "right"]),
+      gap: z.number().finite().min(0).max(400).default(48),
+      maxWidth: z.number().finite().min(1).max(4_096).optional(),
+      maxHeight: z.number().finite().min(1).max(4_096).optional(),
     })
     .strict(),
 ]);
@@ -275,7 +286,25 @@ function parseAttachmentContext(
       expose: false,
     });
   }
-  return parsed.data;
+  const placement = parsed.data.placement;
+  return {
+    ...parsed.data,
+    placement:
+      placement.kind === "relative"
+        ? {
+            kind: "relative",
+            elementId: placement.elementId,
+            relation: placement.relation,
+            gap: placement.gap,
+            ...(placement.maxWidth === undefined
+              ? {}
+              : { maxWidth: placement.maxWidth }),
+            ...(placement.maxHeight === undefined
+              ? {}
+              : { maxHeight: placement.maxHeight }),
+          }
+        : placement,
+  };
 }
 
 function validateAttachmentScope(
@@ -299,6 +328,17 @@ function validateAttachmentScope(
       statusCode: 400,
       message:
         "Agent attachment media type does not match the generation request.",
+      expose: false,
+    });
+  }
+  if (
+    attachment.mediaType === "video" &&
+    attachment.placement.kind === "relative"
+  ) {
+    throw new AppError({
+      code: "invalid_request",
+      statusCode: 400,
+      message: "Relative placement is supported for images only.",
       expose: false,
     });
   }

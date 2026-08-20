@@ -16,6 +16,48 @@ import {
 
 const DEFAULT_MODEL = "black-forest-labs/flux-kontext-pro";
 
+const finiteCanvasCoordinate = z
+  .number()
+  .finite()
+  .min(-1_000_000)
+  .max(1_000_000);
+const explicitDimension = z.number().finite().min(1).max(16_384);
+const relativeDimension = z.number().finite().min(1).max(4_096);
+
+export const imagePlacementSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("auto_right") }).strict(),
+  z
+    .object({
+      kind: z.literal("explicit"),
+      x: finiteCanvasCoordinate,
+      y: finiteCanvasCoordinate,
+      width: explicitDimension,
+      height: explicitDimension,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("relative"),
+      elementId: z.string().trim().min(1).max(256),
+      relation: z.enum(["above", "below", "left", "right"]),
+      gap: z.number().finite().min(0).max(400).default(48),
+      maxWidth: relativeDimension.optional(),
+      maxHeight: relativeDimension.optional(),
+    })
+    .strict(),
+]);
+
+export type ImagePlacement = z.infer<typeof imagePlacementSchema>;
+
+export class RelativePlacementRequiresAttachmentBackendError extends Error {
+  readonly code = "relative_placement_requires_attachment_backend" as const;
+
+  constructor() {
+    super("Relative image placement requires the attachment backend.");
+    this.name = "RelativePlacementRequiresAttachmentBackendError";
+  }
+}
+
 /**
  * Build the zod schema dynamically from the models available in the registry.
  * Falls back to a plain string field when no providers are registered.
@@ -73,28 +115,12 @@ function buildImageGenerateSchema(models: AvailableModel[]) {
         .array(opaqueAssetIdSchema)
         .optional()
         .describe("Authorized reference asset IDs for editing/transformation."),
-      placementX: z
-        .number()
+      placement: imagePlacementSchema
         .optional()
+        .default({ kind: "auto_right" })
         .describe(
-          "Left edge x coordinate on canvas. Use inspect_canvas to determine position.",
+          "Canvas placement. Use relative to place below, above, left, or right of a referenced element; omit for automatic right-side placement.",
         ),
-      placementY: z
-        .number()
-        .optional()
-        .describe(
-          "Top edge y coordinate on canvas. Use inspect_canvas to determine position.",
-        ),
-      placementWidth: z
-        .number()
-        .optional()
-        .default(512)
-        .describe("Display width on canvas"),
-      placementHeight: z
-        .number()
-        .optional()
-        .default(512)
-        .describe("Display height on canvas"),
     })
     .strict();
 }
@@ -115,10 +141,7 @@ type ImageGenerateInput = {
   quality?: string;
   outputFormat?: string;
   inputImages?: string[];
-  placementX?: number;
-  placementY?: number;
-  placementWidth?: number;
-  placementHeight?: number;
+  placement?: ImagePlacement;
 };
 
 type ImageGenerateResult = {
@@ -157,6 +180,7 @@ export type SubmitImageJobFn = (input: {
   aspectRatio: string;
   inputImages?: string[];
   quality?: string;
+  placement?: ImagePlacement;
 }) => Promise<GeneratedMediaToolResult>;
 
 export async function runImageGenerate(
@@ -223,6 +247,7 @@ export async function runImageGenerate(
         model: input.model,
         aspectRatio: input.aspectRatio ?? "1:1",
         ...(input.inputImages ? { inputImages: input.inputImages } : {}),
+        placement: input.placement ?? { kind: "auto_right" },
       }),
     );
     lap("job_complete", {
@@ -230,6 +255,12 @@ export async function runImageGenerate(
       attachmentStatus: result.attachmentStatus,
     });
     return result;
+  }
+
+  // Relative coordinates are resolved by the attachment transaction, so a
+  // direct provider call must fail before invoking the provider.
+  if (input.placement?.kind === "relative") {
+    throw new RelativePlacementRequiresAttachmentBackendError();
   }
 
   // Direct generation: resolve provider from model ID via registry
@@ -275,12 +306,12 @@ export async function runImageGenerate(
       width: result.width,
       height: result.height,
     };
-    if (input.placementX != null && input.placementY != null) {
+    if (input.placement?.kind === "explicit") {
       directResult.placement = {
-        x: input.placementX,
-        y: input.placementY,
-        width: input.placementWidth ?? 512,
-        height: input.placementHeight ?? 512,
+        x: input.placement.x,
+        y: input.placement.y,
+        width: input.placement.width,
+        height: input.placement.height,
       };
     }
     return directResult;
