@@ -22,8 +22,11 @@ export class ConnectionManager {
   private userIndex = new Map<string, Set<string>>();
   /** Canvas-level index: canvasId -> set of connectionIds */
   private canvasIndex = new Map<string, Set<string>>();
-  /** Tracks active runIds per canvas so reconnecting clients know if a run is in progress */
-  private activeRuns = new Map<string, { runId: string; startedAt: number }>();
+  /** Tracks active run metadata so reconnecting clients can correlate the owning chat session. */
+  private activeRuns = new Map<
+    string,
+    { runId: string; sessionId: string; startedAt: number }
+  >();
   /** Pending RPC calls, keyed by unique request UUID (unchanged) */
   private pendingRPCs = new Map<string, PendingRPC>();
 
@@ -94,9 +97,9 @@ export class ConnectionManager {
     canvasSet.add(connectionId);
   }
 
-  /** Mark a run as active for a canvas. */
-  setActiveRun(canvasId: string, runId: string): void {
-    this.activeRuns.set(canvasId, { runId, startedAt: Date.now() });
+  /** Mark a run as active for a canvas and retain its chat-session correlation. */
+  setActiveRun(canvasId: string, runId: string, sessionId: string): void {
+    this.activeRuns.set(canvasId, { runId, sessionId, startedAt: Date.now() });
   }
 
   /** Clear active run for a canvas. */
@@ -105,7 +108,11 @@ export class ConnectionManager {
   }
 
   /** Get active run info for a canvas, if any. */
-  getActiveRun(canvasId: string): { runId: string; startedAt: number } | null {
+  getActiveRun(canvasId: string): {
+    runId: string;
+    sessionId: string;
+    startedAt: number;
+  } | null {
     return this.activeRuns.get(canvasId) ?? null;
   }
 

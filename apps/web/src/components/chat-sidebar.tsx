@@ -1055,13 +1055,28 @@ export function ChatSidebar({
 
       // Resume canvas binding (after DB messages are set)
       ws.resumeCanvas(canvasId, (ack) => {
-        const activeRunId = (ack.payload as Record<string, unknown>)
-          .activeRunId;
+        const resumePayload = ack.payload as Record<string, unknown>;
+        const activeRunId = resumePayload.activeRunId;
         const resumedRunId =
           typeof activeRunId === "string" ? activeRunId : null;
-        const replayed = (ack.payload as Record<string, unknown>).replayed;
+        const activeRunSessionId = resumePayload.activeRunSessionId;
+        const resumedRunSessionId =
+          typeof activeRunSessionId === "string" ? activeRunSessionId : null;
+        const replayed = resumePayload.replayed;
         const replayCount =
           typeof replayed === "number" && replayed >= 0 ? replayed : 0;
+        const ownsResumedRun =
+          resumedRunId !== null && resumedRunSessionId === sessionId;
+
+        if (resumedRunId && !ownsResumedRun) {
+          console.info("[chat] ignored active run from another session", {
+            activeRunId: resumedRunId,
+            activeRunSessionId: resumedRunSessionId,
+            sessionId,
+          });
+          return;
+        }
+
         if (resumedRunId) {
           setStreaming(true);
 

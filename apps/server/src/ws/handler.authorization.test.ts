@@ -51,6 +51,47 @@ describe("WebSocket run authorization", () => {
 });
 
 describe("WebSocket resource commands", () => {
+  it("includes the active run session in the canvas resume acknowledgement", async () => {
+    const socket = new FakeSocket();
+    const connectionManager = new ConnectionManager();
+    connectionManager.setActiveRun("canvas-1", "run-active", "session-active");
+
+    await bindAuthenticatedSocket(
+      socket as never,
+      "token",
+      { url: "/api/ws", headers: { host: "localhost" } } as never,
+      {
+        agentRuns: fakeAgentRuns() as never,
+        authorization: fakeAuthorization("canvas-1"),
+        auth: { authenticate: async () => user },
+        connectionManager,
+      },
+    );
+    socket.emit(
+      "message",
+      JSON.stringify({
+        type: "command",
+        action: "canvas.resume",
+        payload: { canvasId: "canvas-1", lastSeq: 0 },
+      }),
+    );
+    await nextTurn();
+
+    expect(
+      socket.messages.map((message) => JSON.parse(message)),
+    ).toContainEqual(
+      expect.objectContaining({
+        action: "canvas.resume",
+        payload: expect.objectContaining({
+          activeRunId: "run-active",
+          activeRunSessionId: "session-active",
+        }),
+        type: "command.ack",
+      }),
+    );
+    socket.emit("close");
+  });
+
   it("acknowledges an active replay without consuming or clearing its stream", async () => {
     const socket = new FakeSocket();
     const agentRuns = fakeAgentRuns();

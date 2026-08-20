@@ -265,18 +265,20 @@ export async function bindAuthenticatedSocket(
             authenticatedUser,
             p.canvasId,
           );
-          log.info("canvas_resume", {
-            userId: authenticatedUser.id,
-            canvasId: p.canvasId,
-            lastSeq: p.lastSeq,
-          });
-
           // Re-bind only after authorization so replay data never crosses tenants.
           connectionManager.bindCanvas(connectionId, p.canvasId);
 
           const missed =
             options.eventBuffer?.getAfter(p.canvasId, p.lastSeq) ?? [];
           const activeRun = connectionManager.getActiveRun(p.canvasId);
+          log.info("canvas_resume", {
+            userId: authenticatedUser.id,
+            canvasId: p.canvasId,
+            lastSeq: p.lastSeq,
+            activeRunId: activeRun?.runId ?? null,
+            activeRunSessionId: activeRun?.sessionId ?? null,
+            replayed: missed.length,
+          });
 
           // IMPORTANT: Send ACK FIRST so client registers event listener
           // BEFORE replay events arrive. Otherwise replayed events have no handler.
@@ -287,6 +289,7 @@ export async function bindAuthenticatedSocket(
               canvasId: p.canvasId,
               latestSeq: options.eventBuffer?.getLatestSeq(p.canvasId) ?? 0,
               activeRunId: activeRun?.runId ?? null,
+              activeRunSessionId: activeRun?.sessionId ?? null,
               replayed: missed.length,
             },
           });
@@ -361,7 +364,7 @@ async function handleRunCommand(
   // Bind this connection to the canvas so events route correctly
   connectionManager.bindCanvas(connectionId, canvasId);
   if (registration.ownership !== "existing_active") {
-    connectionManager.setActiveRun(canvasId, runId);
+    connectionManager.setActiveRun(canvasId, runId, payload.sessionId);
   }
 
   // Send ACK to the specific connection that initiated the run.

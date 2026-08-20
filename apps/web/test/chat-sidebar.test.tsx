@@ -633,7 +633,10 @@ describe("ChatSidebar", () => {
     resume?.({
       type: "command.ack",
       action: "canvas.resume",
-      payload: { activeRunId: "run_123" },
+      payload: {
+        activeRunId: "run_123",
+        activeRunSessionId: "session-real",
+      },
     });
     await waitFor(() => expect(listeners).toHaveLength(2));
 
@@ -651,6 +654,45 @@ describe("ChatSidebar", () => {
       "session-real",
       expect.objectContaining({ role: "assistant" }),
     );
+  });
+
+  it("does not revive an active run owned by a different chat session", async () => {
+    const listeners: Array<(event: StreamEvent) => void> = [];
+    mockWs.onEvent = vi.fn((callback) => {
+      listeners.push(callback);
+      return () => {};
+    });
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(mockWs.resumeCanvas).toHaveBeenCalled());
+    const resume = vi.mocked(mockWs.resumeCanvas).mock.calls.at(-1)?.[1];
+    resume?.({
+      type: "command.ack",
+      action: "canvas.resume",
+      payload: {
+        activeRunId: "run-other-session",
+        activeRunSessionId: "session-other",
+        replayed: 1,
+      },
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText("试试这些 Loomic Skills")).toBeInTheDocument(),
+    );
+    expect(listeners).toHaveLength(0);
+    expect(saveMessageMock).not.toHaveBeenCalled();
   });
 
   it("persists a known assistant response when a terminal replay resumes without an active run", async () => {
