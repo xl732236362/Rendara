@@ -424,7 +424,7 @@ describe("ChatSidebar", () => {
     ).toBeNull();
   });
 
-  it("does not insert Agent media artifacts through browser callbacks", async () => {
+  it("renders a generated image when completion arrives without a started event", async () => {
     let listener: ((event: StreamEvent) => void) | undefined;
     mockWs.onEvent = vi.fn((callback) => {
       listener = callback;
@@ -472,6 +472,9 @@ describe("ChatSidebar", () => {
       timestamp: "2026-08-20T00:00:00.000Z",
     });
 
+    expect(
+      await screen.findByRole("img", { name: "Generated image" }),
+    ).toHaveAttribute("src", "https://example.com/generated.png");
     expect(onImageGenerated).not.toHaveBeenCalled();
     expect(onVideoGenerated).not.toHaveBeenCalled();
   });

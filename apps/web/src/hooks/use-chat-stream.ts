@@ -126,25 +126,35 @@ export function useChatStream(updateSessionMessages: MessageUpdater) {
           update((prev) =>
             prev.map((m) => {
               if (m.id !== assistantId) return m;
+              const terminalBlock: ToolBlock = {
+                type: "tool",
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+                status: "completed",
+                ...(event.output ? { output: event.output } : {}),
+                ...(event.outputSummary
+                  ? { outputSummary: event.outputSummary }
+                  : {}),
+                ...(event.artifacts ? { artifacts: event.artifacts } : {}),
+              };
+              const existingBlockIndex = m.contentBlocks.findIndex(
+                (block) =>
+                  block.type === "tool" &&
+                  block.toolCallId === event.toolCallId,
+              );
+              if (existingBlockIndex < 0) {
+                return {
+                  ...m,
+                  contentBlocks: [...m.contentBlocks, terminalBlock],
+                };
+              }
               return {
                 ...m,
-                contentBlocks: m.contentBlocks.map((block) => {
-                  if (
-                    block.type === "tool" &&
-                    block.toolCallId === event.toolCallId
-                  ) {
-                    return {
-                      ...block,
-                      status: "completed" as const,
-                      output: event.output,
-                      outputSummary: event.outputSummary,
-                      ...(event.artifacts
-                        ? { artifacts: event.artifacts }
-                        : {}),
-                    };
-                  }
-                  return block;
-                }),
+                contentBlocks: m.contentBlocks.map((block, index) =>
+                  index === existingBlockIndex
+                    ? { ...block, ...terminalBlock }
+                    : block,
+                ),
               };
             }),
           );
@@ -154,20 +164,32 @@ export function useChatStream(updateSessionMessages: MessageUpdater) {
           update((prev) =>
             prev.map((m) => {
               if (m.id !== assistantId) return m;
+              const terminalBlock: ToolBlock = {
+                type: "tool",
+                toolCallId: event.toolCallId,
+                toolName: event.toolName,
+                status: "failed",
+                outputSummary: event.error.message,
+                error: event.error,
+                ...(event.recovery ? { recovery: event.recovery } : {}),
+                ...(event.artifacts ? { artifacts: event.artifacts } : {}),
+              };
+              const existingBlockIndex = m.contentBlocks.findIndex(
+                (block) =>
+                  block.type === "tool" &&
+                  block.toolCallId === event.toolCallId,
+              );
+              if (existingBlockIndex < 0) {
+                return {
+                  ...m,
+                  contentBlocks: [...m.contentBlocks, terminalBlock],
+                };
+              }
               return {
                 ...m,
-                contentBlocks: m.contentBlocks.map((block) =>
-                  block.type === "tool" && block.toolCallId === event.toolCallId
-                    ? {
-                        ...block,
-                        status: "failed" as const,
-                        outputSummary: event.error.message,
-                        error: event.error,
-                        ...(event.recovery ? { recovery: event.recovery } : {}),
-                        ...(event.artifacts
-                          ? { artifacts: event.artifacts }
-                          : {}),
-                      }
+                contentBlocks: m.contentBlocks.map((block, index) =>
+                  index === existingBlockIndex
+                    ? { ...block, ...terminalBlock }
                     : block,
                 ),
               };
