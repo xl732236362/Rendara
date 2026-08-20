@@ -41,6 +41,7 @@ export function CanvasImageGenPanel({
       if (excalidrawApi) {
         const artifact: ImageArtifact = {
           type: "image",
+          source: { kind: "external", url: result.url },
           url: result.url,
           mimeType: result.mimeType,
           width: result.width,

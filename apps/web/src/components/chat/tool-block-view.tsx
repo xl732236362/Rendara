@@ -6,7 +6,11 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type { ImageArtifact, ToolBlock } from "@loomic/shared";
-import { ChatImage } from "./image-lightbox";
+import {
+  useArtifactImageUrl,
+  useArtifactUrlResolver,
+} from "../../lib/artifact-resolution-context";
+import { ImageLightbox } from "./image-lightbox";
 import {
   formatModelDisplayName,
   formatOutputPreview,
@@ -448,6 +452,66 @@ const MediaErrorCard = React.memo(function MediaErrorCard({
 /*  ImageArtifactCard                                                  */
 /* ------------------------------------------------------------------ */
 
+function ResolvedArtifactImage({
+  artifact,
+  alt,
+  className,
+  interactive,
+}: {
+  artifact: ImageArtifact;
+  alt: string;
+  className: string;
+  interactive: boolean;
+}) {
+  const { error, refresh, url } = useArtifactImageUrl(artifact.source);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const retryCountRef = useRef(0);
+
+  useEffect(() => {
+    retryCountRef.current = 0;
+    setLoadFailed(false);
+  }, [artifact.source]);
+
+  const handleImageError = useCallback(() => {
+    if (retryCountRef.current === 0) {
+      retryCountRef.current += 1;
+      refresh();
+      return;
+    }
+    setLoadFailed(true);
+  }, [refresh]);
+
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  if (!url || error || loadFailed) {
+    return (
+      <div
+        className={`${className} flex items-center justify-center bg-muted text-muted-foreground text-xs`}
+        title="Image failed to load"
+      />
+    );
+  }
+
+  return (
+    <>
+      <img
+        src={url}
+        alt={alt}
+        className={`${className}${interactive ? " cursor-zoom-in" : ""}`}
+        loading="lazy"
+        onClick={interactive ? () => setLightboxOpen(true) : undefined}
+        onError={handleImageError}
+      />
+      {interactive && lightboxOpen && (
+        <ImageLightbox
+          src={url}
+          alt={alt}
+          onClose={() => setLightboxOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
 const ImageArtifactCard = React.memo(function ImageArtifactCard({
   artifact,
   cardTitle,
@@ -461,21 +525,32 @@ const ImageArtifactCard = React.memo(function ImageArtifactCard({
   hasDetails: boolean;
   onOpenPanel: () => void;
 }) {
+  const { resolveImageUrl } = useArtifactUrlResolver();
   const handleDownload = useCallback(
-    (e: React.MouseEvent) => {
+    async (e: React.MouseEvent) => {
       e.stopPropagation();
-      fetch(artifact.url)
-        .then((res) => res.blob())
-        .then((blob) => {
-          const a = document.createElement("a");
-          a.href = URL.createObjectURL(blob);
-          a.download = artifact.title ?? "generated-image.png";
-          a.click();
-          URL.revokeObjectURL(a.href);
-        })
-        .catch(() => window.open(artifact.url, "_blank"));
+      try {
+        // Downloads resolve anew because signed URLs may have expired since preview.
+        const url = await resolveImageUrl(artifact.source);
+        const response = await fetch(url);
+        const blob = await response.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = objectUrl;
+        anchor.download = artifact.title ?? "generated-image.png";
+        anchor.click();
+        URL.revokeObjectURL(objectUrl);
+      } catch {
+        console.warn("[artifact] generated image download failed", {
+          assetId:
+            artifact.source.kind === "asset"
+              ? artifact.source.assetId
+              : undefined,
+          errorCode: "image_download_failed",
+        });
+      }
     },
-    [artifact.url, artifact.title],
+    [artifact.source, artifact.title, resolveImageUrl],
   );
 
   return (
@@ -485,11 +560,11 @@ const ImageArtifactCard = React.memo(function ImageArtifactCard({
     >
       {/* Image preview */}
       <div className="relative aspect-square max-h-[280px] w-full overflow-hidden bg-muted">
-        <img
-          src={artifact.url}
+        <ResolvedArtifactImage
+          artifact={artifact}
           alt={artifact.title ?? "Generated image"}
           className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
-          loading="lazy"
+          interactive={false}
         />
         {/* Gradient overlay with download button */}
         <div className="absolute inset-x-0 bottom-0 h-12 bg-gradient-to-t from-black/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity">
@@ -670,11 +745,16 @@ function ToolDetailPanel({
               <div className="flex flex-wrap gap-2">
                 {block.artifacts.map((artifact) =>
                   artifact.type === "image" ? (
-                    <ChatImage
-                      key={artifact.url}
-                      src={artifact.url}
+                    <ResolvedArtifactImage
+                      key={
+                        artifact.source.kind === "asset"
+                          ? artifact.source.assetId
+                          : artifact.source.url
+                      }
+                      artifact={artifact}
                       alt={artifact.title ?? "Generated image"}
                       className="max-w-[200px] rounded-lg border border-border"
+                      interactive
                     />
                   ) : null,
                 )}

@@ -358,11 +358,13 @@ export function uploadFile(
 export function getAssetUrl(
   accessToken: string,
   assetId: string,
+  options?: { signal?: AbortSignal },
 ): Promise<AssetSignedUrlResponse> {
   return apiFetch({
     method: "GET",
     path: `/api/uploads/${assetId}/url`,
     accessToken,
+    ...(options?.signal ? { signal: options.signal } : {}),
     responseSchema: assetSignedUrlResponseSchema,
   });
 }
