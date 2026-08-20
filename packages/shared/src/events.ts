@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import {
+  boundedToolArtifactsSchema,
   generatedAssetRecoverySchema,
-  toolArtifactSchema,
+  toolArtifactsSchema,
 } from "./artifacts.js";
 import {
   canvasIdSchema,
@@ -18,18 +19,21 @@ import { loomicErrorSchema } from "./errors.js";
 
 export {
   imageArtifactSchema,
+  imageArtifactSourceSchema,
   videoArtifactSchema,
   placementSchema,
   generatedAssetAttachmentStatusSchema,
   generatedAssetErrorSchema,
   generatedAssetRecoverySchema,
   toolArtifactSchema,
+  toolArtifactsSchema,
 } from "./artifacts.js";
 export type {
   GeneratedAssetAttachmentStatus,
   GeneratedAssetError,
   GeneratedAssetRecovery,
   ImageArtifact,
+  ImageArtifactSource,
   VideoArtifact,
   Placement,
   ToolArtifact,
@@ -67,7 +71,7 @@ export const toolCompletedEventSchema = z.object({
   toolName: z.string().min(1),
   output: z.record(z.string(), z.unknown()).optional(),
   outputSummary: z.string().optional(),
-  artifacts: z.array(toolArtifactSchema).optional(),
+  artifacts: toolArtifactsSchema.optional(),
   timestamp: timestampSchema,
 });
 
@@ -86,7 +90,7 @@ export const toolFailedEventSchema = z.object({
   toolName: z.string().min(1),
   error: publicToolErrorSchema,
   recovery: generatedAssetRecoverySchema.optional(),
-  artifacts: z.array(toolArtifactSchema).max(10).optional(),
+  artifacts: boundedToolArtifactsSchema(10).optional(),
   timestamp: timestampSchema,
 });
 

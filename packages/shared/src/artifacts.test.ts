@@ -11,6 +11,66 @@ const ids = {
 };
 
 describe("imageArtifactSchema", () => {
+  it("normalizes supported image source wire forms", () => {
+    const assetId = "11111111-1111-4111-8111-111111111111";
+    const baseArtifact = {
+      type: "image" as const,
+      mimeType: "image/png",
+      width: 512,
+      height: 512,
+    };
+
+    const transitionArtifact = imageArtifactSchema.parse({
+      ...baseArtifact,
+      assetId,
+    });
+
+    expect(transitionArtifact).toMatchObject({
+      source: { kind: "asset", assetId },
+      url: `/api/assets/${assetId}`,
+    });
+    expect(transitionArtifact).not.toHaveProperty("assetId");
+    expect(
+      imageArtifactSchema.parse({
+        ...baseArtifact,
+        source: { kind: "asset", assetId },
+      }),
+    ).toMatchObject({
+      source: { kind: "asset", assetId },
+      url: `/api/assets/${assetId}`,
+    });
+    expect(
+      imageArtifactSchema.parse({
+        ...baseArtifact,
+        url: `/api/assets/${assetId}`,
+      }),
+    ).toMatchObject({
+      source: { kind: "asset", assetId },
+      url: `/api/assets/${assetId}`,
+    });
+    expect(
+      imageArtifactSchema.parse({
+        ...baseArtifact,
+        source: { kind: "external", url: "https://example.com/image.png" },
+      }),
+    ).toMatchObject({
+      source: { kind: "external", url: "https://example.com/image.png" },
+      url: "https://example.com/image.png",
+    });
+    expect(
+      imageArtifactSchema.parse({
+        ...baseArtifact,
+        url: "https://example.com/legacy-image.png",
+      }),
+    ).toMatchObject({
+      source: {
+        kind: "external",
+        url: "https://example.com/legacy-image.png",
+      },
+      url: "https://example.com/legacy-image.png",
+    });
+  });
+
   it("accepts artifact with placement coordinates", () => {
     const result = imageArtifactSchema.parse({
       type: "image",

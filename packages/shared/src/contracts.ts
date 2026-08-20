@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 import {
+  boundedToolArtifactsSchema,
   generatedAssetRecoverySchema,
-  toolArtifactSchema,
 } from "./artifacts.js";
 import { brandKitAssetTypeSchema } from "./brand-kit-contracts.js";
 
@@ -164,7 +164,7 @@ export const chatToolActivitySchema = z.object({
   input: z.record(z.string(), z.unknown()).optional(),
   output: z.record(z.string(), z.unknown()).optional(),
   outputSummary: z.string().optional(),
-  artifacts: z.array(toolArtifactSchema).max(10).optional(),
+  artifacts: boundedToolArtifactsSchema(10).optional(),
   error: z
     .object({
       code: z.string().min(1).max(64),
@@ -200,7 +200,7 @@ export const toolBlockSchema = z.object({
   input: z.record(z.string(), z.unknown()).optional(),
   output: z.record(z.string(), z.unknown()).optional(),
   outputSummary: z.string().optional(),
-  artifacts: z.array(toolArtifactSchema).max(10).optional(),
+  artifacts: boundedToolArtifactsSchema(10).optional(),
   error: z
     .object({
       code: z.string().min(1).max(64),

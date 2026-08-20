@@ -6,6 +6,7 @@ import type { ZodType } from "zod";
 import {
   type Database,
   boundaryErrorCodeSchema,
+  chatMessageSchema,
   errorCodeSchema,
   errorCodeValues,
   generatedAssetAttachmentListResponseSchema,
@@ -890,6 +891,165 @@ describe("@loomic/shared contracts", () => {
         recovery,
       }),
     ).toMatchObject({ status: "failed", recovery });
+  });
+
+  it("drops only invalid image artifacts while decoding tool containers", () => {
+    const assetId = "11111111-1111-4111-8111-111111111111";
+    const artifacts = [
+      {
+        type: "image",
+        assetId,
+        mimeType: "image/png",
+        width: 1024,
+        height: 1024,
+      },
+      {
+        type: "image",
+        source: { kind: "asset", assetId },
+        url: "https://example.com/conflicting-image.png",
+        mimeType: "image/png",
+        width: 1024,
+        height: 1024,
+      },
+      {
+        type: "image",
+        assetId: "not-a-uuid",
+        mimeType: "image/png",
+        width: 1024,
+        height: 1024,
+      },
+      {
+        type: "video",
+        url: "https://example.com/generated.mp4",
+        mimeType: "video/mp4",
+        width: 1920,
+        height: 1080,
+      },
+    ];
+    const tool = {
+      toolCallId: "tool_123",
+      toolName: "generate_image",
+      status: "completed" as const,
+      artifacts,
+    };
+
+    const message = chatMessageSchema.parse({
+      id: "message_123",
+      role: "assistant",
+      content: "Generated media",
+      toolActivities: [tool],
+      contentBlocks: [{ type: "tool", ...tool }],
+      createdAt: "2026-03-23T12:00:00.000Z",
+    });
+    const completed = streamEventSchema.parse({
+      type: "tool.completed",
+      runId: "run_123",
+      toolCallId: tool.toolCallId,
+      toolName: tool.toolName,
+      artifacts,
+      timestamp: "2026-03-23T12:00:00.000Z",
+    });
+    const failed = streamEventSchema.parse({
+      type: "tool.failed",
+      runId: "run_123",
+      toolCallId: tool.toolCallId,
+      toolName: tool.toolName,
+      error: {
+        code: "generated_asset_not_attached",
+        message: "Generated, but not attached.",
+        correlationId: "correlation_123",
+      },
+      artifacts,
+      timestamp: "2026-03-23T12:00:00.000Z",
+    });
+
+    expect(message.toolActivities?.[0]?.artifacts).toEqual([
+      expect.objectContaining({
+        source: { kind: "asset", assetId },
+        url: `/api/assets/${assetId}`,
+      }),
+      expect.objectContaining({ type: "video" }),
+    ]);
+    expect(message.contentBlocks?.[0]).toMatchObject({
+      artifacts: [
+        expect.anything(),
+        expect.objectContaining({ type: "video" }),
+      ],
+    });
+    const contentBlock = message.contentBlocks?.[0];
+    if (!contentBlock || contentBlock.type !== "tool") {
+      throw new Error("Expected a tool content block.");
+    }
+    expect(contentBlock.artifacts).toHaveLength(2);
+    expect(completed).toMatchObject({
+      artifacts: [
+        expect.anything(),
+        expect.objectContaining({ type: "video" }),
+      ],
+    });
+    if (completed.type !== "tool.completed") {
+      throw new Error("Expected a completed tool event.");
+    }
+    expect(completed.artifacts).toHaveLength(2);
+    expect(failed).toMatchObject({
+      artifacts: [
+        expect.anything(),
+        expect.objectContaining({ type: "video" }),
+      ],
+    });
+    if (failed.type !== "tool.failed") {
+      throw new Error("Expected a failed tool event.");
+    }
+    expect(failed.artifacts).toHaveLength(2);
+  });
+
+  it("does not normalize top-level user image blocks as tool artifacts", () => {
+    const message = chatMessageSchema.parse({
+      id: "message_123",
+      role: "user",
+      content: "Reference image",
+      contentBlocks: [
+        {
+          type: "image",
+          assetId: "upload_123",
+          url: "https://example.com/upload.png",
+          mimeType: "image/png",
+          source: "upload",
+        },
+      ],
+      createdAt: "2026-03-23T12:00:00.000Z",
+    });
+
+    expect(message.contentBlocks).toEqual([
+      {
+        type: "image",
+        assetId: "upload_123",
+        url: "https://example.com/upload.png",
+        mimeType: "image/png",
+        source: "upload",
+      },
+    ]);
+  });
+
+  it("continues to reject invalid video artifacts", () => {
+    expect(() =>
+      streamEventSchema.parse({
+        type: "tool.completed",
+        runId: "run_123",
+        toolCallId: "tool_123",
+        toolName: "generate_video",
+        artifacts: [
+          {
+            type: "video",
+            url: "file:///tmp/generated.mp4",
+            mimeType: "video/mp4",
+            width: 1920,
+            height: 1080,
+          },
+        ],
+        timestamp: "2026-03-23T12:00:00.000Z",
+      }),
+    ).toThrow();
   });
 
   it("bounds attachment status and outstanding intent responses", () => {

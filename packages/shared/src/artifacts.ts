@@ -16,16 +16,61 @@ const safeArtifactUrlSchema = z
     { message: "Artifact URL must use HTTPS or an authenticated asset route." },
   );
 
-export const imageArtifactSchema = z.object({
-  type: z.literal("image"),
-  title: z.string().optional(),
-  url: safeArtifactUrlSchema,
-  mimeType: z.string(),
-  width: z.number().int().positive(),
-  height: z.number().int().positive(),
-  placement: placementSchema.optional(),
-  jobId: z.string().optional(),
-});
+const assetIdSchema = z.string().uuid();
+const assetRoutePattern =
+  /^\/api\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+
+const externalArtifactUrlSchema = safeArtifactUrlSchema.refine(
+  (value) => value.startsWith("https://"),
+  { message: "External image source URLs must use HTTPS." },
+);
+
+export const imageArtifactSourceSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("asset"),
+      assetId: assetIdSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("external"),
+      url: externalArtifactUrlSchema,
+    })
+    .strict(),
+]);
+
+const imageArtifactTransportSchema = z
+  .object({
+    type: z.literal("image"),
+    title: z.string().optional(),
+    source: imageArtifactSourceSchema,
+    url: safeArtifactUrlSchema,
+    mimeType: z.string(),
+    width: z.number().int().positive(),
+    height: z.number().int().positive(),
+    placement: placementSchema.optional(),
+    jobId: z.string().optional(),
+  })
+  .superRefine((artifact, context) => {
+    const expectedUrl =
+      artifact.source.kind === "asset"
+        ? assetRoute(artifact.source.assetId)
+        : artifact.source.url;
+
+    if (artifact.url !== expectedUrl) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["url"],
+        message: "Image artifact URL conflicts with its source.",
+      });
+    }
+  });
+
+export const imageArtifactSchema = z.preprocess(
+  normalizeImageArtifact,
+  imageArtifactTransportSchema,
+);
 
 export const videoArtifactSchema = z.object({
   type: z.literal("video"),
@@ -39,10 +84,16 @@ export const videoArtifactSchema = z.object({
   jobId: z.string().optional(),
 });
 
-export const toolArtifactSchema = z.discriminatedUnion("type", [
+export const toolArtifactSchema = z.union([
   imageArtifactSchema,
   videoArtifactSchema,
 ]);
+
+export const toolArtifactsSchema = normalizedToolArtifactsSchema();
+
+export function boundedToolArtifactsSchema(max: number) {
+  return normalizedToolArtifactsSchema(max);
+}
 
 export const generatedAssetRecoverySchema = z.discriminatedUnion("kind", [
   z
@@ -110,6 +161,7 @@ export const generatedAssetAttachmentStatusSchema = z.discriminatedUnion(
 );
 
 export type Placement = z.infer<typeof placementSchema>;
+export type ImageArtifactSource = z.infer<typeof imageArtifactSourceSchema>;
 export type ImageArtifact = z.infer<typeof imageArtifactSchema>;
 export type VideoArtifact = z.infer<typeof videoArtifactSchema>;
 export type ToolArtifact = z.infer<typeof toolArtifactSchema>;
@@ -120,3 +172,110 @@ export type GeneratedAssetError = z.infer<typeof generatedAssetErrorSchema>;
 export type GeneratedAssetAttachmentStatus = z.infer<
   typeof generatedAssetAttachmentStatusSchema
 >;
+
+function normalizeImageArtifact(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+
+  const source = imageArtifactSourceSchema.safeParse(value.source);
+  const assetId = assetIdSchema.safeParse(value.assetId);
+  const url = typeof value.url === "string" ? value.url : undefined;
+
+  if (value.source !== undefined) {
+    if (!source.success) return value;
+
+    if (
+      value.assetId !== undefined &&
+      (!assetId.success ||
+        source.data.kind !== "asset" ||
+        source.data.assetId !== assetId.data)
+    ) {
+      return { ...value, source: undefined };
+    }
+
+    return {
+      ...value,
+      source: source.data,
+      url:
+        url ??
+        (source.data.kind === "asset"
+          ? assetRoute(source.data.assetId)
+          : source.data.url),
+    };
+  }
+
+  if (value.assetId !== undefined) {
+    if (!assetId.success) return value;
+
+    return {
+      ...value,
+      source: { kind: "asset", assetId: assetId.data },
+      url: url ?? assetRoute(assetId.data),
+    };
+  }
+
+  const legacySource = legacyImageSource(url);
+  if (!legacySource || !url) return value;
+
+  return {
+    ...value,
+    source: legacySource,
+    url,
+  };
+}
+
+function legacyImageSource(
+  url: string | undefined,
+): ImageArtifactSource | undefined {
+  if (!url) return undefined;
+
+  const assetRouteMatch = assetRoutePattern.exec(url);
+  const assetId = assetRouteMatch?.[1];
+  if (assetId) {
+    return { kind: "asset", assetId };
+  }
+
+  if (url.startsWith("https://")) {
+    return { kind: "external", url };
+  }
+
+  return undefined;
+}
+
+function assetRoute(assetId: string): string {
+  return `/api/assets/${assetId}`;
+}
+
+function normalizedToolArtifactsSchema(max?: number) {
+  const artifacts = z.array(z.unknown());
+  const boundedArtifacts = max === undefined ? artifacts : artifacts.max(max);
+
+  return boundedArtifacts.transform((values, context) => {
+    const decoded: ToolArtifact[] = [];
+
+    for (const [index, value] of values.entries()) {
+      const parsed = toolArtifactSchema.safeParse(value);
+      if (parsed.success) {
+        decoded.push(parsed.data);
+        continue;
+      }
+
+      if (isImageArtifact(value)) continue;
+
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [index],
+        message: "Tool artifact is invalid.",
+      });
+    }
+
+    return decoded;
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isImageArtifact(value: unknown): boolean {
+  return isRecord(value) && value.type === "image";
+}
