@@ -161,30 +161,27 @@ export function useWebSocket(
         }
         const runId = msg.runId;
         if (typeof runId === "string") {
+          const errorCode = (msg.error as { code?: string } | undefined)?.code;
           console.error("[ws] active Agent run failed:", {
             runId,
-            code: (msg.error as { code?: string } | undefined)?.code,
+            code: errorCode,
           });
-          const failedEvent: StreamEvent = {
-            type: "run.failed",
-            runId,
-            timestamp: new Date().toISOString(),
-            error: {
-              code: "run_failed",
-              message:
-                (msg.error as { message?: string } | undefined)?.message ??
-                "Agent stream could not be completed.",
-              ...((msg.error as { code?: string } | undefined)?.code ===
-              "assistant_message_persistence_failed"
-                ? {
-                    details: {
-                      sourceCode: "assistant_message_persistence_failed",
-                    },
-                  }
-                : {}),
-            },
-          };
-          for (const cb of eventListeners.current) cb(failedEvent);
+          const timestamp = new Date().toISOString();
+          const streamEvent: StreamEvent =
+            errorCode === "assistant_message_persistence_failed"
+              ? { type: "assistant.persistence_failed", runId, timestamp }
+              : {
+                  type: "run.failed",
+                  runId,
+                  timestamp,
+                  error: {
+                    code: "run_failed",
+                    message:
+                      (msg.error as { message?: string } | undefined)
+                        ?.message ?? "Agent stream could not be completed.",
+                  },
+                };
+          for (const cb of eventListeners.current) cb(streamEvent);
         }
       } else if (msg.type === "rpc.request") {
         void handleRpcRequest(ws, msg as unknown as WsRpcRequest);

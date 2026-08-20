@@ -409,7 +409,7 @@ async function handleRunCommand(
   // Accumulate assistant content blocks for server-side persistence
   const assistantText: string[] = [];
   const assistantBlocks: ContentBlock[] = [];
-  let deferredRunFailure: StreamEvent | undefined;
+  const deferredTerminalEvents: StreamEvent[] = [];
 
   const publishStreamEvent = (event: StreamEvent) => {
     services.eventBuffer?.push(canvasId, event);
@@ -424,10 +424,10 @@ async function handleRunCommand(
         firstEvent = false;
       }
 
-      // A run failure is published only after assistant persistence. This keeps
-      // an actionable persistence-exhaustion marker ahead of the terminal event.
-      if (event.type === "run.failed") {
-        deferredRunFailure = event;
+      // Terminal events are published only after assistant persistence. This
+      // keeps an actionable persistence-exhaustion marker ahead of client cleanup.
+      if (isTerminalRunEvent(event)) {
+        deferredTerminalEvents.push(event);
       } else {
         publishStreamEvent(event);
       }
@@ -511,11 +511,16 @@ async function handleRunCommand(
             message: failureMessage,
           },
         });
+        publishStreamEvent({
+          type: "assistant.persistence_failed",
+          runId,
+          timestamp: new Date().toISOString(),
+        });
       }
     }
 
-    if (deferredRunFailure) {
-      publishStreamEvent(deferredRunFailure);
+    for (const event of deferredTerminalEvents) {
+      publishStreamEvent(event);
     }
   } catch (error) {
     log.error("stream_error", {
@@ -603,6 +608,14 @@ function appendThinkingBlock(blocks: ContentBlock[], thinking: string): void {
 
 function boundedErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message.slice(0, 256) : "UnknownError";
+}
+
+function isTerminalRunEvent(event: StreamEvent): boolean {
+  return (
+    event.type === "run.completed" ||
+    event.type === "run.failed" ||
+    event.type === "run.canceled"
+  );
 }
 
 function upsertTerminalToolBlock(

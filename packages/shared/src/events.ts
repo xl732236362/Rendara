@@ -114,6 +114,16 @@ export const runFailedEventSchema = z.object({
   timestamp: timestampSchema,
 });
 
+/**
+ * Durable notice that the completed Agent response could not be persisted.
+ * This is separate from run.failed because the Agent run itself may succeed.
+ */
+export const assistantPersistenceFailedEventSchema = z.object({
+  type: z.literal("assistant.persistence_failed"),
+  runId: runIdSchema,
+  timestamp: timestampSchema,
+});
+
 export const thinkingDeltaEventSchema = z.object({
   type: z.literal("thinking.delta"),
   runId: runIdSchema,
@@ -162,6 +172,7 @@ export const streamEventSchema = z.discriminatedUnion("type", [
   runCanceledEventSchema,
   runCompletedEventSchema,
   runFailedEventSchema,
+  assistantPersistenceFailedEventSchema,
   canvasSyncEventSchema,
   billingErrorEventSchema,
 ]);

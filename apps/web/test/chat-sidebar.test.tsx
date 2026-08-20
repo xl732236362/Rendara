@@ -583,23 +583,13 @@ describe("ChatSidebar", () => {
       timestamp: "2026-08-20T00:00:00.000Z",
     });
     listener?.({
-      type: "run.failed",
+      type: "assistant.persistence_failed",
       runId: "run_123",
-      error: {
-        code: "run_failed",
-        message: "The assistant response could not be saved.",
-        details: { sourceCode: "assistant_message_persistence_failed" },
-      },
       timestamp: "2026-08-20T00:00:01.000Z",
     });
     listener?.({
-      type: "run.failed",
+      type: "assistant.persistence_failed",
       runId: "run_123",
-      error: {
-        code: "run_failed",
-        message: "The assistant response could not be saved.",
-        details: { sourceCode: "assistant_message_persistence_failed" },
-      },
       timestamp: "2026-08-20T00:00:02.000Z",
     });
 
@@ -611,6 +601,55 @@ describe("ChatSidebar", () => {
         role: "assistant",
         content: "Assistant response.",
       }),
+    );
+  });
+
+  it("deduplicates replayed persistence failure across initial and resumed run listeners", async () => {
+    const listeners: Array<(event: StreamEvent) => void> = [];
+    mockWs.onEvent = vi.fn((callback) => {
+      listeners.push(callback);
+      return () => {};
+    });
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    const input = await screen.findByPlaceholderText(/start with an idea/i);
+    await userEvent.type(input, "resume fallback{Enter}");
+    await waitFor(() => expect(listeners).toHaveLength(1));
+    await waitFor(() => expect(mockWs.resumeCanvas).toHaveBeenCalled());
+
+    const resume = vi.mocked(mockWs.resumeCanvas).mock.calls.at(-1)?.[1];
+    resume?.({
+      type: "command.ack",
+      action: "canvas.resume",
+      payload: { activeRunId: "run_123" },
+    });
+    await waitFor(() => expect(listeners).toHaveLength(2));
+
+    const persistenceFailure = {
+      type: "assistant.persistence_failed",
+      runId: "run_123",
+      timestamp: "2026-08-20T00:00:01.000Z",
+    } as StreamEvent;
+    listeners[0]?.(persistenceFailure);
+    listeners[1]?.(persistenceFailure);
+
+    await waitFor(() => expect(saveMessageMock).toHaveBeenCalledTimes(2));
+    expect(saveMessageMock).toHaveBeenLastCalledWith(
+      "token_abc",
+      "session-real",
+      expect.objectContaining({ role: "assistant" }),
     );
   });
 });

@@ -76,6 +76,37 @@ describe("useWebSocket Agent correlation", () => {
     unmount();
   });
 
+  it("emits a neutral replayable event for assistant persistence exhaustion", async () => {
+    const { result, unmount } = renderHook(() => useWebSocket(() => "token"));
+    await waitFor(() => expect(result.current.connected).toBe(true));
+    const onEvent = vi.fn();
+    const unsubscribe = result.current.onEvent(onEvent);
+
+    act(() => {
+      FakeWebSocket.instances[0]?.receive({
+        type: "error",
+        action: "agent.run",
+        runId: "run-1",
+        error: {
+          code: "assistant_message_persistence_failed",
+          message: "The assistant response could not be saved.",
+        },
+      });
+    });
+
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "assistant.persistence_failed",
+        runId: "run-1",
+      }),
+    );
+    expect(onEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "run.failed" }),
+    );
+    unsubscribe();
+    unmount();
+  });
+
   it("treats authentication rejection as terminal and does not reconnect", async () => {
     vi.useFakeTimers();
     const onAuthExpired = vi.fn();

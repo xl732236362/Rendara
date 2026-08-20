@@ -9,6 +9,7 @@ import {
 } from "../security/resource-authorization.js";
 import type { AuthenticatedUser } from "../supabase/user.js";
 import { ConnectionManager } from "./connection-manager.js";
+import { CanvasEventBuffer } from "./event-buffer.js";
 import {
   authorizeCanvasResume,
   authorizeRunCancel,
@@ -367,6 +368,55 @@ describe("WebSocket resource commands", () => {
     );
     expect(persistenceErrorIndex).toBeGreaterThan(-1);
     expect(terminalFailureIndex).toBeGreaterThan(persistenceErrorIndex);
+    socket.emit("close");
+  });
+
+  it("publishes a replayable persistence failure before a completed run", async () => {
+    const socket = new FakeSocket();
+    const eventBuffer = new CanvasEventBuffer();
+    const agentRuns = createdAgentRuns(
+      (async function* () {
+        yield {
+          type: "message.delta",
+          runId: "run-1",
+          messageId: "message-1",
+          delta: "Unsaved completed response.",
+          timestamp: "2026-08-20T00:00:00.000Z",
+        };
+        yield {
+          type: "run.completed",
+          runId: "run-1",
+          timestamp: "2026-08-20T00:00:01.000Z",
+        };
+      })(),
+    );
+    const createMessage = vi.fn().mockRejectedValue(new Error("database_down"));
+
+    await bindWithCreatedRun(socket, agentRuns, {
+      chatService: { createMessage } as never,
+      eventBuffer,
+    });
+    socket.emit("message", runCommand());
+    await waitForTurns(12);
+
+    const messages = socket.messages.map((message) => JSON.parse(message));
+    const persistenceSignalIndex = messages.findIndex(
+      (message) =>
+        message.type === "event" &&
+        message.event?.type === "assistant.persistence_failed",
+    );
+    const completedIndex = messages.findIndex(
+      (message) =>
+        message.type === "event" && message.event?.type === "run.completed",
+    );
+    expect(persistenceSignalIndex).toBeGreaterThan(-1);
+    expect(completedIndex).toBeGreaterThan(persistenceSignalIndex);
+    expect(
+      eventBuffer
+        .getAfter("canvas-1")
+        .map(({ event }) => event.type)
+        .slice(-2),
+    ).toEqual(["assistant.persistence_failed", "run.completed"]);
     socket.emit("close");
   });
 

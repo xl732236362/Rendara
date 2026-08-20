@@ -173,7 +173,8 @@ export function ChatSidebar({
   const selectedCanvasElementsRef = useRef(selectedCanvasElements);
   selectedCanvasElementsRef.current = selectedCanvasElements;
   const prevConnectedRef = useRef(false);
-  const fallbackPersistedAssistantIdsRef = useRef(new Set<string>());
+  const fallbackPersistedRunIdsRef = useRef(new Set<string>());
+  const assistantIdByRunIdRef = useRef(new Map<string, string>());
 
   const {
     attachments: imageAttachments,
@@ -206,13 +207,15 @@ export function ChatSidebar({
   const { toast: showToast } = useToast();
 
   const persistAssistantFallback = useCallback(
-    (sessionId: string, assistantId: string) => {
-      if (fallbackPersistedAssistantIdsRef.current.has(assistantId)) return;
+    (sessionId: string, runId: string) => {
+      if (fallbackPersistedRunIdsRef.current.has(runId)) return;
+      const assistantId = assistantIdByRunIdRef.current.get(runId);
+      if (!assistantId) return;
       const assistant = getSessionMessages(sessionId).find(
         (message) => message.id === assistantId && message.role === "assistant",
       );
       if (!assistant) return;
-      fallbackPersistedAssistantIdsRef.current.add(assistantId);
+      fallbackPersistedRunIdsRef.current.add(runId);
       const content = assistant.contentBlocks
         .filter((block) => block.type === "text")
         .map((block) => block.text)
@@ -225,6 +228,7 @@ export function ChatSidebar({
         console.warn("[chat] assistant fallback persistence failed", {
           assistantId,
           errorCode: "assistant_fallback_persistence_failed",
+          runId,
           sessionId,
         });
       });
@@ -759,6 +763,10 @@ export function ChatSidebar({
           // Forward event to parent for fallback job polling (timed-out generation recovery)
           onStreamEvent?.(event);
 
+          if (event.type === "assistant.persistence_failed") {
+            persistAssistantFallback(currentSessionId, event.runId);
+          }
+
           // Preview model hint: suggest switching when run fails
           if (event.type === "run.failed") {
             const currentModel = agentModelRef.current ?? "";
@@ -775,13 +783,6 @@ export function ChatSidebar({
             event.type === "run.failed" ||
             event.type === "run.canceled"
           ) {
-            if (
-              event.type === "run.failed" &&
-              event.error.details?.sourceCode ===
-                "assistant_message_persistence_failed"
-            ) {
-              persistAssistantFallback(currentSessionId, assistantId);
-            }
             void refreshAttachmentRecovery(currentSessionId);
             resolveStream();
           }
@@ -809,6 +810,7 @@ export function ChatSidebar({
               );
               const id = ack.payload.runId as string;
               runIdRef.current = id;
+              assistantIdByRunIdRef.current.set(id, assistantId);
               resolve(id);
             },
             onError: (error) => {
@@ -1059,6 +1061,7 @@ export function ChatSidebar({
           setStreaming(true);
 
           const assistantId = `resumed_${activeRunId}`;
+          assistantIdByRunIdRef.current.set(activeRunId, assistantId);
           // Must use updateSessionMessages (not setMessages) so the placeholder
           // lands in msgCacheRef as well as React state. applyStreamEvent reads
           // from the cache — if the placeholder only lives in React state, stream
@@ -1087,18 +1090,15 @@ export function ChatSidebar({
             applyStreamEvent(evt, assistantId, sessionId);
             onStreamEvent?.(evt);
 
+            if (evt.type === "assistant.persistence_failed") {
+              persistAssistantFallback(sessionId, evt.runId);
+            }
+
             if (
               evt.type === "run.completed" ||
               evt.type === "run.failed" ||
               evt.type === "run.canceled"
             ) {
-              if (
-                evt.type === "run.failed" &&
-                evt.error.details?.sourceCode ===
-                  "assistant_message_persistence_failed"
-              ) {
-                persistAssistantFallback(sessionId, assistantId);
-              }
               void refreshAttachmentRecovery(sessionId);
               setStreaming(false);
               unsub();
