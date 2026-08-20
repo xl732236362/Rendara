@@ -175,6 +175,20 @@ export function ChatSidebar({
   const prevConnectedRef = useRef(false);
   const fallbackPersistedRunIdsRef = useRef(new Set<string>());
   const assistantIdByRunIdRef = useRef(new Map<string, string>());
+  const runListenerByRunIdRef = useRef(
+    new Map<string, { assistantId: string; cleanup: () => void }>(),
+  );
+
+  // A remounted sidebar owns fresh listeners. Release any listeners from this
+  // instance so resume can safely recover the active run without duplicates.
+  useEffect(() => {
+    return () => {
+      for (const listener of runListenerByRunIdRef.current.values()) {
+        listener.cleanup();
+      }
+      runListenerByRunIdRef.current.clear();
+    };
+  }, []);
 
   const {
     attachments: imageAttachments,
@@ -720,7 +734,19 @@ export function ChatSidebar({
         });
         const runIdRef = { current: "" };
 
-        const cleanup = ws.onEvent((event) => {
+        let cleanup = () => {};
+        const cleanupRunListener = () => {
+          cleanup();
+          const runId = runIdRef.current;
+          if (
+            runId &&
+            runListenerByRunIdRef.current.get(runId)?.cleanup ===
+              cleanupRunListener
+          ) {
+            runListenerByRunIdRef.current.delete(runId);
+          }
+        };
+        cleanup = ws.onEvent((event) => {
           if (event.type === "canvas.sync") {
             if (event.canvasId === canvasId) onCanvasSync?.(event);
             return;
@@ -791,7 +817,7 @@ export function ChatSidebar({
         // Start run via WebSocket
         const runId = await new Promise<string>((resolve, reject) => {
           const timeout = setTimeout(() => {
-            cleanup();
+            cleanupRunListener();
             reject(new Error("WebSocket ack timeout — connection may be down"));
           }, 15_000);
 
@@ -811,6 +837,10 @@ export function ChatSidebar({
               const id = ack.payload.runId as string;
               runIdRef.current = id;
               assistantIdByRunIdRef.current.set(id, assistantId);
+              runListenerByRunIdRef.current.set(id, {
+                assistantId,
+                cleanup: cleanupRunListener,
+              });
               resolve(id);
             },
             onError: (error) => {
@@ -853,7 +883,7 @@ export function ChatSidebar({
               return;
             }
             void streamDone.finally(() => {
-              cleanup();
+              cleanupRunListener();
               setStreaming(false);
             });
           };
@@ -863,7 +893,7 @@ export function ChatSidebar({
         setMessageMentions([]);
 
         await streamDone;
-        cleanup();
+        cleanupRunListener();
       } catch (error) {
         const wsError = (error as { wsError?: { error?: { code?: string } } })
           .wsError;
@@ -1080,7 +1110,17 @@ export function ChatSidebar({
         if (resumedRunId) {
           setStreaming(true);
 
-          const assistantId = `resumed_${resumedRunId}`;
+          const activeListener =
+            runListenerByRunIdRef.current.get(resumedRunId);
+          if (activeListener) {
+            // The original send listener is still subscribed. It already owns
+            // the placeholder and will receive the resumed stream replay.
+            return;
+          }
+
+          const assistantId =
+            assistantIdByRunIdRef.current.get(resumedRunId) ??
+            `resumed_${resumedRunId}`;
           assistantIdByRunIdRef.current.set(resumedRunId, assistantId);
           // Must use updateSessionMessages (not setMessages) so the placeholder
           // lands in msgCacheRef as well as React state. applyStreamEvent reads
@@ -1105,7 +1145,18 @@ export function ChatSidebar({
         // The server clears activeRunId before replaying terminal events. Register
         // after every resume ACK so its preceding persistence marker is not lost.
         let remainingReplayEvents = replayCount;
-        const unsub = ws.onEvent((evt) => {
+        let unsub = () => {};
+        const cleanupResumedListener = () => {
+          unsub();
+          if (
+            resumedRunId &&
+            runListenerByRunIdRef.current.get(resumedRunId)?.cleanup ===
+              cleanupResumedListener
+          ) {
+            runListenerByRunIdRef.current.delete(resumedRunId);
+          }
+        };
+        unsub = ws.onEvent((evt) => {
           if (!resumedRunId && remainingReplayEvents > 0) {
             remainingReplayEvents -= 1;
           }
@@ -1134,7 +1185,7 @@ export function ChatSidebar({
             ) {
               void refreshAttachmentRecovery(sessionId);
               setStreaming(false);
-              unsub();
+              cleanupResumedListener();
             }
             return;
           }
@@ -1162,6 +1213,15 @@ export function ChatSidebar({
           }
           if (remainingReplayEvents === 0) unsub();
         });
+        if (resumedRunId) {
+          const assistantId = assistantIdByRunIdRef.current.get(resumedRunId);
+          if (assistantId) {
+            runListenerByRunIdRef.current.set(resumedRunId, {
+              assistantId,
+              cleanup: cleanupResumedListener,
+            });
+          }
+        }
       });
     })();
   }, [

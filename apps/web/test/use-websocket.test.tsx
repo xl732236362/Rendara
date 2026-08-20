@@ -107,6 +107,29 @@ describe("useWebSocket Agent correlation", () => {
     unmount();
   });
 
+  it("keeps an active stream recoverable when finalization is unconfirmed", async () => {
+    const { result, unmount } = renderHook(() => useWebSocket(() => "token"));
+    await waitFor(() => expect(result.current.connected).toBe(true));
+    const onEvent = vi.fn();
+    const unsubscribe = result.current.onEvent(onEvent);
+
+    act(() => {
+      FakeWebSocket.instances[0]?.receive({
+        type: "error",
+        action: "agent.run",
+        runId: "run-1",
+        error: {
+          code: "run_finalization_unconfirmed",
+          message: "The server cannot confirm the final run state.",
+        },
+      });
+    });
+
+    expect(onEvent).not.toHaveBeenCalled();
+    unsubscribe();
+    unmount();
+  });
+
   it("treats authentication rejection as terminal and does not reconnect", async () => {
     vi.useFakeTimers();
     const onAuthExpired = vi.fn();

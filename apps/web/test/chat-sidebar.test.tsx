@@ -604,7 +604,7 @@ describe("ChatSidebar", () => {
     );
   });
 
-  it("deduplicates replayed persistence failure across initial and resumed run listeners", async () => {
+  it("reuses the acknowledged run listener when reconnect reloads no messages", async () => {
     const listeners: Array<(event: StreamEvent) => void> = [];
     mockWs.onEvent = vi.fn((callback) => {
       listeners.push(callback);
@@ -638,21 +638,24 @@ describe("ChatSidebar", () => {
         activeRunSessionId: "session-real",
       },
     });
-    await waitFor(() => expect(listeners).toHaveLength(2));
-
-    const persistenceFailure = {
-      type: "assistant.persistence_failed",
-      runId: "run_123",
-      timestamp: "2026-08-20T00:00:01.000Z",
-    } as StreamEvent;
-    listeners[0]?.(persistenceFailure);
-    listeners[1]?.(persistenceFailure);
-
-    await waitFor(() => expect(saveMessageMock).toHaveBeenCalledTimes(2));
-    expect(saveMessageMock).toHaveBeenLastCalledWith(
+    // reloadMessages deliberately resolves with no rows: the original stream
+    // listener and placeholder must remain the sole owners of this run.
+    expect(fetchMessagesMock).toHaveBeenLastCalledWith(
       "token_abc",
       "session-real",
-      expect.objectContaining({ role: "assistant" }),
+    );
+    expect(listeners).toHaveLength(1);
+
+    listeners[0]?.({
+      type: "message.delta",
+      runId: "run_123",
+      messageId: "message-1",
+      delta: "Replayed exactly once.",
+      timestamp: "2026-08-20T00:00:01.000Z",
+    });
+
+    await waitFor(() =>
+      expect(screen.getAllByText("Replayed exactly once.")).toHaveLength(1),
     );
   });
 

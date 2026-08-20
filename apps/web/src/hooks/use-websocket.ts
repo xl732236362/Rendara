@@ -162,6 +162,13 @@ export function useWebSocket(
         const runId = msg.runId;
         if (typeof runId === "string") {
           const errorCode = (msg.error as { code?: string } | undefined)?.code;
+          if (errorCode === "run_finalization_unconfirmed") {
+            console.warn(
+              "[ws] Agent finalization is unconfirmed; preserving stream recovery state",
+              { runId, code: errorCode },
+            );
+            return;
+          }
           console.error("[ws] active Agent run failed:", {
             runId,
             code: errorCode,
