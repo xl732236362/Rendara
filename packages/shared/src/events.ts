@@ -25,6 +25,7 @@ export {
   generatedAssetAttachmentStatusSchema,
   generatedAssetErrorSchema,
   generatedAssetRecoverySchema,
+  boundedToolArtifactsSchema,
   toolArtifactSchema,
   toolArtifactsSchema,
 } from "./artifacts.js";

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  boundedToolArtifactsSchema,
   generatedAssetAttachmentStatusSchema,
   generatedAssetRecoverySchema,
   imageArtifactSchema,
@@ -99,6 +100,23 @@ describe("imageArtifactSchema", () => {
     expect(result.placement).toBeUndefined();
   });
 
+  it("normalizes a legacy asset route containing the nil UUID", () => {
+    const assetId = "00000000-0000-0000-0000-000000000000";
+
+    expect(
+      imageArtifactSchema.parse({
+        type: "image",
+        url: `/api/assets/${assetId}`,
+        mimeType: "image/png",
+        width: 512,
+        height: 512,
+      }),
+    ).toMatchObject({
+      source: { kind: "asset", assetId },
+      url: `/api/assets/${assetId}`,
+    });
+  });
+
   it.each(["data:image/png;base64,abc", "file:///tmp/image.png"])(
     "rejects unsafe display URL %s",
     (url) => {
@@ -113,6 +131,39 @@ describe("imageArtifactSchema", () => {
       ).toThrow();
     },
   );
+});
+
+describe("boundedToolArtifactsSchema", () => {
+  it("drops invalid images before enforcing the valid artifact limit", () => {
+    const validArtifacts = Array.from({ length: 10 }, (_, index) => ({
+      type: "video" as const,
+      url: `https://example.com/generated-${index}.mp4`,
+      mimeType: "video/mp4",
+      width: 1920,
+      height: 1080,
+    }));
+    const invalidImage = {
+      type: "image" as const,
+      source: {
+        kind: "asset" as const,
+        assetId: "11111111-1111-4111-8111-111111111111",
+      },
+      url: "https://example.com/conflicting-image.png",
+      mimeType: "image/png",
+      width: 512,
+      height: 512,
+    };
+
+    expect(
+      boundedToolArtifactsSchema(10).parse([...validArtifacts, invalidImage]),
+    ).toHaveLength(10);
+    expect(() =>
+      boundedToolArtifactsSchema(10).parse([
+        ...validArtifacts,
+        validArtifacts[0],
+      ]),
+    ).toThrow();
+  });
 });
 
 describe("generated asset recovery contracts", () => {

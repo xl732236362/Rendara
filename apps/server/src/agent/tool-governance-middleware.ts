@@ -6,8 +6,8 @@ import { ToolInvocationError, createMiddleware } from "langchain";
 import { z } from "zod";
 
 import {
+  boundedToolArtifactsSchema,
   generatedAssetRecoverySchema,
-  toolArtifactSchema,
 } from "@loomic/shared";
 import type { AgentExecutionRepository } from "../features/agent-runs/agent-execution-repository.js";
 import type { AgentCapability } from "./capabilities.js";
@@ -31,7 +31,7 @@ const recoverableToolErrorSchema = z
     message: z.string().min(1).max(512),
     correlationId: z.string().min(1),
     recovery: generatedAssetRecoverySchema.optional(),
-    artifacts: z.array(toolArtifactSchema).max(10).optional(),
+    artifacts: boundedToolArtifactsSchema(10).optional(),
   })
   .strict();
 

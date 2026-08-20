@@ -127,6 +127,51 @@ describe("tool governance middleware", () => {
     });
   });
 
+  it("drops invalid image artifacts before projecting a recoverable failure", async () => {
+    const { request, supervisor, wrapToolCall } = await harness();
+    const result = new ToolMessage({
+      content: "The requested element does not exist.",
+      name: "inspect_canvas",
+      status: "error",
+      tool_call_id: "model-call-1",
+      artifact: {
+        type: "loomic.tool_error",
+        code: "element_not_found",
+        message: "The requested element does not exist.",
+        correlationId: "correlation-1",
+        artifacts: [
+          {
+            type: "image",
+            source: {
+              kind: "asset",
+              assetId: "11111111-1111-4111-8111-111111111111",
+            },
+            url: "https://example.com/conflicting-image.png",
+            mimeType: "image/png",
+            width: 512,
+            height: 512,
+          },
+          {
+            type: "video",
+            url: "https://example.com/generated.mp4",
+            mimeType: "video/mp4",
+            width: 1920,
+            height: 1080,
+          },
+        ],
+      },
+    });
+
+    await expect(
+      wrapToolCall(request as never, async () => result),
+    ).resolves.toBe(result);
+    expect(supervisor.records().at(-1)).toMatchObject({
+      type: "loomic.tool.failed",
+      error: { code: "element_not_found" },
+      artifacts: [expect.objectContaining({ type: "video" })],
+    });
+  });
+
   it("preserves the original cause in a branded boundary failure", async () => {
     const { request, supervisor, wrapToolCall } = await harness();
     const infrastructureFailure = new Error("database_unavailable");

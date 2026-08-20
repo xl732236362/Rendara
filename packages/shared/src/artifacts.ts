@@ -17,8 +17,7 @@ const safeArtifactUrlSchema = z
   );
 
 const assetIdSchema = z.string().uuid();
-const assetRoutePattern =
-  /^\/api\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
+const assetRoutePattern = /^\/api\/assets\/([^/]+)$/;
 
 const externalArtifactUrlSchema = safeArtifactUrlSchema.refine(
   (value) => value.startsWith("https://"),
@@ -230,8 +229,9 @@ function legacyImageSource(
 
   const assetRouteMatch = assetRoutePattern.exec(url);
   const assetId = assetRouteMatch?.[1];
-  if (assetId) {
-    return { kind: "asset", assetId };
+  const parsedAssetId = assetIdSchema.safeParse(assetId);
+  if (parsedAssetId.success) {
+    return { kind: "asset", assetId: parsedAssetId.data };
   }
 
   if (url.startsWith("https://")) {
@@ -246,10 +246,7 @@ function assetRoute(assetId: string): string {
 }
 
 function normalizedToolArtifactsSchema(max?: number) {
-  const artifacts = z.array(z.unknown());
-  const boundedArtifacts = max === undefined ? artifacts : artifacts.max(max);
-
-  return boundedArtifacts.transform((values, context) => {
+  const decodedArtifacts = z.array(z.unknown()).transform((values, context) => {
     const decoded: ToolArtifact[] = [];
 
     for (const [index, value] of values.entries()) {
@@ -269,6 +266,15 @@ function normalizedToolArtifactsSchema(max?: number) {
     }
 
     return decoded;
+  });
+
+  return decodedArtifacts.superRefine((artifacts, context) => {
+    if (max !== undefined && artifacts.length > max) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Too many valid tool artifacts: maximum is ${max}.`,
+      });
+    }
   });
 }
 

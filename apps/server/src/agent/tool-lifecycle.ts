@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import {
+  boundedToolArtifactsSchema,
   generatedAssetRecoverySchema,
   publicToolErrorSchema,
-  toolArtifactSchema,
 } from "@loomic/shared";
 import { z } from "zod";
 
@@ -29,7 +29,7 @@ export const canonicalToolCompletedSchema = lifecycleBaseSchema
     type: z.literal("loomic.tool.completed"),
     output: z.record(z.string(), z.unknown()).optional(),
     outputSummary: z.string().max(512).optional(),
-    artifacts: z.array(toolArtifactSchema).max(100).optional(),
+    artifacts: boundedToolArtifactsSchema(100).optional(),
   })
   .strict();
 
@@ -38,7 +38,7 @@ export const canonicalToolFailedSchema = lifecycleBaseSchema
     type: z.literal("loomic.tool.failed"),
     error: publicToolErrorSchema,
     recovery: generatedAssetRecoverySchema.optional(),
-    artifacts: z.array(toolArtifactSchema).max(10).optional(),
+    artifacts: boundedToolArtifactsSchema(10).optional(),
   })
   .strict();
 

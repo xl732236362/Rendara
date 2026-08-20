@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import { createToolExecutionSupervisor } from "./tool-execution-supervisor.js";
+import {
+  canonicalToolCompletedSchema,
+  canonicalToolFailedSchema,
+} from "./tool-lifecycle.js";
 
 const startInput = {
   input: { mode: "summary" },
@@ -20,6 +24,83 @@ function supervisor(overrides: { maxBytes?: number; maxCalls?: number } = {}) {
 }
 
 describe("tool execution supervisor", () => {
+  it("drops invalid images from canonical completed lifecycle records", () => {
+    const record = canonicalToolCompletedSchema.parse({
+      type: "loomic.tool.completed",
+      schemaVersion: 1,
+      sequence: 1,
+      agentRunId: "run-1",
+      attemptId: "attempt-1",
+      logicalToolCallId: "call-1",
+      toolName: "generate_image",
+      inputDigest: "digest-1",
+      artifacts: [
+        {
+          type: "image",
+          source: {
+            kind: "asset",
+            assetId: "11111111-1111-4111-8111-111111111111",
+          },
+          url: "https://example.com/conflicting-image.png",
+          mimeType: "image/png",
+          width: 512,
+          height: 512,
+        },
+        {
+          type: "video",
+          url: "https://example.com/generated.mp4",
+          mimeType: "video/mp4",
+          width: 1920,
+          height: 1080,
+        },
+      ],
+      timestamp: "2026-08-19T12:00:00.000Z",
+    });
+
+    expect(record.artifacts).toEqual([
+      expect.objectContaining({ type: "video" }),
+    ]);
+  });
+
+  it("drops invalid images from canonical failed lifecycle records", () => {
+    const record = canonicalToolFailedSchema.parse({
+      type: "loomic.tool.failed",
+      schemaVersion: 1,
+      sequence: 1,
+      agentRunId: "run-1",
+      attemptId: "attempt-1",
+      logicalToolCallId: "call-1",
+      toolName: "generate_image",
+      inputDigest: "digest-1",
+      error: {
+        code: "tool_failed",
+        message: "The tool could not complete.",
+        correlationId: "correlation-1",
+      },
+      artifacts: [
+        {
+          type: "image",
+          assetId: "not-a-uuid",
+          mimeType: "image/png",
+          width: 512,
+          height: 512,
+        },
+        {
+          type: "video",
+          url: "https://example.com/generated.mp4",
+          mimeType: "video/mp4",
+          width: 1920,
+          height: 1080,
+        },
+      ],
+      timestamp: "2026-08-19T12:00:00.000Z",
+    });
+
+    expect(record.artifacts).toEqual([
+      expect.objectContaining({ type: "video" }),
+    ]);
+  });
+
   it("admits one start and one terminal record in order", () => {
     const subject = supervisor();
 
