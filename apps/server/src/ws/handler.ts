@@ -299,6 +299,7 @@ export async function bindAuthenticatedSocket(
             connectionManager.sendTo(connectionId, {
               type: "event",
               event: entry.event,
+              seq: entry.seq,
             });
           }
         })().catch((error) => sendCommandError(socket, error));
@@ -415,8 +416,8 @@ async function handleRunCommand(
   const deferredTerminalEvents: StreamEvent[] = [];
 
   const publishStreamEvent = (event: StreamEvent) => {
-    services.eventBuffer?.push(canvasId, event);
-    connectionManager.pushToCanvas(canvasId, event);
+    const seq = services.eventBuffer?.push(canvasId, event);
+    connectionManager.pushToCanvas(canvasId, event, seq);
   };
 
   try {
@@ -517,6 +518,8 @@ async function handleRunCommand(
         publishStreamEvent({
           type: "assistant.persistence_failed",
           runId,
+          sessionId: payload.sessionId,
+          assistant: toRecoveryAssistantPayload(assistantText, assistantBlocks),
           timestamp: new Date().toISOString(),
         });
       }
@@ -609,6 +612,24 @@ function appendThinkingBlock(blocks: ContentBlock[], thinking: string): void {
   blocks.push({ type: "thinking", thinking });
 }
 
+function toRecoveryAssistantPayload(
+  assistantText: string[],
+  assistantBlocks: ContentBlock[],
+): { content: string; contentBlocks: ContentBlock[] } {
+  const content = assistantText.join("").slice(0, 16_000);
+  return {
+    content,
+    // The replay buffer is transport recovery, not an unbounded message store.
+    contentBlocks: assistantBlocks.slice(0, 32).map((block) => {
+      if (block.type === "text")
+        return { ...block, text: block.text.slice(0, 4_000) };
+      if (block.type === "thinking")
+        return { ...block, thinking: block.thinking.slice(0, 4_000) };
+      return block;
+    }),
+  };
+}
+
 function boundedErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message.slice(0, 256) : "UnknownError";
 }
@@ -635,8 +656,7 @@ function upsertTerminalToolBlock(
       : terminal;
   const index = blocks.findIndex(
     (block) =>
-      block.type === "tool" &&
-      block.toolCallId === boundedTerminal.toolCallId,
+      block.type === "tool" && block.toolCallId === boundedTerminal.toolCallId,
   );
   if (index < 0) {
     blocks.push(boundedTerminal);

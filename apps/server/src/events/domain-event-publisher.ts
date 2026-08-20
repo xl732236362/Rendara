@@ -9,7 +9,8 @@ type PublisherPorts = {
     eventId: string,
     event: StreamEvent,
   ): boolean;
-  pushCanvas(canvasId: string, event: StreamEvent): void;
+  getLatestCanvasSeq?(canvasId: string): number;
+  pushCanvas(canvasId: string, event: StreamEvent, seq?: number): void;
   sendToUser(userId: string, message: Record<string, unknown>): boolean;
 };
 
@@ -39,7 +40,11 @@ export function createDomainEventPublisher(ports: PublisherPorts) {
           streamEvent,
         )
       ) {
-        ports.pushCanvas(event.aggregate_id, streamEvent);
+        ports.pushCanvas(
+          event.aggregate_id,
+          streamEvent,
+          ports.getLatestCanvasSeq?.(event.aggregate_id),
+        );
       }
       return;
     }

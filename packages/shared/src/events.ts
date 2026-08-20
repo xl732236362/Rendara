@@ -7,6 +7,7 @@ import {
 } from "./artifacts.js";
 import {
   canvasIdSchema,
+  contentBlockSchema,
   conversationIdSchema,
   identifierSchema,
   messageIdSchema,
@@ -121,6 +122,15 @@ export const runFailedEventSchema = z.object({
 export const assistantPersistenceFailedEventSchema = z.object({
   type: z.literal("assistant.persistence_failed"),
   runId: runIdSchema,
+  // Present for new server events. Optional keeps older unbuffered transports
+  // readable, but clients must not recover a remounted response without it.
+  sessionId: sessionIdSchema.optional(),
+  assistant: z
+    .object({
+      content: z.string().max(16_000),
+      contentBlocks: z.array(contentBlockSchema).max(32),
+    })
+    .optional(),
   timestamp: timestampSchema,
 });
 

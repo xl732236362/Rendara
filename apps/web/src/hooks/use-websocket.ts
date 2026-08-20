@@ -64,6 +64,8 @@ export function useWebSocket(
   onAuthExpiredRef.current = options.onAuthExpired;
 
   const eventListeners = useRef<Set<EventCallback>>(new Set());
+  const lastSeqByCanvasRef = useRef(new Map<string, number>());
+  const resumedCanvasIdRef = useRef<string | null>(null);
   const ackListeners = useRef<Map<string, (ack: WsCommandAck) => void>>(
     new Map(),
   );
@@ -119,6 +121,28 @@ export function useWebSocket(
         if (!streamEvent || typeof streamEvent !== "object") {
           console.warn("[ws] received malformed stream event:", msg);
           return;
+        }
+        const seq = msg.seq;
+        const canvasId =
+          streamEvent.type === "canvas.sync"
+            ? streamEvent.canvasId
+            : resumedCanvasIdRef.current;
+        if (
+          typeof seq === "number" &&
+          Number.isSafeInteger(seq) &&
+          seq > 0 &&
+          canvasId
+        ) {
+          const lastSeq = lastSeqByCanvasRef.current.get(canvasId) ?? 0;
+          if (seq <= lastSeq) {
+            console.info("[ws] ignored duplicate canvas event", {
+              canvasId,
+              lastSeq,
+              seq,
+            });
+            return;
+          }
+          lastSeqByCanvasRef.current.set(canvasId, seq);
         }
         for (const cb of eventListeners.current) {
           try {
@@ -326,7 +350,11 @@ export function useWebSocket(
       if (onAck) {
         ackListeners.current.set("canvas.resume", onAck);
       }
-      const sent = sendCommand("canvas.resume", { canvasId, lastSeq: 0 });
+      resumedCanvasIdRef.current = canvasId;
+      const sent = sendCommand("canvas.resume", {
+        canvasId,
+        lastSeq: lastSeqByCanvasRef.current.get(canvasId) ?? 0,
+      });
       if (!sent) {
         ackListeners.current.delete("canvas.resume");
       }

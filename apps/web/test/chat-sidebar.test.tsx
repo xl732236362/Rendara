@@ -659,6 +659,134 @@ describe("ChatSidebar", () => {
     );
   });
 
+  it("keeps an in-flight assistant placeholder when reconnect reload omits it", async () => {
+    const listeners: Array<(event: StreamEvent) => void> = [];
+    mockWs.onEvent = vi.fn((callback) => {
+      listeners.push(callback);
+      return () => {};
+    });
+    const view = render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    const input = await screen.findByPlaceholderText(/start with an idea/i);
+    await userEvent.type(input, "preserve placeholder{Enter}");
+    await waitFor(() => expect(listeners).toHaveLength(1));
+    fetchMessagesMock.mockResolvedValueOnce({
+      messages: [
+        {
+          id: "persisted-user",
+          role: "user",
+          content: "persisted",
+          contentBlocks: [{ type: "text", text: "persisted" }],
+          createdAt: "2026-08-20T00:00:00.000Z",
+        },
+      ],
+    });
+
+    mockWs.connected = false;
+    view.rerender(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+    mockWs.connected = true;
+    view.rerender(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+    await waitFor(() => expect(mockWs.resumeCanvas).toHaveBeenCalledTimes(2));
+
+    listeners[0]?.({
+      type: "message.delta",
+      runId: "run_123",
+      messageId: "message-1",
+      delta: "Still streaming.",
+      timestamp: "2026-08-20T00:00:01.000Z",
+    });
+    await waitFor(() =>
+      expect(screen.getAllByText("Still streaming.")).toHaveLength(1),
+    );
+  });
+
+  it("saves a session-correlated terminal recovery marker after remount", async () => {
+    const listeners: Array<(event: StreamEvent) => void> = [];
+    mockWs.onEvent = vi.fn((callback) => {
+      listeners.push(callback);
+      return () => {};
+    });
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    await waitFor(() => expect(mockWs.resumeCanvas).toHaveBeenCalled());
+    const resume = vi.mocked(mockWs.resumeCanvas).mock.calls.at(-1)?.[1];
+    resume?.({
+      type: "command.ack",
+      action: "canvas.resume",
+      payload: { activeRunId: null, replayed: 1 },
+    });
+    await waitFor(() => expect(listeners).toHaveLength(1));
+    listeners[0]?.({
+      type: "assistant.persistence_failed",
+      runId: "run-remounted",
+      sessionId: "session-real",
+      assistant: {
+        content: "Recovered after remount.",
+        contentBlocks: [{ type: "text", text: "Recovered after remount." }],
+      },
+      timestamp: "2026-08-20T00:00:01.000Z",
+    });
+
+    await waitFor(() =>
+      expect(saveMessageMock).toHaveBeenCalledWith(
+        "token_abc",
+        "session-real",
+        expect.objectContaining({
+          role: "assistant",
+          content: "Recovered after remount.",
+        }),
+      ),
+    );
+  });
+
   it("does not revive an active run owned by a different chat session", async () => {
     const listeners: Array<(event: StreamEvent) => void> = [];
     mockWs.onEvent = vi.fn((callback) => {

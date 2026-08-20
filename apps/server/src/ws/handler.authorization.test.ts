@@ -243,12 +243,12 @@ describe("WebSocket resource commands", () => {
           output: { elementId: "element-1" },
           outputSummary: "Generated media is ready.",
           artifacts: Array.from({ length: 11 }, (_, index) => ({
-              type: "image",
-              url: `https://example.com/generated-${index}.png`,
-              mimeType: "image/png",
-              width: 512,
-              height: 512,
-            })),
+            type: "image",
+            url: `https://example.com/generated-${index}.png`,
+            mimeType: "image/png",
+            width: 512,
+            height: 512,
+          })),
           timestamp: "2026-08-20T00:00:02.000Z",
         };
         yield {
@@ -441,6 +441,16 @@ describe("WebSocket resource commands", () => {
     await waitForTurns(12);
 
     const messages = socket.messages.map((message) => JSON.parse(message));
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: "event",
+        seq: 1,
+        event: expect.objectContaining({
+          type: "message.delta",
+          delta: "Unsaved completed response.",
+        }),
+      }),
+    );
     const persistenceSignalIndex = messages.findIndex(
       (message) =>
         message.type === "event" &&
@@ -458,6 +468,67 @@ describe("WebSocket resource commands", () => {
         .map(({ event }) => event.type)
         .slice(-2),
     ).toEqual(["assistant.persistence_failed", "run.completed"]);
+    const persistenceMarker = eventBuffer
+      .getAfter("canvas-1")
+      .find(({ event }) => event.type === "assistant.persistence_failed");
+    expect(persistenceMarker?.event).toMatchObject({
+      sessionId: "session-1",
+      assistant: {
+        content: "Unsaved completed response.",
+        contentBlocks: [{ type: "text", text: "Unsaved completed response." }],
+      },
+    });
+    socket.emit("close");
+  });
+
+  it("replays buffered event sequences and uses the same sequence for live delivery", async () => {
+    const socket = new FakeSocket();
+    const eventBuffer = new CanvasEventBuffer();
+    eventBuffer.push("canvas-1", {
+      type: "message.delta",
+      runId: "run-1",
+      messageId: "message-1",
+      delta: "first",
+      timestamp: "2026-08-20T00:00:00.000Z",
+    });
+    eventBuffer.push("canvas-1", {
+      type: "message.delta",
+      runId: "run-1",
+      messageId: "message-1",
+      delta: "second",
+      timestamp: "2026-08-20T00:00:01.000Z",
+    });
+    const connectionManager = new ConnectionManager();
+
+    await bindAuthenticatedSocket(
+      socket as never,
+      "token",
+      { url: "/api/ws", headers: { host: "localhost" } } as never,
+      {
+        agentRuns: fakeAgentRuns() as never,
+        authorization: fakeAuthorization("canvas-1"),
+        auth: { authenticate: async () => user },
+        connectionManager,
+        eventBuffer,
+      },
+    );
+    socket.emit(
+      "message",
+      JSON.stringify({
+        type: "command",
+        action: "canvas.resume",
+        payload: { canvasId: "canvas-1", lastSeq: 1 },
+      }),
+    );
+    await nextTurn();
+
+    const replay = socket.messages
+      .map((message) => JSON.parse(message))
+      .find((message) => message.type === "event");
+    expect(replay).toMatchObject({
+      seq: 2,
+      event: { type: "message.delta", delta: "second" },
+    });
     socket.emit("close");
   });
 

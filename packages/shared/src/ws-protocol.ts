@@ -8,6 +8,9 @@ import { errorEnvelopeSchema } from "./http.js";
 export const wsServerEventSchema = z.object({
   type: z.literal("event"),
   event: streamEventSchema,
+  // Canvas-buffered events carry a monotonic, canvas-local cursor. Events
+  // outside that buffer deliberately remain valid without a sequence.
+  seq: z.number().int().positive().safe().optional(),
 });
 
 // --- Server → Client: RPC Request ---

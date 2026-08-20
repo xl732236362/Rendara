@@ -1,6 +1,6 @@
 import type { StreamEvent } from "@loomic/shared";
 
-type BufferedEvent = {
+export type BufferedEvent = {
   event: StreamEvent;
   timestamp: number;
   seq: number;
@@ -23,7 +23,7 @@ export class CanvasEventBuffer {
     this.ttlMs = options?.ttlMs ?? 10 * 60 * 1000;
   }
 
-  push(canvasId: string, event: StreamEvent): void {
+  push(canvasId: string, event: StreamEvent): number {
     let buf = this.buffers.get(canvasId);
     if (!buf) {
       buf = [];
@@ -40,6 +40,7 @@ export class CanvasEventBuffer {
     }
 
     this.lastWrite.set(canvasId, Date.now());
+    return seq;
   }
 
   pushDomainEvent(

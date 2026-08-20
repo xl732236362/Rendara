@@ -630,8 +630,9 @@ export function buildAppFromEnv(
   const publishDomainEvent = createDomainEventPublisher({
     rememberCanvasEvent: (canvasId, eventId, event) =>
       eventBuffer.pushDomainEvent(canvasId, eventId, event),
-    pushCanvas: (canvasId, event) =>
-      connectionManager.pushToCanvas(canvasId, event),
+    getLatestCanvasSeq: (canvasId) => eventBuffer.getLatestSeq(canvasId),
+    pushCanvas: (canvasId, event, seq) =>
+      connectionManager.pushToCanvas(canvasId, event, seq),
     sendToUser: (userId, message) =>
       connectionManager.sendToUser(userId, message),
   });

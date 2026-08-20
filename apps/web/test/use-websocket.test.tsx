@@ -107,6 +107,56 @@ describe("useWebSocket Agent correlation", () => {
     unmount();
   });
 
+  it("resumes from the latest buffered sequence and ignores duplicate replay events", async () => {
+    const { result, unmount } = renderHook(() => useWebSocket(() => "token"));
+    await waitFor(() => expect(result.current.connected).toBe(true));
+    const onEvent = vi.fn();
+    const unsubscribe = result.current.onEvent(onEvent);
+
+    act(() => {
+      result.current.resumeCanvas("canvas-1");
+      FakeWebSocket.instances[0]?.receive({
+        type: "event",
+        seq: 4,
+        event: {
+          type: "message.delta",
+          runId: "run-1",
+          messageId: "message-1",
+          delta: "once",
+          timestamp: "2026-08-20T00:00:00.000Z",
+        },
+      });
+      FakeWebSocket.instances[0]?.receive({
+        type: "event",
+        seq: 4,
+        event: {
+          type: "message.delta",
+          runId: "run-1",
+          messageId: "message-1",
+          delta: "duplicate",
+          timestamp: "2026-08-20T00:00:01.000Z",
+        },
+      });
+      result.current.resumeCanvas("canvas-1");
+    });
+
+    const resumeCommands = FakeWebSocket.instances
+      .at(-1)
+      ?.send.mock.calls.map(([payload]) => JSON.parse(payload as string))
+      .filter((message) => message.action === "canvas.resume");
+    expect(resumeCommands).toEqual([
+      expect.objectContaining({
+        payload: { canvasId: "canvas-1", lastSeq: 0 },
+      }),
+      expect.objectContaining({
+        payload: { canvasId: "canvas-1", lastSeq: 4 },
+      }),
+    ]);
+    expect(onEvent).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    unmount();
+  });
+
   it("keeps an active stream recoverable when finalization is unconfirmed", async () => {
     const { result, unmount } = renderHook(() => useWebSocket(() => "token"));
     await waitFor(() => expect(result.current.connected).toBe(true));

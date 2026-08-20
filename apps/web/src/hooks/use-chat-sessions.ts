@@ -314,28 +314,41 @@ export function useChatSessions({
   }, []);
 
   // ── Reload messages (for reconnection) ──
-  const reloadMessages = useCallback(async (sessionId: string) => {
-    if (!sessionId) {
-      console.warn(
-        "[chat] reloadMessages called with empty sessionId, skipping",
-      );
-      return;
-    }
-    try {
-      const msgRes = await fetchMessages(accessTokenRef.current, sessionId);
-      if (msgRes.messages && msgRes.messages.length > 0) {
-        const mapped = mapServerMessages(msgRes.messages);
-        msgCacheRef.current.set(sessionId, mapped);
-        // Only update React state if the session is still active
-        // (user may have switched sessions during the async fetch)
-        if (activeSessionIdRef.current === sessionId) {
-          setMessages(mapped);
-        }
+  const reloadMessages = useCallback(
+    async (
+      sessionId: string,
+      preserveLocalMessageIds: ReadonlySet<string> = new Set(),
+    ) => {
+      if (!sessionId) {
+        console.warn(
+          "[chat] reloadMessages called with empty sessionId, skipping",
+        );
+        return;
       }
-    } catch (err) {
-      console.warn("[chat] Failed to reload messages on reconnect:", err);
-    }
-  }, []);
+      try {
+        const msgRes = await fetchMessages(accessTokenRef.current, sessionId);
+        if (msgRes.messages && msgRes.messages.length > 0) {
+          const mapped = mapServerMessages(msgRes.messages);
+          const serverMessageIds = new Set(mapped.map((message) => message.id));
+          const preserved = (msgCacheRef.current.get(sessionId) ?? []).filter(
+            (message) =>
+              preserveLocalMessageIds.has(message.id) &&
+              !serverMessageIds.has(message.id),
+          );
+          const next = [...mapped, ...preserved];
+          msgCacheRef.current.set(sessionId, next);
+          // Only update React state if the session is still active
+          // (user may have switched sessions during the async fetch)
+          if (activeSessionIdRef.current === sessionId) {
+            setMessages(next);
+          }
+        }
+      } catch (err) {
+        console.warn("[chat] Failed to reload messages on reconnect:", err);
+      }
+    },
+    [],
+  );
 
   return {
     sessions,

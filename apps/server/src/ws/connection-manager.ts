@@ -149,10 +149,14 @@ export class ConnectionManager {
   // ---------------------------------------------------------------------------
 
   /** Send a StreamEvent to ALL connections viewing a specific canvas. */
-  pushToCanvas(canvasId: string, event: StreamEvent): void {
+  pushToCanvas(canvasId: string, event: StreamEvent, seq?: number): void {
     const ids = this.canvasIndex.get(canvasId);
     if (!ids) return;
-    const payload = JSON.stringify({ type: "event", event });
+    const payload = JSON.stringify({
+      type: "event",
+      event,
+      ...(seq ? { seq } : {}),
+    });
     for (const cid of ids) {
       const entry = this.connections.get(cid);
       if (entry && entry.ws.readyState === 1) {

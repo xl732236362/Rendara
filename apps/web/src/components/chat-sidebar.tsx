@@ -250,6 +250,29 @@ export function ChatSidebar({
     [accessTokenRef, getSessionMessages],
   );
 
+  const persistRecoveredAssistantFallback = useCallback(
+    (
+      sessionId: string,
+      runId: string,
+      assistant: { content: string; contentBlocks: ContentBlock[] },
+    ) => {
+      if (fallbackPersistedRunIdsRef.current.has(runId)) return;
+      fallbackPersistedRunIdsRef.current.add(runId);
+      void saveMessage(accessTokenRef.current, sessionId, {
+        role: "assistant",
+        content: assistant.content,
+        contentBlocks: assistant.contentBlocks,
+      }).catch(() => {
+        console.warn("[chat] remounted assistant fallback persistence failed", {
+          errorCode: "assistant_remounted_fallback_persistence_failed",
+          runId,
+          sessionId,
+        });
+      });
+    },
+    [accessTokenRef],
+  );
+
   const syncedAttachmentRevisionsRef = useRef(new Map<string, number>());
 
   const syncAttachedStatuses = useCallback(
@@ -1081,7 +1104,10 @@ export function ChatSidebar({
 
     void (async () => {
       // Reload messages from DB (server may have persisted while disconnected)
-      await reloadMessages(sessionId);
+      await reloadMessages(
+        sessionId,
+        new Set(assistantIdByRunIdRef.current.values()),
+      );
 
       // Resume canvas binding (after DB messages are set)
       ws.resumeCanvas(canvasId, (ack) => {
@@ -1192,6 +1218,19 @@ export function ChatSidebar({
 
           // A terminal replay with no active run may belong to a different chat
           // session on this canvas. Only recover a response this sidebar owns.
+          if (
+            evt.type === "assistant.persistence_failed" &&
+            evt.sessionId === sessionId &&
+            evt.assistant
+          ) {
+            persistRecoveredAssistantFallback(
+              sessionId,
+              evt.runId,
+              evt.assistant,
+            );
+            if (remainingReplayEvents === 0) unsub();
+            return;
+          }
           if (!assistantIdByRunIdRef.current.has(evt.runId)) {
             if (remainingReplayEvents === 0) unsub();
             return;
@@ -1239,6 +1278,7 @@ export function ChatSidebar({
     initialPrompt,
     refreshAttachmentRecovery,
     persistAssistantFallback,
+    persistRecoveredAssistantFallback,
   ]);
 
   // ── Collapsed state ──
