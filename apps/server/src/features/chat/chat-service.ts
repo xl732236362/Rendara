@@ -50,7 +50,7 @@ export type ChatService = {
   createMessage(
     user: AuthenticatedUser,
     sessionId: string,
-    input: ChatMessageCreateRequest,
+    input: ChatMessageCreateRequest & { id?: string },
   ): Promise<ChatMessage>;
 };
 
@@ -261,19 +261,24 @@ export function createChatService(options: {
 
     async createMessage(user, sessionId, input) {
       const client = options.createUserClient(user.accessToken);
-      const { data, error } = await client
-        .from("chat_messages")
-        .insert({
-          session_id: sessionId,
-          role: input.role,
-          content: input.content,
-          ...(input.toolActivities
-            ? { tool_activities: input.toolActivities as unknown as Json }
-            : {}),
-          ...(input.contentBlocks
-            ? { content_blocks: input.contentBlocks as unknown as Json }
-            : {}),
-        })
+      const messageInsert = {
+        ...(input.id ? { id: input.id } : {}),
+        session_id: sessionId,
+        role: input.role,
+        content: input.content,
+        ...(input.toolActivities
+          ? { tool_activities: input.toolActivities as unknown as Json }
+          : {}),
+        ...(input.contentBlocks
+          ? { content_blocks: input.contentBlocks as unknown as Json }
+          : {}),
+      };
+      const query = input.id
+        ? client
+            .from("chat_messages")
+            .upsert(messageInsert, { onConflict: "id" })
+        : client.from("chat_messages").insert(messageInsert);
+      const { data, error } = await query
         .select(
           "id, role, content, tool_activities, content_blocks, created_at",
         )

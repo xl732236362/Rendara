@@ -202,13 +202,26 @@ describe("useWebSocket Agent correlation", () => {
   it("keeps an active stream recoverable when finalization is unconfirmed", async () => {
     const { result, unmount } = renderHook(() => useWebSocket(() => "token"));
     await waitFor(() => expect(result.current.connected).toBe(true));
+    const onAck = vi.fn();
+    const onError = vi.fn();
     const onEvent = vi.fn();
     const unsubscribe = result.current.onEvent(onEvent);
 
     act(() => {
+      result.current.startRun(
+        {
+          canvasId: "canvas-1",
+          clientRequestId: "request-1",
+          conversationId: "conversation-1",
+          prompt: "hello",
+          sessionId: "session-1",
+        },
+        { onAck, onError },
+      );
       FakeWebSocket.instances[0]?.receive({
         type: "error",
         action: "agent.run",
+        clientRequestId: "request-1",
         runId: "run-1",
         error: {
           code: "run_finalization_unconfirmed",
@@ -218,6 +231,15 @@ describe("useWebSocket Agent correlation", () => {
     });
 
     expect(onEvent).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+    act(() => {
+      FakeWebSocket.instances[0]?.receive({
+        type: "command.ack",
+        action: "agent.run",
+        payload: { clientRequestId: "request-1", runId: "run-1" },
+      });
+    });
+    expect(onAck).toHaveBeenCalledOnce();
     unsubscribe();
     unmount();
   });

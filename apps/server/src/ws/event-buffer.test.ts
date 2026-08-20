@@ -44,4 +44,24 @@ describe("CanvasEventBuffer", () => {
       latestSeq: 4,
     });
   });
+
+  it("reports a gap when TTL cleanup removed the retained window", () => {
+    vi.useFakeTimers();
+    const buffer = new CanvasEventBuffer({ ttlMs: 10 });
+    buffer.push("canvas-1", event);
+    buffer.push("canvas-1", event);
+    vi.advanceTimersByTime(11);
+    buffer.cleanup();
+
+    expect(buffer.getAfterWithStatus("canvas-1", 0)).toMatchObject({
+      gap: false,
+      earliestSeq: null,
+      latestSeq: 2,
+    });
+    expect(buffer.getAfterWithStatus("canvas-1", 1)).toMatchObject({
+      gap: true,
+      events: [],
+      latestSeq: 2,
+    });
+  });
 });

@@ -75,7 +75,9 @@ export class CanvasEventBuffer {
     const earliestSeq = buf[0]?.seq ?? null;
     const latestSeq = this.getLatestSeq(canvasId);
     const gap =
-      afterSeq > 0 && earliestSeq !== null && earliestSeq > afterSeq + 1;
+      afterSeq > 0 &&
+      latestSeq > afterSeq &&
+      (earliestSeq === null || earliestSeq > afterSeq + 1);
     return {
       events: gap ? [] : buf.filter((entry) => entry.seq > afterSeq),
       gap,

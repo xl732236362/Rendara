@@ -175,6 +175,16 @@ export function useWebSocket(
           }
         }
       } else if (msg.type === "error" && msg.action === "agent.run") {
+        const errorCode = (msg.error as { code?: string } | undefined)?.code;
+        // Finalization is persisted asynchronously. Keep the accepted run's
+        // listener and promise alive so resume can recover it after reconnect.
+        if (errorCode === "run_finalization_unconfirmed") {
+          console.warn(
+            "[ws] Agent finalization is unconfirmed; preserving stream recovery state",
+            { runId: msg.runId, code: errorCode },
+          );
+          return;
+        }
         const clientRequestId = msg.clientRequestId;
         if (typeof clientRequestId === "string") {
           const callbacks = runListeners.current.get(clientRequestId);
@@ -185,14 +195,6 @@ export function useWebSocket(
         }
         const runId = msg.runId;
         if (typeof runId === "string") {
-          const errorCode = (msg.error as { code?: string } | undefined)?.code;
-          if (errorCode === "run_finalization_unconfirmed") {
-            console.warn(
-              "[ws] Agent finalization is unconfirmed; preserving stream recovery state",
-              { runId, code: errorCode },
-            );
-            return;
-          }
           console.error("[ws] active Agent run failed:", {
             runId,
             code: errorCode,

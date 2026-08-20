@@ -322,7 +322,7 @@ export async function bindAuthenticatedSocket(
   socket.on("error", () => {
     log.error("socket_error", { userId: authenticatedUser.id, connectionId });
     clearInterval(pingInterval);
-    connectionManager.remove(connectionId);
+    connectionManager.remove(connectionId, socket);
   });
 }
 
@@ -420,6 +420,7 @@ async function handleRunCommand(
   const assistantText: string[] = [];
   const assistantBlocks: ContentBlock[] = [];
   const deferredTerminalEvents: StreamEvent[] = [];
+  let finalizationUnconfirmed = false;
 
   const publishStreamEvent = (event: StreamEvent) => {
     const seq = services.eventBuffer?.push(canvasId, event);
@@ -535,6 +536,8 @@ async function handleRunCommand(
       publishStreamEvent(event);
     }
   } catch (error) {
+    finalizationUnconfirmed =
+      error instanceof AgentFinalizationUnconfirmedError;
     log.error("stream_error", {
       runId,
       error: error instanceof Error ? error.message : "unknown",
@@ -558,7 +561,11 @@ async function handleRunCommand(
     });
   } finally {
     clearInterval(keepAlive);
-    connectionManager.clearActiveRun(canvasId);
+    // A finalization failure is recoverable: retain the active-run marker so a
+    // reconnect can resume the stream instead of presenting a phantom idle run.
+    if (!finalizationUnconfirmed) {
+      connectionManager.clearActiveRun(canvasId);
+    }
   }
 }
 
@@ -574,6 +581,8 @@ async function persistAssistantMessage(options: {
   sessionId: string;
   user: AuthenticatedUser;
 }): Promise<boolean> {
+  const idempotencyKey = randomUUID();
+  const input = { ...options.input, id: idempotencyKey };
   for (
     let attempt = 1;
     attempt <= ASSISTANT_PERSISTENCE_MAX_ATTEMPTS;
@@ -583,7 +592,7 @@ async function persistAssistantMessage(options: {
       await options.chatService.createMessage(
         options.user,
         options.sessionId,
-        options.input,
+        input,
       );
       return true;
     } catch (error) {

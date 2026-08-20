@@ -356,7 +356,8 @@ describe("WebSocket resource commands", () => {
     );
     const createMessage = vi
       .fn()
-      .mockRejectedValueOnce(new Error("temporary_database_error"))
+      // Model an insert that may have committed before its response was lost.
+      .mockRejectedValueOnce(new Error("post_insert_response_lost"))
       .mockResolvedValueOnce(undefined);
 
     await bindWithCreatedRun(socket, agentRuns, {
@@ -366,6 +367,9 @@ describe("WebSocket resource commands", () => {
     await waitForTurns(8);
 
     expect(createMessage).toHaveBeenCalledTimes(2);
+    expect(createMessage.mock.calls[0]?.[2].id).toBe(
+      createMessage.mock.calls[1]?.[2].id,
+    );
     expect(createMessage).toHaveBeenLastCalledWith(
       user,
       "session-1",
@@ -748,7 +752,47 @@ describe("WebSocket resource commands", () => {
         }),
       }),
     );
+    expect(connectionManager.getActiveRun("canvas-1")).toMatchObject({
+      runId: "run-1",
+      sessionId: "session-1",
+    });
     socket.emit("close");
+  });
+
+  it("does not remove a replacement when the stale socket reports an error", async () => {
+    const first = new FakeSocket();
+    const replacement = new FakeSocket();
+    const connectionManager = new ConnectionManager();
+    const options = {
+      agentRuns: fakeAgentRuns() as never,
+      authorization: fakeAuthorization("canvas-1"),
+      auth: { authenticate: async () => user },
+      connectionManager,
+    };
+
+    await bindAuthenticatedSocket(
+      first as never,
+      "token",
+      {
+        url: "/api/ws?connectionId=connection-1",
+        headers: { host: "localhost" },
+      } as never,
+      options,
+    );
+    await bindAuthenticatedSocket(
+      replacement as never,
+      "token",
+      {
+        url: "/api/ws?connectionId=connection-1",
+        headers: { host: "localhost" },
+      } as never,
+      options,
+    );
+
+    first.emit("error", new Error("stale socket"));
+
+    expect(connectionManager.getEntry("connection-1")?.ws).toBe(replacement);
+    replacement.emit("close");
   });
 
   it("authorizes canvas resume before replay work begins", async () => {
