@@ -199,6 +199,38 @@ describe("useWebSocket Agent correlation", () => {
     unmount();
   });
 
+  it("resets a stale sequence cursor when the server restarts", async () => {
+    const { result, unmount } = renderHook(() => useWebSocket(() => "token"));
+    await waitFor(() => expect(result.current.connected).toBe(true));
+
+    act(() => {
+      result.current.resumeCanvas("canvas-1", vi.fn());
+      FakeWebSocket.instances[0]?.receive({
+        type: "event",
+        seq: 4,
+        event: {
+          type: "message.delta",
+          runId: "run-1",
+          messageId: "message-1",
+          delta: "before restart",
+          timestamp: "2026-08-20T00:00:00.000Z",
+        },
+      });
+      FakeWebSocket.instances[0]?.receive({
+        type: "command.ack",
+        action: "canvas.resume",
+        payload: { canvasId: "canvas-1", latestSeq: 0 },
+      });
+      result.current.resumeCanvas("canvas-1");
+    });
+
+    const resumes = FakeWebSocket.instances.at(-1)?.send.mock.calls
+      .map(([payload]) => JSON.parse(payload as string))
+      .filter((message) => message.action === "canvas.resume");
+    expect(resumes?.at(-1)?.payload.lastSeq).toBe(0);
+    unmount();
+  });
+
   it("keeps an active stream recoverable when finalization is unconfirmed", async () => {
     const { result, unmount } = renderHook(() => useWebSocket(() => "token"));
     await waitFor(() => expect(result.current.connected).toBe(true));

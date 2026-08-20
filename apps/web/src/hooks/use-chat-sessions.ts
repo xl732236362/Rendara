@@ -38,16 +38,22 @@ export function mergeReloadedMessages(
       .map(messageText)
       .filter(Boolean),
   );
+  const hasServerAssistantReplacement = (message: Message) => {
+    if (message.role !== "assistant") return false;
+    const localText = messageText(message);
+    if (!localText) return false;
+    return [...serverAssistantText].some(
+      (serverText) =>
+        serverText.startsWith(localText) || localText.startsWith(serverText),
+    );
+  };
   const preserved = cachedMessages.filter(
     (message) =>
       preserveLocalMessageIds.has(message.id) &&
       !serverMessages.some(
         (serverMessage) => serverMessage.id === message.id,
       ) &&
-      !(
-        message.role === "assistant" &&
-        serverAssistantText.has(messageText(message))
-      ),
+      !hasServerAssistantReplacement(message),
   );
   return [...serverMessages, ...preserved];
 }

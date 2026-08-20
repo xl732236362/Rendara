@@ -239,10 +239,12 @@ export function ChatSidebar({
         .map((block) => block.text)
         .join("");
       void saveMessage(accessTokenRef.current, sessionId, {
+        id: runId,
         role: "assistant",
         content,
         contentBlocks: assistant.contentBlocks,
       }).catch(() => {
+        fallbackPersistedRunIdsRef.current.delete(runId);
         console.warn("[chat] assistant fallback persistence failed", {
           assistantId,
           errorCode: "assistant_fallback_persistence_failed",
@@ -263,10 +265,12 @@ export function ChatSidebar({
       if (fallbackPersistedRunIdsRef.current.has(runId)) return;
       fallbackPersistedRunIdsRef.current.add(runId);
       void saveMessage(accessTokenRef.current, sessionId, {
+        id: runId,
         role: "assistant",
         content: assistant.content,
         contentBlocks: assistant.contentBlocks,
       }).catch(() => {
+        fallbackPersistedRunIdsRef.current.delete(runId);
         console.warn("[chat] remounted assistant fallback persistence failed", {
           errorCode: "assistant_remounted_fallback_persistence_failed",
           runId,
@@ -1120,7 +1124,7 @@ export function ChatSidebar({
       ws.resumeCanvas(canvasId, (ack) => {
         const resumePayload = ack.payload as Record<string, unknown>;
         const activeRunId = resumePayload.activeRunId;
-        const resumedRunId =
+        let resumedRunId =
           typeof activeRunId === "string" ? activeRunId : null;
         const activeRunSessionId = resumePayload.activeRunSessionId;
         const resumedRunSessionId =
@@ -1138,7 +1142,9 @@ export function ChatSidebar({
             activeRunSessionId: resumedRunSessionId,
             sessionId,
           });
-          return;
+          // The active marker may belong to another chat session. It must not
+          // prevent this sidebar from consuming replay events for its own runs.
+          resumedRunId = null;
         }
 
         if (replayGap) {
@@ -1284,10 +1290,9 @@ export function ChatSidebar({
             evt.type === "run.failed" ||
             evt.type === "run.canceled"
           ) {
-            onStreamEvent?.(evt);
             void refreshAttachmentRecovery(sessionId);
             replayResolvers.get(evt.runId)?.();
-            unsub();
+            if (remainingReplayEvents === 0) unsub();
             return;
           }
           if (remainingReplayEvents === 0) unsub();

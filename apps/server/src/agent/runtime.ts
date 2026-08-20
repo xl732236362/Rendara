@@ -256,6 +256,15 @@ type RuntimeRunRecord = RunCreateRequest & {
   fencingToken?: number;
   leaseValid?: boolean;
   leaseRenewal?: { stop(): Promise<void>; isValid(): boolean };
+  pendingFinalization?: {
+    status: AgentTerminalStatus;
+    metadata: Readonly<Record<string, unknown>>;
+    requested: Extract<
+      StreamEvent,
+      { type: "run.canceled" | "run.completed" | "run.failed" }
+    >;
+  };
+  finalizationRecoveryInProgress?: boolean;
 };
 
 type CreateAgentRuntimeOptions = {
@@ -539,6 +548,11 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
         run,
         "canceled",
         {},
+        {
+          type: "run.canceled",
+          runId,
+          timestamp: new Date(now()).toISOString(),
+        },
         options.finalizationRetryDelayMs,
       );
       run.status = finalized ?? "canceled";
@@ -572,10 +586,70 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
       return runs.has(runId);
     },
 
+    isRunRecoverable(runId: string) {
+      const run = runs.get(runId);
+      return run?.pendingFinalization !== undefined;
+    },
+
+    getRunRequest(runId: string): Omit<RunCreateRequest, "accessToken"> | null {
+      const run = runs.get(runId);
+      if (!run) return null;
+      const {
+        canvasId,
+        clientRequestId,
+        conversationId,
+        prompt,
+        sessionId,
+        attachments,
+        imageGenerationPreference,
+        videoGenerationPreference,
+        mentions,
+        model,
+      } = run;
+      return {
+        canvasId,
+        clientRequestId,
+        conversationId,
+        prompt,
+        sessionId,
+        ...(attachments === undefined ? {} : { attachments }),
+        ...(imageGenerationPreference === undefined
+          ? {}
+          : { imageGenerationPreference }),
+        ...(videoGenerationPreference === undefined
+          ? {}
+          : { videoGenerationPreference }),
+        ...(mentions === undefined ? {} : { mentions }),
+        ...(model === undefined ? {} : { model }),
+      };
+    },
+
     async *streamRun(runId: string): AsyncGenerator<StreamEvent> {
       const run = runs.get(runId);
       if (!run) {
         throw new Error(`Run not found: ${runId}`);
+      }
+
+      if (run.pendingFinalization) {
+        if (run.finalizationRecoveryInProgress) return;
+        run.finalizationRecoveryInProgress = true;
+        const pending = run.pendingFinalization;
+        try {
+          const finalized = await finalizeRuntimeRun(
+            options.agentExecutionRepository,
+            run,
+            pending.status,
+            pending.metadata,
+            pending.requested,
+            options.finalizationRetryDelayMs,
+          );
+          run.status = finalized ?? pending.status;
+          delete run.pendingFinalization;
+          yield terminalEventForStatus(run, now, pending.requested);
+        } finally {
+          run.finalizationRecoveryInProgress = false;
+        }
+        return;
       }
 
       if (run.consumed) {
@@ -1402,6 +1476,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               run,
               requestedStatus,
               terminalMetadata(event),
+              event,
               options.finalizationRetryDelayMs,
             );
             run.status = finalizedStatus ?? requestedStatus;
@@ -1440,6 +1515,7 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
                 run,
                 "canceled",
                 {},
+                canceledEvent,
                 options.finalizationRetryDelayMs,
               );
               run.status = finalized ?? "canceled";
@@ -1769,6 +1845,10 @@ async function finalizeRuntimeRun(
   run: RuntimeRunRecord,
   status: AgentTerminalStatus,
   metadata: Readonly<Record<string, unknown>>,
+  requested: Extract<
+    StreamEvent,
+    { type: "run.canceled" | "run.completed" | "run.failed" }
+  >,
   retryDelayMs?: number,
 ): Promise<AgentTerminalStatus | null> {
   await run.leaseRenewal?.stop();
@@ -1779,6 +1859,7 @@ async function finalizeRuntimeRun(
   if (!repository || !run.attemptId || run.fencingToken === undefined) {
     return null;
   }
+  run.pendingFinalization = { status, metadata, requested };
   const result = await finalizeAgentRun({
     repository,
     input: {
@@ -1790,6 +1871,7 @@ async function finalizeRuntimeRun(
     },
     ...(retryDelayMs === undefined ? {} : { retryDelayMs }),
   });
+  delete run.pendingFinalization;
   return result.status;
 }
 
@@ -1809,6 +1891,7 @@ async function finalizeRuntimeFailure(
     run,
     "failed",
     terminalMetadata(failedEvent),
+    failedEvent,
     retryDelayMs,
   );
   run.status = finalized ?? "failed";

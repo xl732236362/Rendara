@@ -168,6 +168,27 @@ export function useWebSocket(
         const cb = ackListeners.current.get(msg.action as string);
         if (cb) {
           ackListeners.current.delete(msg.action as string);
+          if (msg.action === "canvas.resume") {
+            const payload = msg.payload as Record<string, unknown> | undefined;
+            const canvasId = payload?.canvasId;
+            const latestSeq = payload?.latestSeq;
+            if (
+              typeof canvasId === "string" &&
+              typeof latestSeq === "number" &&
+              Number.isSafeInteger(latestSeq) &&
+              latestSeq >= 0
+            ) {
+              const currentSeq = lastSeqByCanvasRef.current.get(canvasId) ?? 0;
+              if (latestSeq < currentSeq) {
+                console.warn("[ws] resetting stale canvas sequence cursor", {
+                  canvasId,
+                  currentSeq,
+                  latestSeq,
+                });
+                lastSeqByCanvasRef.current.set(canvasId, latestSeq);
+              }
+            }
+          }
           try {
             cb(msg as unknown as WsCommandAck);
           } catch (ackErr) {

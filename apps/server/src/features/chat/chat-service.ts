@@ -50,7 +50,7 @@ export type ChatService = {
   createMessage(
     user: AuthenticatedUser,
     sessionId: string,
-    input: ChatMessageCreateRequest & { id?: string },
+    input: ChatMessageCreateRequest & { id?: string | undefined },
   ): Promise<ChatMessage>;
 };
 

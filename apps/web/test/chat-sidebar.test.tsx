@@ -98,6 +98,28 @@ describe("ChatSidebar", () => {
     expect(merged.map((message) => message.id)).toEqual(["server-assistant"]);
   });
 
+  it("replaces a partial local assistant with a richer persisted response", () => {
+    const merged = mergeReloadedMessages(
+      [
+        {
+          id: "server-assistant",
+          role: "assistant",
+          contentBlocks: [{ type: "text", text: "completed response with tail" }],
+        },
+      ],
+      [
+        {
+          id: "assistant-local",
+          role: "assistant",
+          contentBlocks: [{ type: "text", text: "completed response" }],
+        },
+      ],
+      new Set(["assistant-local"]),
+    );
+
+    expect(merged.map((message) => message.id)).toEqual(["server-assistant"]);
+  });
+
   let mockWs: WebSocketHandle;
 
   beforeEach(() => {
@@ -873,7 +895,12 @@ describe("ChatSidebar", () => {
     await waitFor(() =>
       expect(screen.getByText("试试这些 Loomic Skills")).toBeInTheDocument(),
     );
-    expect(listeners).toHaveLength(0);
+    expect(listeners).toHaveLength(1);
+    listeners[0]?.({
+      type: "run.completed",
+      runId: "run-other-session",
+      timestamp: "2026-08-20T00:00:01.000Z",
+    });
     expect(saveMessageMock).not.toHaveBeenCalled();
   });
 

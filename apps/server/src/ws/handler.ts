@@ -308,6 +308,29 @@ export async function bindAuthenticatedSocket(
               seq: entry.seq,
             });
           }
+
+          if (
+            activeRun &&
+            agentRuns.isRunRecoverable?.(activeRun.runId) === true
+          ) {
+            const recoveryPayload = agentRuns.getRunRequest?.(activeRun.runId);
+            if (recoveryPayload) {
+              void handleRunCommand(
+                authenticatedUser,
+                connectionId,
+                recoveryPayload,
+                randomUUID(),
+                agentRuns,
+                connectionManager,
+                options,
+              ).catch((error) =>
+                sendCommandError(socket, error, {
+                  action: "agent.run",
+                  clientRequestId: recoveryPayload.clientRequestId,
+                }),
+              );
+            }
+          }
         })().catch((error) => sendCommandError(socket, error));
       }
     }
@@ -370,7 +393,10 @@ async function handleRunCommand(
 
   // Bind this connection to the canvas so events route correctly
   connectionManager.bindCanvas(connectionId, canvasId);
-  if (registration.ownership !== "existing_active") {
+  const recoverableExistingRun =
+    registration.ownership === "existing_active" &&
+    agentRuns.isRunRecoverable?.(runId) === true;
+  if (registration.ownership !== "existing_active" || recoverableExistingRun) {
     connectionManager.setActiveRun(canvasId, runId, payload.sessionId);
   }
 
@@ -410,7 +436,9 @@ async function handleRunCommand(
   }
   log.lap("ack_sent", { runId, connectionId, delivered: ackSent });
 
-  if (registration.ownership === "existing_active") return;
+  if (registration.ownership === "existing_active" && !recoverableExistingRun) {
+    return;
+  }
 
   const keepAlive = setInterval(() => {
     connectionManager.sendTo(connectionId, { type: "keep-alive" });
@@ -564,7 +592,7 @@ async function handleRunCommand(
     // A finalization failure is recoverable: retain the active-run marker so a
     // reconnect can resume the stream instead of presenting a phantom idle run.
     if (!finalizationUnconfirmed) {
-      connectionManager.clearActiveRun(canvasId);
+      connectionManager.clearActiveRun(canvasId, runId);
     }
   }
 }

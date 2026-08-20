@@ -261,6 +261,7 @@ export const chatMessageSchema = z.object({
 });
 
 export const chatMessageCreateRequestSchema = z.object({
+  id: identifierSchema.optional(),
   role: z.enum(["user", "assistant"]),
   content: z.string(),
   toolActivities: z.array(chatToolActivitySchema).nullable().optional(),

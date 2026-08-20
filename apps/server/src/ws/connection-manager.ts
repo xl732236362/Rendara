@@ -103,8 +103,14 @@ export class ConnectionManager {
     this.activeRuns.set(canvasId, { runId, sessionId, startedAt: Date.now() });
   }
 
-  /** Clear active run for a canvas. */
-  clearActiveRun(canvasId: string): void {
+  /** Clear active run for a canvas if it still belongs to this run. */
+  clearActiveRun(canvasId: string, expectedRunId?: string): void {
+    if (
+      expectedRunId &&
+      this.activeRuns.get(canvasId)?.runId !== expectedRunId
+    ) {
+      return;
+    }
     this.activeRuns.delete(canvasId);
   }
 

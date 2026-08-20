@@ -112,6 +112,65 @@ describe("WebSocket resource commands", () => {
     socket.emit("close");
   });
 
+  it("restarts a recoverable run after canvas resume", async () => {
+    const socket = new FakeSocket();
+    const agentRuns = fakeAgentRuns();
+    agentRuns.registerRun.mockReturnValue({
+      ownership: "existing_active",
+      response: {
+        conversationId: "conversation-1",
+        runId: "run-active",
+        sessionId: "session-1",
+        status: "accepted",
+      },
+    });
+    agentRuns.isRunRecoverable.mockReturnValue(true);
+    agentRuns.getRunRequest.mockReturnValue({
+      canvasId: "canvas-1",
+      clientRequestId: "request-1",
+      conversationId: "conversation-1",
+      prompt: "resume me",
+      sessionId: "session-1",
+    });
+    agentRuns.streamRun.mockReturnValue(
+      (async function* () {
+        yield {
+          type: "run.completed",
+          runId: "run-active",
+          timestamp: new Date().toISOString(),
+        };
+      })(),
+    );
+    const connectionManager = new ConnectionManager();
+    connectionManager.setActiveRun("canvas-1", "run-active", "session-1");
+
+    await bindAuthenticatedSocket(
+      socket as never,
+      "token",
+      { url: "/api/ws", headers: { host: "localhost" } } as never,
+      {
+        agentRuns: agentRuns as never,
+        authorization: fakeAuthorization("canvas-1"),
+        auth: { authenticate: async () => user },
+        connectionManager,
+        prepareAgentRun: async () => preparedRun(false),
+      },
+    );
+    socket.emit(
+      "message",
+      JSON.stringify({
+        type: "command",
+        action: "canvas.resume",
+        payload: { canvasId: "canvas-1", lastSeq: 0 },
+      }),
+    );
+    await nextTurn();
+    await nextTurn();
+
+    expect(agentRuns.streamRun).toHaveBeenCalledOnce();
+    socket.emit("close");
+  });
+
   it("acknowledges an active replay without consuming or clearing its stream", async () => {
     const socket = new FakeSocket();
     const agentRuns = fakeAgentRuns();
@@ -156,6 +215,51 @@ describe("WebSocket resource commands", () => {
         type: "command.ack",
       }),
     );
+    socket.emit("close");
+  });
+
+  it("replays a recoverable active run once when ownership is existing", async () => {
+    const socket = new FakeSocket();
+    const agentRuns = fakeAgentRuns();
+    agentRuns.registerRun.mockReturnValue({
+      ownership: "existing_active",
+      response: {
+        conversationId: "conversation-1",
+        runId: "run-1",
+        sessionId: "session-1",
+        status: "accepted",
+      },
+    });
+    agentRuns.isRunRecoverable.mockReturnValue(true);
+    agentRuns.streamRun.mockReturnValue(
+      (async function* () {
+        yield {
+          type: "run.completed",
+          runId: "run-1",
+          timestamp: new Date().toISOString(),
+        };
+      })(),
+    );
+    const connectionManager = new ConnectionManager();
+
+    await bindAuthenticatedSocket(
+      socket as never,
+      "token",
+      { url: "/api/ws", headers: { host: "localhost" } } as never,
+      {
+        agentRuns: agentRuns as never,
+        authorization: fakeAuthorization("canvas-1"),
+        auth: { authenticate: async () => user },
+        connectionManager,
+        prepareAgentRun: async () => preparedRun(false),
+      },
+    );
+    socket.emit("message", runCommand());
+    await nextTurn();
+    await nextTurn();
+
+    expect(agentRuns.streamRun).toHaveBeenCalledOnce();
+    expect(connectionManager.getActiveRun("canvas-1")).toBeNull();
     socket.emit("close");
   });
 
@@ -1027,6 +1131,8 @@ function fakeAgentRuns() {
     cancelRun: vi.fn(),
     createRun: vi.fn(),
     registerRun: vi.fn(),
+    isRunRecoverable: vi.fn(),
+    getRunRequest: vi.fn(),
     streamRun: vi.fn(),
   };
 }

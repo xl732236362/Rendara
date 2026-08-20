@@ -14,6 +14,21 @@ describe("ConnectionManager identity", () => {
 
     expect(manager.getEntry("connection-1")?.ws).toBe(replacement);
   });
+
+  it("only clears the active run that owns the marker", () => {
+    const manager = new ConnectionManager();
+    manager.setActiveRun("canvas-1", "run-1", "session-1");
+    manager.setActiveRun("canvas-1", "run-2", "session-2");
+
+    manager.clearActiveRun("canvas-1", "run-1");
+
+    expect(manager.getActiveRun("canvas-1")).toMatchObject({
+      runId: "run-2",
+      sessionId: "session-2",
+    });
+    manager.clearActiveRun("canvas-1", "run-2");
+    expect(manager.getActiveRun("canvas-1")).toBeNull();
+  });
   it("does not let another user replace an existing connection id", () => {
     const manager = new ConnectionManager();
     const originalSocket = { readyState: 1 } as never;
