@@ -91,6 +91,18 @@ describe("@loomic/shared contracts", () => {
     }
   });
 
+  it("accepts invalid cursors through the canonical HTTP boundary", () => {
+    const error = {
+      code: "invalid_cursor",
+      message: "Invalid pagination cursor.",
+    };
+
+    expect(boundaryErrorCodeSchema.parse(error.code)).toBe(error.code);
+    expect(getExportedSchema("errorEnvelopeSchema").parse({ error })).toEqual({
+      error,
+    });
+  });
+
   it("accepts Agent acceptance boundary codes", () => {
     for (const code of [
       "agent_context_timeout",

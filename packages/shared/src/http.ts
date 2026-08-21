@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { agentErrorCodeValues } from "./errors.js";
+import { invalidCursorErrorCodeSchema } from "./pagination.js";
 
 import {
   assetObjectSchema,
@@ -143,6 +144,7 @@ export const boundaryErrorCodeSchema = z.union([
     "upstream_error",
   ]),
   applicationErrorCodeSchema,
+  invalidCursorErrorCodeSchema,
 ]);
 
 export const errorEnvelopeSchema = z.object({

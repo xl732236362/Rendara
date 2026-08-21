@@ -94,6 +94,33 @@ describe("Fastify error boundary", () => {
     await app.close();
   });
 
+  it("serializes invalid cursor AppErrors as a canonical safe 400", async () => {
+    const app = createTestApp();
+    app.get("/invalid-cursor", async () => {
+      throw new AppError({
+        code: "invalid_cursor",
+        statusCode: 400,
+        message: "Invalid pagination cursor.",
+        expose: true,
+      });
+    });
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/invalid-cursor",
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: {
+        code: "invalid_cursor",
+        message: "Invalid pagination cursor.",
+      },
+    });
+    expect(() => errorEnvelopeSchema.parse(response.json())).not.toThrow();
+    await app.close();
+  });
+
   it("snapshots and deep-freezes AppError details before caller mutation", async () => {
     const app = createTestApp();
     const details: Record<string, unknown> = {
