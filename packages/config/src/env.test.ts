@@ -6,6 +6,17 @@ import {
 } from "./env.js";
 
 describe("server environment schema", () => {
+  const completeApiEnvironment = {
+    GOOGLE_API_KEY: "google-secret",
+    LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY:
+      "active-pagination-signing-secret-32-bytes",
+    LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY_ID: "active-2026-08",
+    SUPABASE_ANON_KEY: "anon",
+    SUPABASE_DB_URL: "postgresql://example",
+    SUPABASE_SERVICE_ROLE_KEY: "service",
+    SUPABASE_URL: "https://example.supabase.co",
+  };
+
   it.each(["0", "65536", "3abc", "1.5", "not-a-port"])(
     "rejects invalid port %s",
     (port) => {
@@ -47,7 +58,7 @@ describe("server environment schema", () => {
 
   it("requires production API dependencies and its resolved default provider", () => {
     expect(() => parseServerEnvironment({}, { process: "api" })).toThrow(
-      /SUPABASE_URL[\s\S]*SUPABASE_ANON_KEY[\s\S]*SUPABASE_SERVICE_ROLE_KEY[\s\S]*SUPABASE_DB_URL[\s\S]*OPENAI_API_KEY/,
+      /SUPABASE_URL[\s\S]*SUPABASE_ANON_KEY[\s\S]*SUPABASE_SERVICE_ROLE_KEY[\s\S]*SUPABASE_DB_URL[\s\S]*LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY_ID[\s\S]*LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY[\s\S]*OPENAI_API_KEY/,
     );
   });
 
@@ -59,17 +70,116 @@ describe("server environment schema", () => {
 
   it("accepts a complete Google default provider path", () => {
     expect(() =>
+      parseServerEnvironment(completeApiEnvironment, { process: "api" }),
+    ).not.toThrow();
+  });
+
+  it("does not require pagination cursor keys outside the API process", () => {
+    const env = parseServerEnvironment({});
+
+    expect(env.paginationCursorActiveKeyId).toBeUndefined();
+    expect(env.paginationCursorActiveKey).toBeUndefined();
+  });
+
+  it.each([
+    ["missing key ID", { LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY_ID: undefined }],
+    ["missing key", { LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY: undefined }],
+  ])("requires the active pagination cursor %s for API", (_, overrides) => {
+    expect(() =>
+      parseServerEnvironment(
+        { ...completeApiEnvironment, ...overrides },
+        { process: "api" },
+      ),
+    ).toThrow(/LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY/);
+  });
+
+  it("measures pagination cursor secrets by UTF-8 bytes", () => {
+    expect(() =>
       parseServerEnvironment(
         {
-          GOOGLE_API_KEY: "google-secret",
-          SUPABASE_ANON_KEY: "anon",
-          SUPABASE_DB_URL: "postgresql://example",
-          SUPABASE_SERVICE_ROLE_KEY: "service",
-          SUPABASE_URL: "https://example.supabase.co",
+          ...completeApiEnvironment,
+          LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY: "密钥材料".repeat(3),
         },
         { process: "api" },
       ),
     ).not.toThrow();
+    expect(() =>
+      parseServerEnvironment(
+        {
+          ...completeApiEnvironment,
+          LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY: "x".repeat(31),
+        },
+        { process: "api" },
+      ),
+    ).toThrow(/LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY/);
+  });
+
+  it.each([
+    [
+      "ID",
+      {
+        LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY_ID: "previous-2026-07",
+      },
+    ],
+    [
+      "secret",
+      {
+        LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY:
+          "previous-pagination-signing-secret-32-bytes",
+      },
+    ],
+  ])(
+    "requires the previous pagination cursor %s and secret as a pair",
+    (_, previous) => {
+      expect(() =>
+        parseServerEnvironment(
+          { ...completeApiEnvironment, ...previous },
+          { process: "api" },
+        ),
+      ).toThrow(/LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY/);
+    },
+  );
+
+  it("requires distinct active and previous pagination cursor key IDs", () => {
+    expect(() =>
+      parseServerEnvironment(
+        {
+          ...completeApiEnvironment,
+          LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY:
+            "previous-pagination-signing-secret-32-bytes",
+          LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY_ID: "active-2026-08",
+        },
+        { process: "api" },
+      ),
+    ).toThrow(/LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY_ID/);
+  });
+
+  it("maps cursor keys to typed properties without exposing secrets in errors", () => {
+    const secret = "active-pagination-signing-secret-32-bytes";
+    const env = parseServerEnvironment(
+      {
+        ...completeApiEnvironment,
+        LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY: secret,
+      },
+      { process: "api" },
+    );
+
+    expect(env).toMatchObject({
+      paginationCursorActiveKey: secret,
+      paginationCursorActiveKeyId: "active-2026-08",
+    });
+
+    try {
+      parseServerEnvironment(
+        {
+          ...completeApiEnvironment,
+          LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY: "too-short-secret",
+        },
+        { process: "api" },
+      );
+    } catch (error) {
+      expect(String(error)).not.toContain("too-short-secret");
+    }
   });
 
   it("requires credentials for the resolved Vertex provider path", () => {
@@ -121,6 +231,23 @@ describe("server environment schema", () => {
       sensitivity: "secret",
       processes: ["api", "worker"],
       requiredFor: ["api", "worker"],
+    });
+    expect(
+      envDescriptors.find(
+        ({ key }) => key === "LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY",
+      ),
+    ).toMatchObject({
+      sensitivity: "secret",
+      processes: ["api"],
+      requiredFor: ["api"],
+    });
+    expect(
+      envDescriptors.find(
+        ({ key }) => key === "LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY",
+      ),
+    ).toMatchObject({
+      sensitivity: "secret",
+      processes: ["api"],
     });
     expect(JSON.stringify(envDescriptors)).not.toContain("google-secret");
   });

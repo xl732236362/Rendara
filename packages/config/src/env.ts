@@ -42,6 +42,10 @@ export type ServerEnvironment = {
   googleVertexVideoLocation?: string;
   openAIApiBase?: string;
   openAIApiKey?: string;
+  paginationCursorActiveKey?: string;
+  paginationCursorActiveKeyId?: string;
+  paginationCursorPreviousKey?: string;
+  paginationCursorPreviousKeyId?: string;
   port: number;
   rateLimitDefaultPerMinute: number;
   rateLimitGenerationPerMinute: number;
@@ -111,6 +115,32 @@ export const envDescriptors = [
   ]),
   descriptor("NEXT_PUBLIC_SUPABASE_URL", undefined, "public", ["web"]),
   descriptor("NEXT_PUBLIC_SUPABASE_ANON_KEY", undefined, "public", ["web"]),
+  descriptor(
+    "LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY_ID",
+    "paginationCursorActiveKeyId",
+    "private",
+    ["api"],
+    { requiredFor: ["api"] },
+  ),
+  descriptor(
+    "LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY",
+    "paginationCursorActiveKey",
+    "secret",
+    ["api"],
+    { requiredFor: ["api"] },
+  ),
+  descriptor(
+    "LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY_ID",
+    "paginationCursorPreviousKeyId",
+    "private",
+    ["api"],
+  ),
+  descriptor(
+    "LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY",
+    "paginationCursorPreviousKey",
+    "secret",
+    ["api"],
+  ),
   descriptor("LOOMIC_AGENT_MODEL", "agentModel", "private", ["api", "worker"]),
   descriptor(
     "LOOMIC_AGENT_MODEL_INACTIVITY_MS",
@@ -286,6 +316,17 @@ const optionalString = z.preprocess(
   blankToUndefined,
   z.string().trim().min(1).optional(),
 );
+const optionalCursorSecret = z.preprocess(
+  blankToUndefined,
+  z
+    .string()
+    .trim()
+    .min(1)
+    .refine((value) => new TextEncoder().encode(value).byteLength >= 32, {
+      message: "must contain at least 32 UTF-8 bytes",
+    })
+    .optional(),
+);
 const optionalUrl = z.preprocess(blankToUndefined, z.url().trim().optional());
 const strictInteger = (minimum: number, maximum: number) =>
   z.preprocess(
@@ -313,6 +354,10 @@ export const serverEnvironmentSchema = z.object({
   SUPABASE_DB_URL: optionalString,
   SUPABASE_PROJECT_ID: optionalString,
   SUPABASE_JWT_SECRET: optionalString,
+  LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY_ID: optionalString,
+  LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY: optionalCursorSecret,
+  LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY_ID: optionalString,
+  LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY: optionalCursorSecret,
   LOOMIC_AGENT_MODEL: optionalString,
   LOOMIC_AGENT_MODEL_INACTIVITY_MS: strictInteger(1_000, 3_600_000).default(
     30_000,
@@ -401,6 +446,18 @@ export function parseServerEnvironment(
     googleVertexLocation: normalizedCandidate(source.GOOGLE_VERTEX_LOCATION),
     googleVertexProject: normalizedCandidate(source.GOOGLE_VERTEX_PROJECT),
     openAIApiKey: normalizedCandidate(source.OPENAI_API_KEY),
+    paginationCursorActiveKey: normalizedCandidate(
+      source.LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY,
+    ),
+    paginationCursorActiveKeyId: normalizedCandidate(
+      source.LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY_ID,
+    ),
+    paginationCursorPreviousKey: normalizedCandidate(
+      source.LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY,
+    ),
+    paginationCursorPreviousKeyId: normalizedCandidate(
+      source.LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY_ID,
+    ),
     supabaseAnonKey: normalizedCandidate(source.SUPABASE_ANON_KEY),
     supabaseDbUrl: normalizedCandidate(source.SUPABASE_DB_URL),
     supabaseServiceRoleKey: normalizedCandidate(
@@ -422,6 +479,46 @@ export function parseServerEnvironment(
         });
       }
     }
+  }
+  if (options.process === "api") {
+    for (const [key, present] of [
+      [
+        "LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY_ID",
+        candidate.paginationCursorActiveKeyId,
+      ],
+      [
+        "LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY",
+        candidate.paginationCursorActiveKey,
+      ],
+    ] as const) {
+      if (!present) {
+        issues.push({
+          key,
+          message: "is required for the api process",
+        });
+      }
+    }
+  }
+  if (
+    Boolean(candidate.paginationCursorPreviousKeyId) !==
+    Boolean(candidate.paginationCursorPreviousKey)
+  ) {
+    issues.push({
+      key: candidate.paginationCursorPreviousKeyId
+        ? "LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY"
+        : "LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY_ID",
+      message: "must be configured together with its previous cursor key pair",
+    });
+  }
+  if (
+    candidate.paginationCursorPreviousKeyId &&
+    candidate.paginationCursorPreviousKeyId ===
+      candidate.paginationCursorActiveKeyId
+  ) {
+    issues.push({
+      key: "LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY_ID",
+      message: "must differ from LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY_ID",
+    });
   }
   const resolvedAgentModel =
     candidate.agentModel ??

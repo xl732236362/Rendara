@@ -266,6 +266,35 @@ test("workspace tests run the checked-in environment contract validator", async 
   assert.match(manifest.scripts["test:workspace"], /validate:env/);
 });
 
+test("environment template requires placeholders for pagination cursor secrets", async () => {
+  const { validateEnvironmentContracts } = await import(
+    "../scripts/validate-env-template.mjs"
+  );
+  const activeSecret = "active-pagination-signing-secret-32-bytes";
+  const previousSecret = "previous-pagination-signing-secret-32-bytes";
+  const issues = validateEnvironmentContracts({
+    envTemplate: [
+      `LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY=${activeSecret}`,
+      `LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY=${previousSecret}`,
+    ].join("\n"),
+    deployments: [],
+    requireCompleteTemplate: false,
+  });
+
+  assert.ok(
+    issues.some((issue) =>
+      issue.includes("LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY"),
+    ),
+  );
+  assert.ok(
+    issues.some((issue) =>
+      issue.includes("LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY"),
+    ),
+  );
+  assert.doesNotMatch(issues.join("\n"), new RegExp(activeSecret));
+  assert.doesNotMatch(issues.join("\n"), new RegExp(previousSecret));
+});
+
 test("deployment contract binds real API and worker Railway configs", async () => {
   const contract = await readJson("deploy/environment-contract.json");
   const api = await readJson(contract.services.api.configPath);

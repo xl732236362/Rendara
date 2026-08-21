@@ -3,6 +3,11 @@ import { pathToFileURL } from "node:url";
 import { envDescriptors } from "../packages/config/dist/env.js";
 
 const descriptorByKey = new Map(envDescriptors.map((item) => [item.key, item]));
+const paginationCursorSecretKeys = new Set([
+  "LOOMIC_PAGINATION_CURSOR_ACTIVE_KEY",
+  "LOOMIC_PAGINATION_CURSOR_PREVIOUS_KEY",
+]);
+const documentedPlaceholder = /^<[^<>\r\n]+>$/;
 
 function templateEntries(source) {
   const entries = new Map();
@@ -29,6 +34,13 @@ export function validateEnvironmentContracts({
     } else if (descriptor.dangerous && value === "true") {
       issues.push(
         `.env.example: dangerous setting ${key} must not default to true`,
+      );
+    } else if (
+      paginationCursorSecretKeys.has(key) &&
+      !documentedPlaceholder.test(value)
+    ) {
+      issues.push(
+        `.env.example: ${key} must use a placeholder instead of key material`,
       );
     }
   }
