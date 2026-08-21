@@ -235,6 +235,7 @@ describe("identity-scoped query runtime", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -477,5 +478,46 @@ describe("identity-scoped query runtime", () => {
         "fresh-user-2-result",
       );
     });
+  });
+
+  it("disposes a signal-ignoring query after the root provider unmounts", async () => {
+    getSessionMock.mockResolvedValue({
+      data: { session: session("user-1", "token-1") },
+      error: null,
+    });
+    const request = createDeferred<string>();
+    const requests = [request];
+    const clients: QueryClient[] = [];
+    const root = render(
+      <QueryRuntime>
+        <SignalIgnoringQueryProbe
+          requests={requests}
+          onClient={(client) => clients.push(client)}
+        />
+      </QueryRuntime>,
+    );
+
+    await waitFor(() => expect(requests).toHaveLength(0));
+    const client = lastValue(clients);
+    expect(client.getQueryCache().findAll()).toHaveLength(1);
+
+    vi.useFakeTimers();
+    root.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(client.getQueryCache().findAll()).toHaveLength(0);
+    expect(client.getQueryData(["signal-ignoring-request"])).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
+
+    await act(async () => {
+      request.resolve("late-unmounted-result");
+      await Promise.resolve();
+    });
+
+    expect(client.getQueryCache().findAll()).toHaveLength(0);
+    expect(client.getQueryData(["signal-ignoring-request"])).toBeUndefined();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
