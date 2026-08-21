@@ -54,16 +54,35 @@ describe("buildKeysetPredicate", () => {
     });
   });
 
-  it("keeps untrusted boundary values as typed data", () => {
-    const hostileBoundary = {
-      timestamp: "2026-08-22T08:30:00.000Z,or(true)",
-      id: "id);drop table projects;--",
+  it("accepts a strict RFC3339 timestamp with an explicit offset", () => {
+    const offsetBoundary = {
+      ...boundary,
+      timestamp: "2026-08-22T16:30:00.000+08:00",
     };
 
-    const predicate = buildKeysetPredicate("desc", hostileBoundary);
+    expect(buildKeysetPredicate("desc", offsetBoundary).branches[0][0]).toEqual(
+      {
+        field: "timestamp",
+        operator: "lt",
+        value: offsetBoundary.timestamp,
+      },
+    );
+  });
 
-    expect(predicate.branches[0][0].value).toBe(hostileBoundary.timestamp);
-    expect(predicate.branches[1][1].value).toBe(hostileBoundary.id);
-    expect(predicate).not.toEqual(expect.any(String));
+  it.each([
+    [
+      "PostgREST syntax in timestamp",
+      {
+        ...boundary,
+        timestamp: "2026-08-22T08:30:00.000Z,or(true)",
+      },
+    ],
+    [
+      "timestamp without an offset",
+      { ...boundary, timestamp: "2026-08-22T08:30:00" },
+    ],
+    ["non-UUID id", { ...boundary, id: "id);drop table projects;--" }],
+  ])("rejects %s before building a predicate", (_label, invalidBoundary) => {
+    expect(() => buildKeysetPredicate("desc", invalidBoundary)).toThrow();
   });
 });

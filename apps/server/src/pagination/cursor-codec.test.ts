@@ -4,12 +4,22 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AppError } from "../errors/app-error.js";
 import {
+  CURSOR_CLOCK_SKEW_ALLOWANCE_MS,
   CURSOR_MAX_AGE_MS,
   type CursorScope,
   createCursorCodec,
 } from "./cursor-codec.js";
 
 const NOW = Date.parse("2026-08-22T08:30:00.000Z");
+const EXPECTED_CLOCK_SKEW_ALLOWANCE_MS = 60_000;
+const INVALID_CLOCK_VALUES = [
+  Number.NaN,
+  Number.POSITIVE_INFINITY,
+  Number.NEGATIVE_INFINITY,
+  NOW + 0.5,
+  Number.MAX_SAFE_INTEGER + 1,
+  -1,
+];
 const ACTIVE_KEY = {
   keyId: "active-2026-08",
   secret: "active-pagination-signing-secret-32-bytes",
@@ -35,6 +45,12 @@ afterEach(() => {
 });
 
 describe("cursor codec", () => {
+  it("publishes a one-minute clock-skew allowance", () => {
+    expect(CURSOR_CLOCK_SKEW_ALLOWANCE_MS).toBe(
+      EXPECTED_CLOCK_SKEW_ALLOWANCE_MS,
+    );
+  });
+
   it("encodes deterministic base64url JSON signed with the active HMAC key", () => {
     const codec = createCodec();
 
@@ -64,6 +80,41 @@ describe("cursor codec", () => {
     expect(codec.decode(codec.encode(SCOPE, BOUNDARY), SCOPE)).toEqual(
       BOUNDARY,
     );
+  });
+
+  it.each([
+    [
+      "PostgREST syntax in timestamp",
+      {
+        ...BOUNDARY,
+        timestamp: "2026-08-22T08:00:00.000Z,or(true)",
+      },
+    ],
+    [
+      "timestamp without an offset",
+      { ...BOUNDARY, timestamp: "2026-08-22T08:00:00" },
+    ],
+    ["non-UUID id", { ...BOUNDARY, id: "id);drop table projects;--" }],
+  ])("does not encode a boundary containing %s", (_label, boundary) => {
+    expect(() => createCodec().encode(SCOPE, boundary)).toThrow();
+  });
+
+  it.each([
+    [
+      "PostgREST syntax in timestamp",
+      {
+        ...BOUNDARY,
+        timestamp: "2026-08-22T08:00:00.000Z,or(true)",
+      },
+    ],
+    ["non-UUID id", { ...BOUNDARY, id: "not-a-uuid" }],
+  ])("rejects a signed payload containing %s", (_label, boundary) => {
+    const cursor = replacePayload(
+      createCodec().encode(SCOPE, BOUNDARY),
+      (payload) => ({ ...payload, boundary }),
+    );
+
+    expectInvalidCursor(() => createCodec().decode(cursor, SCOPE));
   });
 
   it("accepts a cursor signed by the configured previous key", () => {
@@ -184,15 +235,56 @@ describe("cursor codec", () => {
     expectInvalidCursor(() => codec.decode(cursor, SCOPE));
   });
 
-  it("rejects a cursor issued in the future", () => {
-    const futureCodec = createCursorCodec({
+  it("accepts a cursor from a replica ahead by the clock-skew allowance", () => {
+    const fastReplica = createCursorCodec({
       activeKey: ACTIVE_KEY,
-      now: () => NOW + 1,
+      now: () => NOW + EXPECTED_CLOCK_SKEW_ALLOWANCE_MS,
     });
-    const cursor = futureCodec.encode(SCOPE, BOUNDARY);
+    const slowReplica = createCursorCodec({
+      activeKey: ACTIVE_KEY,
+      now: () => NOW,
+    });
 
-    expectInvalidCursor(() => createCodec().decode(cursor, SCOPE));
+    expect(
+      slowReplica.decode(fastReplica.encode(SCOPE, BOUNDARY), SCOPE),
+    ).toEqual(BOUNDARY);
   });
+
+  it("rejects a cursor issued beyond the clock-skew allowance", () => {
+    const fastReplica = createCursorCodec({
+      activeKey: ACTIVE_KEY,
+      now: () => NOW + EXPECTED_CLOCK_SKEW_ALLOWANCE_MS + 1,
+    });
+
+    expectInvalidCursor(() =>
+      createCodec().decode(fastReplica.encode(SCOPE, BOUNDARY), SCOPE),
+    );
+  });
+
+  it.each(INVALID_CLOCK_VALUES)(
+    "fails closed when the decode clock returns %s",
+    (invalidNow) => {
+      const cursor = createCodec().encode(SCOPE, BOUNDARY);
+      const codec = createCursorCodec({
+        activeKey: ACTIVE_KEY,
+        now: () => invalidNow,
+      });
+
+      expectInvalidCursor(() => codec.decode(cursor, SCOPE));
+    },
+  );
+
+  it.each(INVALID_CLOCK_VALUES)(
+    "does not encode a cursor when the clock returns %s",
+    (invalidNow) => {
+      const codec = createCursorCodec({
+        activeKey: ACTIVE_KEY,
+        now: () => invalidNow,
+      });
+
+      expect(() => codec.encode(SCOPE, BOUNDARY)).toThrow(TypeError);
+    },
+  );
 
   it("does not log cursor payloads, signatures, or signing keys on failure", () => {
     const spies = [

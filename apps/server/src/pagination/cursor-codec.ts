@@ -7,9 +7,12 @@ import {
 import { z } from "zod";
 
 import { AppError } from "../errors/app-error.js";
+import { type KeysetBoundary, keysetBoundarySchema } from "./keyset.js";
 
 export const CURSOR_VERSION = 1 as const;
 export const CURSOR_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
+// One minute tolerates normal NTP convergence and cross-replica request transit.
+export const CURSOR_CLOCK_SKEW_ALLOWANCE_MS = 60_000;
 
 export type CursorScope = {
   userId: string;
@@ -19,10 +22,7 @@ export type CursorScope = {
   direction: "asc" | "desc";
 };
 
-export type CursorBoundary = {
-  timestamp: string;
-  id: string;
-};
+export type CursorBoundary = KeysetBoundary;
 
 export type CursorSigningKey = {
   keyId: string;
@@ -50,20 +50,13 @@ const scopeSchema = z
   })
   .strict();
 
-const boundarySchema = z
-  .object({
-    timestamp: z.string().min(1),
-    id: z.string().min(1),
-  })
-  .strict();
-
 const payloadSchema = z
   .object({
     keyId: z.string().min(1),
     version: z.literal(CURSOR_VERSION),
     issuedAt: z.number().int().nonnegative(),
     scope: scopeSchema,
-    boundary: boundarySchema,
+    boundary: keysetBoundarySchema,
   })
   .strict();
 
@@ -75,9 +68,9 @@ export function createCursorCodec(options: CursorCodecOptions): CursorCodec {
       const payload: CursorPayload = {
         keyId: options.activeKey.keyId,
         version: CURSOR_VERSION,
-        issuedAt: options.now(),
+        issuedAt: readClock(options.now),
         scope: scopeSchema.parse(scope),
-        boundary: boundarySchema.parse(boundary),
+        boundary: keysetBoundarySchema.parse(boundary),
       };
       const payloadSegment = Buffer.from(JSON.stringify(payload)).toString(
         "base64url",
@@ -143,9 +136,9 @@ function decodeCursor(
   }
 
   const payload = payloadSchema.parse(untrustedPayload);
-  const now = options.now();
+  const now = readClock(options.now);
   if (
-    payload.issuedAt > now ||
+    payload.issuedAt - now > CURSOR_CLOCK_SKEW_ALLOWANCE_MS ||
     now - payload.issuedAt > CURSOR_MAX_AGE_MS ||
     !scopesEqual(payload.scope, expectedScope)
   ) {
@@ -153,6 +146,14 @@ function decodeCursor(
   }
 
   return payload.boundary;
+}
+
+function readClock(now: () => number): number {
+  const value = now();
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError("Cursor clock must return epoch milliseconds");
+  }
+  return value;
 }
 
 function sign(payloadSegment: string, secret: string): Buffer {
