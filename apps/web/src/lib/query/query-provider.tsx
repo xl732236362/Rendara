@@ -20,24 +20,122 @@ interface QueryClientOwnership {
 }
 
 const clientDisposals = new WeakMap<QueryClient, Promise<void>>();
+const MAX_CACHE_DISPOSAL_PASSES = 3;
+
+interface ClientDisposalSummary {
+  cancellationFailures: number;
+  removalFailures: number;
+  remainingMutations: number;
+  remainingQueries: number;
+  unexpectedFailures: number;
+}
+
+function getCacheSize(getEntries: () => readonly unknown[]): number {
+  try {
+    return getEntries().length;
+  } catch {
+    return -1;
+  }
+}
+
+function logDisposalFailure(summary: ClientDisposalSummary): void {
+  try {
+    // Keep disposal telemetry numeric so subscriber errors and identities
+    // cannot escape into logs.
+    console.warn("[query.runtime] client_dispose_failed", summary);
+  } catch {
+    // Logging must never turn fire-and-forget disposal into a rejection.
+  }
+}
 
 function disposeQueryClient(client: QueryClient): Promise<void> {
   const existing = clientDisposals.get(client);
   if (existing) return existing;
 
-  const disposal = (async () => {
+  // Deferring work ensures concurrent migration/unmount triggers observe the
+  // WeakMap entry before cancellation or subscriber callbacks can run.
+  const disposal = Promise.resolve().then(async () => {
+    const summary: ClientDisposalSummary = {
+      cancellationFailures: 0,
+      removalFailures: 0,
+      remainingMutations: 0,
+      remainingQueries: 0,
+      unexpectedFailures: 0,
+    };
+    let cleanupVerified = false;
+
     try {
-      // Cancellation settles Query's internal state before clear removes its
-      // GC timer. Clearing first lets cancellation schedule a timer afterward.
-      await client.cancelQueries();
-      client.clear();
+      // Cancellation settles Query's internal state before removal destroys
+      // its GC timer. Removing first lets cancellation schedule one afterward.
+      try {
+        await client.cancelQueries();
+      } catch {
+        summary.cancellationFailures += 1;
+      }
+
+      const queryCache = client.getQueryCache();
+      const mutationCache = client.getMutationCache();
+
+      // Subscribers may throw or repopulate a cache during notification. Work
+      // from snapshots and retry a bounded number of times without letting one
+      // entry prevent later query or mutation removals.
+      for (let pass = 0; pass < MAX_CACHE_DISPOSAL_PASSES; pass += 1) {
+        const queries = queryCache.getAll();
+        const mutations = mutationCache.getAll();
+        if (queries.length === 0 && mutations.length === 0) break;
+
+        for (const query of queries) {
+          try {
+            queryCache.remove(query);
+          } catch {
+            summary.removalFailures += 1;
+          }
+        }
+
+        for (const mutation of mutations) {
+          try {
+            mutationCache.remove(mutation);
+          } catch {
+            summary.removalFailures += 1;
+          }
+        }
+      }
+
+      summary.remainingQueries = queryCache.getAll().length;
+      summary.remainingMutations = mutationCache.getAll().length;
+      cleanupVerified =
+        summary.remainingQueries === 0 && summary.remainingMutations === 0;
+    } catch {
+      summary.unexpectedFailures += 1;
+      summary.remainingQueries = getCacheSize(() =>
+        client.getQueryCache().getAll(),
+      );
+      summary.remainingMutations = getCacheSize(() =>
+        client.getMutationCache().getAll(),
+      );
+    }
+
+    if (!cleanupVerified) {
+      // A completed but incomplete disposal must not be permanently memoized.
+      clientDisposals.delete(client);
+    }
+
+    if (
+      summary.cancellationFailures > 0 ||
+      summary.removalFailures > 0 ||
+      summary.unexpectedFailures > 0 ||
+      !cleanupVerified
+    ) {
+      logDisposalFailure(summary);
+      return;
+    }
+
+    try {
       console.info("[query.runtime] client_disposed");
     } catch {
-      // Disposal is fire-and-forget. Contain subscriber failures without
-      // leaking error or identity details into logs or unhandled rejections.
-      console.warn("[query.runtime] client_dispose_failed");
+      // Logging must never reject disposal.
     }
-  })();
+  });
   clientDisposals.set(client, disposal);
   return disposal;
 }

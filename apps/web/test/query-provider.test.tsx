@@ -507,8 +507,9 @@ describe("identity-scoped query runtime", () => {
       expect(snapshots.at(-1)?.getAccessToken()).toBe("token-1"),
     );
     const oldClient = lastValue(snapshots).client;
+    oldClient.setQueryData(["idempotent-disposal"], "cached");
     const cancelQueries = vi.spyOn(oldClient, "cancelQueries");
-    const clear = vi.spyOn(oldClient, "clear");
+    const removeQuery = vi.spyOn(oldClient.getQueryCache(), "remove");
     vi.useFakeTimers();
 
     act(() => authChange("SIGNED_IN", session("user-2", "token-2")));
@@ -518,7 +519,8 @@ describe("identity-scoped query runtime", () => {
     });
 
     expect(cancelQueries).toHaveBeenCalledOnce();
-    expect(clear).toHaveBeenCalledOnce();
+    expect(removeQuery).toHaveBeenCalledOnce();
+    expect(oldClient.getQueryCache().findAll()).toHaveLength(0);
   });
 
   it("contains subscriber failures during disposal without leaking details", async () => {
@@ -538,7 +540,12 @@ describe("identity-scoped query runtime", () => {
       expect(snapshots.at(-1)?.getAccessToken()).toBe("token-1"),
     );
     const oldClient = lastValue(snapshots).client;
-    oldClient.setQueryData(["throwing-subscriber"], "cached");
+    oldClient.setQueryData(["throwing-subscriber-1"], "cached-1");
+    oldClient.setQueryData(["throwing-subscriber-2"], "cached-2");
+    oldClient.getMutationCache().build(oldClient, {
+      mutationKey: ["private-mutation"],
+      mutationFn: async () => "unused",
+    });
     oldClient.getQueryCache().subscribe(() => {
       throw new Error("private subscriber details");
     });
@@ -552,10 +559,63 @@ describe("identity-scoped query runtime", () => {
     });
 
     expect(warn).toHaveBeenCalledOnce();
-    expect(warn).toHaveBeenCalledWith("[query.runtime] client_dispose_failed");
+    expect(warn).toHaveBeenCalledWith(
+      "[query.runtime] client_dispose_failed",
+      expect.objectContaining({
+        removalFailures: 2,
+        remainingMutations: 0,
+        remainingQueries: 0,
+      }),
+    );
+    expect(oldClient.getQueryCache().findAll()).toHaveLength(0);
+    expect(oldClient.getMutationCache().getAll()).toHaveLength(0);
     expect(JSON.stringify(warn.mock.calls)).not.toContain(
       "private subscriber details",
     );
+  });
+
+  it("retries disposal when a bounded cleanup leaves cache entries", async () => {
+    getSessionMock.mockResolvedValue({
+      data: { session: session("user-1", "token-1") },
+      error: null,
+    });
+    const snapshots: RuntimeSnapshot[] = [];
+
+    render(
+      <QueryRuntime>
+        <RuntimeProbe onSnapshot={(snapshot) => snapshots.push(snapshot)} />
+      </QueryRuntime>,
+    );
+
+    await waitFor(() =>
+      expect(snapshots.at(-1)?.getAccessToken()).toBe("token-1"),
+    );
+    const oldClient = lastValue(snapshots).client;
+    oldClient.setQueryData(["retryable-disposal"], "cached");
+    const queryCache = oldClient.getQueryCache();
+    const removeQuery = queryCache.remove.bind(queryCache);
+    let allowRemoval = false;
+    vi.spyOn(queryCache, "remove").mockImplementation((query) => {
+      if (!allowRemoval) throw new Error("transient removal failure");
+      removeQuery(query);
+    });
+    const cancelQueries = vi.spyOn(oldClient, "cancelQueries");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.useFakeTimers();
+
+    act(() => authChange("SIGNED_IN", session("user-2", "token-2")));
+    await act(async () => {
+      for (let index = 0; index < 10; index += 1) await Promise.resolve();
+    });
+    expect(oldClient.getQueryCache().findAll()).toHaveLength(1);
+
+    allowRemoval = true;
+    await act(async () => {
+      await flushDisposalWindow();
+    });
+
+    expect(cancelQueries).toHaveBeenCalledTimes(2);
+    expect(oldClient.getQueryCache().findAll()).toHaveLength(0);
   });
 
   it("disposes a signal-ignoring query after the root provider unmounts", async () => {
