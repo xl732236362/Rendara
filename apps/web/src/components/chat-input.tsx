@@ -21,6 +21,8 @@ import { ImageModelPreferencePopover } from "./image-model-preference";
 
 type ChatInputProps = {
   onSend: (message: string) => void;
+  onStop?: () => void;
+  running?: boolean;
   disabled?: boolean;
   attachments?: ImageAttachmentState[];
   onAddFiles?: (files: File[]) => void;
@@ -42,6 +44,8 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
   function ChatInput(
     {
       onSend,
+      onStop,
+      running,
       disabled,
       attachments,
       onAddFiles,
@@ -364,21 +368,31 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
               </div>
             </div>
             <button
-              onClick={handleSubmit}
-              disabled={disabled || !hasContent || isUploading}
+              type="button"
+              aria-label={running ? "停止运行" : "发送消息"}
+              title={running ? "停止运行" : "发送消息"}
+              onClick={running ? onStop : handleSubmit}
+              disabled={
+                running ? !onStop : disabled || !hasContent || isUploading
+              }
               className="flex h-8 min-w-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/80 active:bg-primary/90 disabled:opacity-20 disabled:cursor-not-allowed"
             >
-              <svg
-                className="h-[14px] w-[14px]"
-                viewBox="0 0 14 14"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={1.6}
-                strokeLinecap="round"
-              >
-                <path d="M7 11.5V2.5" />
-                <path d="M3 6.5L7 2.5L11 6.5" />
-              </svg>
+              {running ? (
+                <span className="h-3 w-3 rounded-[2px] bg-current" />
+              ) : (
+                <svg
+                  className="h-[14px] w-[14px]"
+                  viewBox="0 0 14 14"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={1.6}
+                  strokeLinecap="round"
+                  aria-hidden="true"
+                >
+                  <path d="M7 11.5V2.5" />
+                  <path d="M3 6.5L7 2.5L11 6.5" />
+                </svg>
+              )}
             </button>
           </div>
         </div>
