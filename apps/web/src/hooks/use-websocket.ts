@@ -172,6 +172,7 @@ export function useWebSocket(
             const payload = msg.payload as Record<string, unknown> | undefined;
             const canvasId = payload?.canvasId;
             const latestSeq = payload?.latestSeq;
+            const replayGap = payload?.replayGap === true;
             if (
               typeof canvasId === "string" &&
               typeof latestSeq === "number" &&
@@ -179,11 +180,12 @@ export function useWebSocket(
               latestSeq >= 0
             ) {
               const currentSeq = lastSeqByCanvasRef.current.get(canvasId) ?? 0;
-              if (latestSeq < currentSeq) {
+              if (replayGap || latestSeq < currentSeq) {
                 console.warn("[ws] resetting stale canvas sequence cursor", {
                   canvasId,
                   currentSeq,
                   latestSeq,
+                  replayGap,
                 });
                 lastSeqByCanvasRef.current.set(canvasId, latestSeq);
               }

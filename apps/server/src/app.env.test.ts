@@ -136,7 +136,7 @@ describe("application environment composition", () => {
     await app.close();
   });
 
-  it("unrefs and clears each event-buffer cleanup timer on close", async () => {
+  it("unrefs and clears realtime maintenance timers on close", async () => {
     const unref = vi.fn();
     const timer = { unref } as unknown as NodeJS.Timeout;
     const setIntervalSpy = vi
@@ -154,10 +154,12 @@ describe("application environment composition", () => {
     });
     await Promise.all([first.close(), second.close()]);
 
-    expect(unref).toHaveBeenCalledTimes(2);
-    expect(clearIntervalSpy).toHaveBeenCalledTimes(2);
+    expect(unref).toHaveBeenCalledTimes(4);
+    expect(clearIntervalSpy).toHaveBeenCalledTimes(4);
     expect(clearIntervalSpy).toHaveBeenNthCalledWith(1, timer);
     expect(clearIntervalSpy).toHaveBeenNthCalledWith(2, timer);
+    expect(clearIntervalSpy).toHaveBeenNthCalledWith(3, timer);
+    expect(clearIntervalSpy).toHaveBeenNthCalledWith(4, timer);
     expect(firstDispose).toHaveBeenCalledOnce();
     expect(secondDispose).toHaveBeenCalledOnce();
     setIntervalSpy.mockRestore();

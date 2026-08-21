@@ -224,10 +224,33 @@ describe("useWebSocket Agent correlation", () => {
       result.current.resumeCanvas("canvas-1");
     });
 
-    const resumes = FakeWebSocket.instances.at(-1)?.send.mock.calls
-      .map(([payload]) => JSON.parse(payload as string))
+    const resumes = FakeWebSocket.instances
+      .at(-1)
+      ?.send.mock.calls.map(([payload]) => JSON.parse(payload as string))
       .filter((message) => message.action === "canvas.resume");
     expect(resumes?.at(-1)?.payload.lastSeq).toBe(0);
+    unmount();
+  });
+
+  it("advances to the server cursor after an explicit replay gap", async () => {
+    const { result, unmount } = renderHook(() => useWebSocket(() => "token"));
+    await waitFor(() => expect(result.current.connected).toBe(true));
+
+    act(() => {
+      result.current.resumeCanvas("canvas-1", vi.fn());
+      FakeWebSocket.instances[0]?.receive({
+        type: "command.ack",
+        action: "canvas.resume",
+        payload: { canvasId: "canvas-1", latestSeq: 9, replayGap: true },
+      });
+      result.current.resumeCanvas("canvas-1");
+    });
+
+    const resumes = FakeWebSocket.instances
+      .at(-1)
+      ?.send.mock.calls.map(([payload]) => JSON.parse(payload as string))
+      .filter((message) => message.action === "canvas.resume");
+    expect(resumes?.at(-1)?.payload.lastSeq).toBe(9);
     unmount();
   });
 

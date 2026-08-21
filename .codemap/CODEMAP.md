@@ -1,7 +1,7 @@
 # Loomic - Codemap
 
 > **Version**: 0.0.0 | **Stack**: TypeScript, Next.js, Fastify, LangGraph, Supabase | **Architecture**: pnpm monorepo
-> **Created**: 2026-08-17 | **Updated**: 2026-08-19
+> **Created**: 2026-08-17 | **Updated**: 2026-08-21 | **This change**: Phase 5 realtime files
 
 ## L1: Project Panorama
 
@@ -58,6 +58,7 @@ worker -> sealed executor registry -> generation providers / Supabase / storage
 
 | Date | Change | Scope |
 | --- | --- | --- |
+| 2026-08-21 | Phase 5 durable canvas cursors, cross-replica delivery, persistent active-run lookup, readiness and retention | Server, Web, database, deployment |
 | 2026-08-17 | Initial codemap after phase 0 | Entire repository |
 | 2026-08-18 | Phase 1 contracts, application boundaries, explicit registries, and architecture gates | Server, Web, packages, quality |
 | 2026-08-19 | Phase 3 tool-only Agent, immutable built-in Skills, canvas-scoped execution and fencing | Agent, Server, database, quality |

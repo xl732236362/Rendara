@@ -63,6 +63,7 @@ export interface AgentExecutionRepository {
   isAttemptActive(input: AttemptFence): Promise<boolean>;
   resumeAttempt(input: ResumeAttempt): Promise<Readonly<AgentExecutionContext>>;
   getAttemptState(runId: string): Promise<AttemptState | null>;
+  getActiveRunByCanvas(canvasId: string): Promise<ActiveCanvasRun | null>;
   getExecutionContext(
     runId: string,
   ): Promise<Readonly<AgentExecutionContext> | null>;
@@ -73,6 +74,11 @@ export interface AgentExecutionRepository {
   reserveSkillRead(
     input: SkillReadReservation,
   ): Promise<SkillReadReservationResult>;
+}
+
+export interface ActiveCanvasRun {
+  readonly runId: string;
+  readonly sessionId: string;
 }
 
 export type AgentTerminalStatus = "completed" | "failed" | "canceled";
@@ -178,6 +184,7 @@ interface StoredAcceptance {
   readonly clientRequestId: string;
   readonly model?: string;
   readonly requestDigest: string;
+  readonly sessionId?: string;
   context: Readonly<AgentExecutionContext>;
   runStatus: "accepted" | "running" | AgentTerminalStatus;
   completedAt?: Date;
@@ -250,6 +257,21 @@ export class MemoryAgentExecutionRepository
     };
   }
 
+  async getActiveRunByCanvas(
+    canvasId: string,
+  ): Promise<ActiveCanvasRun | null> {
+    const matches = [...this.#byRun.values()].filter(
+      (stored) =>
+        stored.context.canvasId === canvasId &&
+        (stored.attempt.status === "accepted" ||
+          stored.attempt.status === "running"),
+    );
+    const stored = matches.at(-1);
+    return stored?.sessionId
+      ? { runId: stored.context.runId, sessionId: stored.sessionId }
+      : null;
+  }
+
   async accept(
     input: AgentRunAcceptance,
     signal?: AbortSignal,
@@ -268,6 +290,7 @@ export class MemoryAgentExecutionRepository
       clientRequestId: input.clientRequestId,
       ...(input.model ? { model: input.model } : {}),
       requestDigest: input.requestDigest,
+      ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       context: input.context,
       runStatus: "accepted",
       attempt: {
@@ -801,6 +824,23 @@ export function createAgentExecutionRepository(options: {
           : {}),
       };
     },
+    async getActiveRunByCanvas(canvasId) {
+      const client =
+        options.getAdminClient() as unknown as ActiveCanvasRunQueryClient;
+      const { data, error } = await client
+        .from("agent_runs")
+        .select(
+          "id, session_id, created_at, agent_run_attempts!agent_run_attempts_run_id_fkey!inner(status)",
+        )
+        .eq("canvas_id", canvasId)
+        .in("agent_run_attempts.status", ["accepted", "running"])
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) throw new Error("agent_execution_persistence_failed");
+      if (!isActiveCanvasRunRow(data)) return null;
+      return { runId: data.id, sessionId: data.session_id };
+    },
     async resolveSkillCursor(input) {
       const client =
         options.getAdminClient() as unknown as SkillCursorQueryClient;
@@ -1000,6 +1040,42 @@ interface AgentContextQueryClient {
       };
     };
   };
+}
+
+interface ActiveCanvasRunQueryClient {
+  from(name: string): {
+    select(columns: string): {
+      eq(
+        column: string,
+        value: string,
+      ): {
+        in(
+          column: string,
+          values: string[],
+        ): {
+          order(
+            column: string,
+            options: { ascending: boolean },
+          ): {
+            limit(count: number): {
+              maybeSingle(): Promise<{ data: unknown; error: unknown }>;
+            };
+          };
+        };
+      };
+    };
+  };
+}
+
+function isActiveCanvasRunRow(
+  value: unknown,
+): value is { id: string; session_id: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as Record<string, unknown>).id === "string" &&
+    typeof (value as Record<string, unknown>).session_id === "string"
+  );
 }
 
 async function callAgentExecutionRpc(

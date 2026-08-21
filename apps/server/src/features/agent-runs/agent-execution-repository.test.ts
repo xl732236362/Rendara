@@ -9,6 +9,7 @@ const acceptance = {
   clientRequestId: "request-1",
   requestDigest: "digest-1",
   model: "openai:test-model",
+  sessionId: "session-1",
   context: {
     runId: "run-1",
     attemptId: "attempt-1",
@@ -63,6 +64,19 @@ describe("AgentExecutionRepository", () => {
       requestDigest: "digest-1",
       runId: "run-1",
     });
+  });
+
+  it("finds the active run for a canvas from persisted attempt state", async () => {
+    const repository = new MemoryAgentExecutionRepository();
+    await repository.accept(acceptance);
+
+    await expect(repository.getActiveRunByCanvas("canvas-1")).resolves.toEqual({
+      runId: "run-1",
+      sessionId: "session-1",
+    });
+    await expect(
+      repository.getActiveRunByCanvas("canvas-other"),
+    ).resolves.toBeNull();
   });
 
   it("leases an attempt to one owner and fences an expired owner", async () => {
@@ -483,6 +497,35 @@ describe("Supabase Agent acceptance adapter", () => {
         "agent_run_attempts!agent_run_attempts_run_id_fkey!inner(",
       ),
     );
+  });
+
+  it("queries the latest persisted active attempt by canvas", async () => {
+    const query = relatedQueryChain({
+      data: {
+        id: "run-remote",
+        session_id: "session-remote",
+        agent_run_attempts: [{ status: "running" }],
+      },
+      error: null,
+    });
+    const from = vi.fn().mockReturnValue(query);
+    const repository = createAgentExecutionRepository({
+      getAdminClient: () => ({ from }) as never,
+    });
+
+    await expect(repository.getActiveRunByCanvas("canvas-1")).resolves.toEqual({
+      runId: "run-remote",
+      sessionId: "session-remote",
+    });
+    expect(query.eq).toHaveBeenCalledWith("canvas_id", "canvas-1");
+    expect(query.in).toHaveBeenCalledWith("agent_run_attempts.status", [
+      "accepted",
+      "running",
+    ]);
+    expect(query.order).toHaveBeenCalledWith("created_at", {
+      ascending: false,
+    });
+    expect(query.limit).toHaveBeenCalledWith(1);
   });
 
   it("passes atomic finalization to the canonical RPC", async () => {

@@ -112,6 +112,52 @@ describe("WebSocket resource commands", () => {
     socket.emit("close");
   });
 
+  it("uses persisted active run state when resuming on another replica", async () => {
+    const socket = new FakeSocket();
+    const connectionManager = new ConnectionManager();
+    const getActiveRunByCanvas = vi.fn().mockResolvedValue({
+      runId: "run-on-replica-a",
+      sessionId: "session-active",
+    });
+
+    await bindAuthenticatedSocket(
+      socket as never,
+      "token",
+      { url: "/api/ws", headers: { host: "localhost" } } as never,
+      {
+        activeRunLookup: { getActiveRunByCanvas },
+        agentRuns: fakeAgentRuns() as never,
+        authorization: fakeAuthorization("canvas-1"),
+        auth: { authenticate: async () => user },
+        connectionManager,
+      },
+    );
+    socket.emit(
+      "message",
+      JSON.stringify({
+        type: "command",
+        action: "canvas.resume",
+        payload: { canvasId: "canvas-1", lastSeq: 0 },
+      }),
+    );
+    await nextTurn();
+
+    expect(getActiveRunByCanvas).toHaveBeenCalledWith("canvas-1");
+    expect(
+      socket.messages.map((message) => JSON.parse(message)),
+    ).toContainEqual(
+      expect.objectContaining({
+        action: "canvas.resume",
+        payload: expect.objectContaining({
+          activeRunId: "run-on-replica-a",
+          activeRunSessionId: "session-active",
+        }),
+        type: "command.ack",
+      }),
+    );
+    socket.emit("close");
+  });
+
   it("restarts a recoverable run after canvas resume", async () => {
     const socket = new FakeSocket();
     const agentRuns = fakeAgentRuns();

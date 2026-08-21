@@ -4,6 +4,7 @@ import type { WebSocket } from "ws";
 
 import {
   type RunCreateRequest,
+  streamEventSchema,
   wsCommandSchema,
   wsRpcResponseSchema,
 } from "@loomic/shared";
@@ -14,6 +15,8 @@ import type {
   AgentRunStageLogger,
   PrepareAgentRun,
 } from "../application/agent/prepare-agent-run.js";
+import type { RealtimeEventStore } from "../events/realtime-event-store.js";
+import type { AgentExecutionRepository } from "../features/agent-runs/agent-execution-repository.js";
 import {
   AgentFinalizationUnconfirmedError,
   type AgentRunMetadataService,
@@ -37,6 +40,7 @@ import type { CanvasEventBuffer } from "./event-buffer.js";
 import { createPipelineLogger } from "./logger.js";
 
 type RegisterWsOptions = {
+  activeRunLookup?: Pick<AgentExecutionRepository, "getActiveRunByCanvas">;
   agentRuns: AgentRunService;
   agentRunStageLogger?: AgentRunStageLogger;
   authorization: ResourceAuthorization;
@@ -45,6 +49,8 @@ type RegisterWsOptions = {
   chatService?: ChatService;
   connectionManager: ConnectionManager;
   eventBuffer?: CanvasEventBuffer;
+  realtimeEventStore?: RealtimeEventStore;
+  markRealtimeDelivered?(canvasId: string, seq: number): void;
   prepareAgentRun?: PrepareAgentRun;
 };
 
@@ -268,12 +274,37 @@ export async function bindAuthenticatedSocket(
           // Re-bind only after authorization so replay data never crosses tenants.
           connectionManager.bindCanvas(connectionId, p.canvasId);
 
-          const replay = options.eventBuffer?.getAfterWithStatus(
+          const durableReplay = options.realtimeEventStore
+            ? await options.realtimeEventStore.readAfter(
+                p.canvasId,
+                p.lastSeq,
+                500,
+              )
+            : null;
+          const bufferedReplay = options.eventBuffer?.getAfterWithStatus(
             p.canvasId,
             p.lastSeq,
           ) ?? { events: [], gap: false, earliestSeq: null, latestSeq: 0 };
+          const replay = durableReplay
+            ? {
+                events: durableReplay.events.map((entry) => ({
+                  event: streamEventSchema.parse(entry.payload),
+                  seq: entry.seq,
+                })),
+                gap: durableReplay.status === "cursor_gap",
+                earliestSeq: durableReplay.earliestSeq,
+                latestSeq: durableReplay.latestSeq,
+                latestRevision: durableReplay.latestRevision,
+              }
+            : {
+                ...bufferedReplay,
+                latestRevision: null,
+              };
+          options.markRealtimeDelivered?.(p.canvasId, replay.latestSeq);
           const missed = replay.events;
-          const activeRun = connectionManager.getActiveRun(p.canvasId);
+          const activeRun = options.activeRunLookup
+            ? await options.activeRunLookup.getActiveRunByCanvas(p.canvasId)
+            : connectionManager.getActiveRun(p.canvasId);
           log.info("canvas_resume", {
             userId: authenticatedUser.id,
             canvasId: p.canvasId,
@@ -291,7 +322,8 @@ export async function bindAuthenticatedSocket(
             action: "canvas.resume",
             payload: {
               canvasId: p.canvasId,
-              latestSeq: options.eventBuffer?.getLatestSeq(p.canvasId) ?? 0,
+              latestSeq: replay.latestSeq,
+              latestRevision: replay.latestRevision,
               earliestSeq: replay.earliestSeq,
               replayGap: replay.gap,
               activeRunId: activeRun?.runId ?? null,

@@ -469,9 +469,9 @@ describe("Agent runtime application wiring", () => {
         effectiveSkillNames: [],
       },
     });
-    const finalizeRun = vi.spyOn(repository, "finalizeRun").mockRejectedValue(
-      new Error("agent_execution_persistence_failed"),
-    );
+    const finalizeRun = vi
+      .spyOn(repository, "finalizeRun")
+      .mockRejectedValue(new Error("agent_execution_persistence_failed"));
     const service = createAgentRunService({
       agentExecutionRepository: repository,
       agentFactory: (() => ({
@@ -517,7 +517,10 @@ describe("Agent runtime application wiring", () => {
       retryEvents.push(event);
     }
     expect(retryEvents).toEqual([
-      expect.objectContaining({ type: "run.completed", runId: "run-unconfirmed" }),
+      expect.objectContaining({
+        type: "run.completed",
+        runId: "run-unconfirmed",
+      }),
     ]);
   });
 

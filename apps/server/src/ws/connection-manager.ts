@@ -137,6 +137,11 @@ export class ConnectionManager {
     return this.connections.get(connectionId);
   }
 
+  /** Canvas scopes currently owned by at least one local connection. */
+  listBoundCanvasIds(): string[] {
+    return [...this.canvasIndex.keys()];
+  }
+
   /**
    * Get ANY open WebSocket for a user (backward compat).
    * Picks the first connection whose socket is still open.

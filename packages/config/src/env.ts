@@ -98,8 +98,8 @@ export const envDescriptors = [
     ["api", "worker"],
     { requiredFor: ["api", "worker"] },
   ),
-  descriptor("SUPABASE_DB_URL", "supabaseDbUrl", "secret", ["worker"], {
-    requiredFor: ["worker"],
+  descriptor("SUPABASE_DB_URL", "supabaseDbUrl", "secret", ["api", "worker"], {
+    requiredFor: ["api", "worker"],
   }),
   descriptor("SUPABASE_PROJECT_ID", "supabaseProjectId", "private", [
     "api",
@@ -413,9 +413,7 @@ export function parseServerEnvironment(
       ["SUPABASE_URL", candidate.supabaseUrl],
       ["SUPABASE_ANON_KEY", candidate.supabaseAnonKey],
       ["SUPABASE_SERVICE_ROLE_KEY", candidate.supabaseServiceRoleKey],
-      ...(options.process === "worker"
-        ? [["SUPABASE_DB_URL", candidate.supabaseDbUrl]]
-        : []),
+      ["SUPABASE_DB_URL", candidate.supabaseDbUrl],
     ] as const) {
       if (!present) {
         issues.push({

@@ -44,6 +44,21 @@ describe("validated server environment adapter", () => {
       /SUPABASE_DB_URL/,
     );
   });
+
+  it("fails API configuration before realtime composition without a database URL", () => {
+    expect(() =>
+      loadServerEnv(
+        {},
+        {
+          OPENAI_API_KEY: "configured",
+          SUPABASE_ANON_KEY: "anon",
+          SUPABASE_SERVICE_ROLE_KEY: "service",
+          SUPABASE_URL: "https://example.supabase.co",
+        },
+        { process: "api" },
+      ),
+    ).toThrow(/SUPABASE_DB_URL/);
+  });
 });
 
 describe("rate limit configuration", () => {

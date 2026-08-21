@@ -2,7 +2,7 @@
 
 ### `supabase/`
 
-Ordered PostgreSQL migrations, local configuration, and database security tests. Phase 3 adds durable Agent attempts/effects/Skill read budgets and permanently drops the former dynamic Skill schema.
+Ordered PostgreSQL migrations, local configuration, and database security tests. Phase 3 adds durable Agent attempts/effects/Skill read budgets and permanently drops the former dynamic Skill schema. Phase 5 adds service-role realtime canvas events, never-reset per-canvas cursors, replay/gap RPCs, transaction-commit notifications, bounded retention cleanup, and a forward fix that passes server-resolved attachment geometry to the strict finalizer.
 
 ### `.github/workflows/ci.yml`
 
@@ -18,4 +18,4 @@ Server-owned built-in Skills. Only `builtin-skills.manifest.json` entries are lo
 
 ### Deployment Files
 
-`apps/server/Dockerfile`, `railway.json`, `deploy/railway-api.json`, `deploy/railway-worker.json`, and `vercel.json` define API/worker and Web deployment. Environment-template validation covers process requirements and exact runtime entrypoints without embedding secrets.
+`apps/server/Dockerfile`, `railway.json`, `deploy/railway-api.json`, `deploy/railway-worker.json`, and `vercel.json` define API/worker and Web deployment. Environment-template validation covers process requirements and exact runtime entrypoints without embedding secrets. The API requires `SUPABASE_DB_URL` and Railway gates traffic on `/api/health/realtime`.

@@ -27,9 +27,9 @@ function setup(events: unknown[] = [event]) {
 describe("domain outbox dispatcher", () => {
   it("acknowledges a valid Agent acceptance lifecycle event", async () => {
     const publish = createDomainEventPublisher({
+      appendCanvasEvent: vi.fn(),
       pushCanvas: vi.fn(),
       sendToUser: vi.fn(),
-      rememberCanvasEvent: vi.fn(() => true),
     });
 
     await expect(
@@ -44,9 +44,9 @@ describe("domain outbox dispatcher", () => {
 
   it("rejects unknown Agent lifecycle events", async () => {
     const publish = createDomainEventPublisher({
+      appendCanvasEvent: vi.fn(),
       pushCanvas: vi.fn(),
       sendToUser: vi.fn(),
-      rememberCanvasEvent: vi.fn(() => true),
     });
 
     await expect(
@@ -62,9 +62,9 @@ describe("domain outbox dispatcher", () => {
   it("publishes generation events to the owning user instead of silently acknowledging", async () => {
     const sendToUser = vi.fn(() => true);
     const publish = createDomainEventPublisher({
+      appendCanvasEvent: vi.fn(),
       pushCanvas: vi.fn(),
       sendToUser,
-      rememberCanvasEvent: vi.fn(() => true),
     });
     await publish({
       ...event,
@@ -84,9 +84,9 @@ describe("domain outbox dispatcher", () => {
 
   it("rejects an offline generation delivery so the outbox remains pending", async () => {
     const publish = createDomainEventPublisher({
+      appendCanvasEvent: vi.fn(),
       pushCanvas: vi.fn(),
       sendToUser: vi.fn(() => false),
-      rememberCanvasEvent: vi.fn(() => true),
     });
     await expect(
       publish({
@@ -99,9 +99,9 @@ describe("domain outbox dispatcher", () => {
 
   it("rejects unsupported aggregate types so they are retried, not acknowledged", async () => {
     const publish = createDomainEventPublisher({
+      appendCanvasEvent: vi.fn(),
       pushCanvas: vi.fn(),
       sendToUser: vi.fn(),
-      rememberCanvasEvent: vi.fn(() => true),
     });
     await expect(
       publish({ ...event, aggregate_type: "unknown" }),

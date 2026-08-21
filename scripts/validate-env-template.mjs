@@ -48,7 +48,11 @@ export function validateEnvironmentContracts({
     const config = deployment.config;
     if (deployment.metadata.platform === "railway") {
       const runtimeEntrypoint = deployment.metadata.runtimeEntrypoint;
-      const expectedCommand = `sh -c "if [ -n \\"$GOOGLE_SERVICE_ACCOUNT_JSON\\" ]; then printf '%s' \\"$GOOGLE_SERVICE_ACCOUNT_JSON\\" > /app/credentials/vertex-ai-service-account.json && export GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/vertex-ai-service-account.json; fi; exec node ${runtimeEntrypoint}"`;
+      const apiDatabaseGuard =
+        deployment.metadata.process === "api"
+          ? "test -n \\\"$SUPABASE_DB_URL\\\" || { echo 'SUPABASE_DB_URL is required for API realtime' >&2; exit 1; }; "
+          : "";
+      const expectedCommand = `sh -c "${apiDatabaseGuard}if [ -n \\"$GOOGLE_SERVICE_ACCOUNT_JSON\\" ]; then printf '%s' \\"$GOOGLE_SERVICE_ACCOUNT_JSON\\" > /app/credentials/vertex-ai-service-account.json && export GOOGLE_APPLICATION_CREDENTIALS=/app/credentials/vertex-ai-service-account.json; fi; exec node ${runtimeEntrypoint}"`;
       if (!config?.$schema?.includes("railway")) {
         issues.push(
           `${deployment.name}: invalid Railway ${deployment.metadata.process} service config`,

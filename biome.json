@@ -6,12 +6,16 @@
       "**/node_modules/**",
       "**/.turbo/**",
       "**/.next/**",
+      "**/.next-*/**",
+      ".next-dev/**",
+      ".next.failed-*/**",
       "**/.next-e2e/**",
       "**/.next.stale-*/**",
       "**/coverage/**",
       "**/playwright-report/**",
       "**/test-results/**",
       "**/.codex-logs/**",
+      ".worktrees/**",
       "**/.worktrees/**",
       "**/supabase/.temp/**",
       "**/dist/**",
@@ -55,6 +59,9 @@
         "noForEach": "warn",
         "noUselessFragments": "warn",
         "noUselessSwitchCase": "warn"
+      },
+      "performance": {
+        "noDelete": "warn"
       },
       "style": {
         "noNonNullAssertion": "warn",

@@ -2,7 +2,11 @@
 
 ### `apps/server/src/app.ts`
 
-Composition root for Fastify, validated environment loading, infrastructure clients, services, security boundaries, routes, WebSocket state, sealed registries, and frozen application-use-case dependencies.
+Composition root for Fastify, validated environment loading, infrastructure clients, services, security boundaries, routes, sealed registries, and frozen application-use-case dependencies. Phase 5 composes the durable realtime store, PostgreSQL listener, missed-notification reconciliation, retention cleanup, and realtime readiness lifecycle.
+
+### `apps/server/src/events/`
+
+Transactional outbox publishing and the Phase 5 realtime projection. Canvas events are appended to PostgreSQL before local fan-out, replicas treat LISTEN/NOTIFY as a wake-up hint and reread durable records, and bounded reconciliation recovers missed notifications. Generation and Agent terminal user events retain outbox retry semantics.
 
 ### `apps/server/src/http/`
 
@@ -10,7 +14,7 @@ REST interface adapters authenticate, parse shared boundary schemas, call applic
 
 ### `apps/server/src/ws/`
 
-WebSocket commands, connection identity, event buffering, and logging. Commands use shared schemas and resource authorization. Run-scoped `agent.cancel` deliberately remains an Agent lifecycle operation, distinct from background-job cancellation.
+WebSocket commands, connection identity, local fan-out, bounded test/optimization buffering, and logging. Durable `canvas.resume` authorizes before replay and returns replay/caught-up/cursor-gap metadata. Active run reporting queries persisted Agent attempt state; `activeRuns` is only a local correlation cache. Pending browser RPC remains replica-local and retryable.
 
 ### `apps/server/src/agent/`
 

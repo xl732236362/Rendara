@@ -16,10 +16,13 @@ Date: 2026-08-19
 - `pnpm --filter @loomic/server test -- src/features/canvas/canvas-operation-engine.test.ts src/features/canvas/canvas-operation-application-adapter.test.ts`: passed, 9 tests.
 - `pnpm typecheck`: passed across all 5 packages.
 - `pnpm test`: passed, 302 server tests, 94 web tests, shared/config/ui checks; 7 database integration tests skipped because no local database was configured.
+- Final closure rerun: `pnpm ci:check` passed. Biome reports 0 errors (443 existing warnings); typecheck completed 8/8 tasks; tests completed with Server 465 passed/7 skipped, Web 145 passed, and Workspace 88 passed; build completed 5/5 tasks.
 
-## Known gate issue
+## Closure follow-up
 
-`pnpm lint` remains red because Biome scans the existing `.worktrees/phase-3-tool-only-agent` checkout. It reports 3,837 pre-existing diagnostics, including `any` usage and formatting in phase3 worktree files. No phase4 file is included in the reported diagnostics. This must be resolved in repository ignore configuration before the global lint gate can be green.
+The repository Biome ignore boundary now explicitly excludes root `.worktrees` and generated `.next-*` directories. Three pre-existing formatting violations and one Agent runtime formatting violation were normalized; the existing `performance/noDelete` diagnostics remain warnings. No phase4 source file required a behavior change.
+
+The final global gate is green with the repository's established warning baseline. Seven database integration tests remain skipped because no local database was configured in this environment; the phase4 SQL surface is unchanged from the phase2 verified CAS path.
 
 ## Scope decision
 

@@ -1124,8 +1124,7 @@ export function ChatSidebar({
       ws.resumeCanvas(canvasId, (ack) => {
         const resumePayload = ack.payload as Record<string, unknown>;
         const activeRunId = resumePayload.activeRunId;
-        let resumedRunId =
-          typeof activeRunId === "string" ? activeRunId : null;
+        let resumedRunId = typeof activeRunId === "string" ? activeRunId : null;
         const activeRunSessionId = resumePayload.activeRunSessionId;
         const resumedRunSessionId =
           typeof activeRunSessionId === "string" ? activeRunSessionId : null;
@@ -1133,6 +1132,7 @@ export function ChatSidebar({
         const replayCount =
           typeof replayed === "number" && replayed >= 0 ? replayed : 0;
         const replayGap = resumePayload.replayGap === true;
+        const latestRevision = resumePayload.latestRevision;
         const ownsResumedRun =
           resumedRunId !== null && resumedRunSessionId === sessionId;
 
@@ -1156,6 +1156,19 @@ export function ChatSidebar({
             sessionId,
             new Set(assistantIdByRunIdRef.current.values()),
           );
+          if (
+            typeof latestRevision === "number" &&
+            Number.isSafeInteger(latestRevision) &&
+            latestRevision > 0
+          ) {
+            onCanvasSync?.({
+              type: "canvas.sync",
+              eventId: `replay-gap-${latestRevision}`,
+              canvasId,
+              revision: latestRevision,
+              timestamp: new Date().toISOString(),
+            });
+          }
         }
 
         if (resumedRunId) {

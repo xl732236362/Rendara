@@ -3,7 +3,7 @@
     "api": {
       "platform": "railway",
       "configPath": "deploy/railway-api.json",
-      "healthPath": "/api/health",
+      "healthPath": "/api/health/realtime",
       "runtimeEntrypoint": "dist/server.js",
       "binding": "Set this service's Railway Config File path to deploy/railway-api.json; variables are managed in the Railway dashboard.",
       "variables": [
@@ -11,6 +11,7 @@
         "SUPABASE_URL",
         "SUPABASE_ANON_KEY",
         "SUPABASE_SERVICE_ROLE_KEY",
+        "SUPABASE_DB_URL",
         "SUPABASE_PROJECT_ID",
         "SUPABASE_JWT_SECRET",
         "OPENAI_API_KEY",

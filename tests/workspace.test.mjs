@@ -275,7 +275,7 @@ test("deployment contract binds real API and worker Railway configs", async () =
   const serverHealth = await readText("apps/server/src/http/health.ts");
 
   assert.match(api.deploy.startCommand, /server\.js/);
-  assert.equal(contract.services.api.healthPath, "/api/health");
+  assert.equal(contract.services.api.healthPath, "/api/health/realtime");
   assert.equal(api.deploy.healthcheckPath, contract.services.api.healthPath);
   assert.equal(
     rootRailway.deploy.healthcheckPath,

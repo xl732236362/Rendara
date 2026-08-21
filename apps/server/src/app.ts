@@ -10,6 +10,13 @@ import { createSubmitGeneration } from "./application/generation/submit-generati
 import type { UseCases } from "./application/use-cases.js";
 import { createDomainEventPublisher } from "./events/domain-event-publisher.js";
 import { startOutboxDispatcher } from "./events/outbox-dispatcher.js";
+import { startPostgresRealtimeListener } from "./events/postgres-realtime-listener.js";
+import {
+  type RealtimeEventStore,
+  createPostgresRealtimeEventStore,
+} from "./events/realtime-event-store.js";
+import { createRealtimeReplicaSubscriber } from "./events/realtime-replica-subscriber.js";
+import { createRealtimeRetentionCleanup } from "./events/realtime-retention.js";
 
 import {
   type BuiltinSkillCatalog,
@@ -168,11 +175,13 @@ export type BuildAppOptions = {
   projectService?: ProjectService;
   providerRegistry?: ProviderRegistry;
   resourceAuthorization?: ResourceAuthorization;
+  realtimeEventStore?: RealtimeEventStore;
   settingsService?: SettingsService;
   threadService?: ThreadService;
   viewerService?: ViewerService;
   useCases?: Readonly<UseCases>;
   startOutboxDispatcher?: boolean;
+  startRealtimeListener?: boolean;
 };
 
 const appUseCases = new WeakMap<FastifyInstance, Readonly<UseCases>>();
@@ -277,6 +286,7 @@ export function buildAppFromEnv(
   void app.register(async (instance) => {
     await instance.register(websocket);
     await registerWsRoute(instance, {
+      activeRunLookup: agentExecutionRepository,
       agentRuns,
       agentRunStageLogger,
       agentRunMetadataService,
@@ -284,6 +294,9 @@ export function buildAppFromEnv(
       chatService,
       connectionManager,
       eventBuffer,
+      realtimeEventStore,
+      markRealtimeDelivered: (canvasId, seq) =>
+        realtimeSubscriber.markDelivered(canvasId, seq),
       authorization: resourceAuthorization,
       prepareAgentRun,
     });
@@ -627,12 +640,27 @@ export function buildAppFromEnv(
   const connectionManager =
     options.connectionManager ?? new ConnectionManager();
   const eventBuffer = new CanvasEventBuffer();
-  const publishDomainEvent = createDomainEventPublisher({
-    rememberCanvasEvent: (canvasId, eventId, event) =>
-      eventBuffer.pushDomainEvent(canvasId, eventId, event),
-    getLatestCanvasSeq: (canvasId) => eventBuffer.getLatestSeq(canvasId),
+  const realtimeEventStore =
+    options.realtimeEventStore ??
+    createPostgresRealtimeEventStore({
+      rpc: (name, args) => callAdminRpc(getAdminClient(), name, args),
+    });
+  const realtimeSubscriber = createRealtimeReplicaSubscriber({
+    store: realtimeEventStore,
     pushCanvas: (canvasId, event, seq) =>
       connectionManager.pushToCanvas(canvasId, event, seq),
+    onGap: (canvasId, latestSeq) =>
+      app.log.warn(
+        { canvasId, latestSeq },
+        "realtime reconciliation cursor gap",
+      ),
+  });
+  const publishDomainEvent = createDomainEventPublisher({
+    appendCanvasEvent: (input) => realtimeEventStore.append(input),
+    pushCanvas: (canvasId, event, seq) =>
+      connectionManager.pushToCanvas(canvasId, event, seq),
+    markCanvasDelivered: (canvasId, seq) =>
+      realtimeSubscriber.markDelivered(canvasId, seq),
     sendToUser: (userId, message) =>
       connectionManager.sendToUser(userId, message),
   });
@@ -641,7 +669,70 @@ export function buildAppFromEnv(
     5 * 60 * 1000,
   );
   eventBufferCleanupTimer.unref?.();
+  let realtimeReconciliationRunning = false;
+  const realtimeReconciliationTimer = setInterval(() => {
+    if (realtimeReconciliationRunning) return;
+    realtimeReconciliationRunning = true;
+    void realtimeSubscriber
+      .reconcile(connectionManager.listBoundCanvasIds())
+      .catch((error) =>
+        app.log.error({ err: error }, "realtime reconciliation failed"),
+      )
+      .finally(() => {
+        realtimeReconciliationRunning = false;
+      });
+  }, 5_000);
+  realtimeReconciliationTimer.unref?.();
   const outboxAbort = new AbortController();
+  const realtimeAbort = new AbortController();
+  let realtimeListenerConnected = false;
+  const shouldStartRealtime =
+    options.startRealtimeListener ?? process.env.NODE_ENV !== "test";
+  const realtimeRetentionCleanup = createRealtimeRetentionCleanup({
+    prune: async ({ before, keepPerCanvas }) => {
+      const { data, error } = await callAdminRpc(
+        getAdminClient(),
+        "prune_realtime_canvas_events",
+        {
+          p_before: before.toISOString(),
+          p_keep_per_canvas: keepPerCanvas,
+        },
+      );
+      if (error || typeof data !== "number") {
+        throw new Error("realtime_retention_failed");
+      }
+      return data;
+    },
+    onError: (error) =>
+      app.log.error({ err: error }, "realtime retention cleanup failed"),
+    onPruned: (deleted) =>
+      app.log.info({ deleted }, "realtime retention cleanup completed"),
+  });
+  if (shouldStartRealtime && env.supabaseDbUrl) {
+    realtimeRetentionCleanup.start();
+    void realtimeRetentionCleanup
+      .runOnce()
+      .catch((error) =>
+        app.log.error({ err: error }, "realtime retention cleanup failed"),
+      );
+  }
+  const realtimeTask =
+    shouldStartRealtime && env.supabaseDbUrl
+      ? startPostgresRealtimeListener({
+          databaseUrl: env.supabaseDbUrl,
+          signal: realtimeAbort.signal,
+          subscriber: realtimeSubscriber,
+          onConnected: () => {
+            realtimeListenerConnected = true;
+            app.log.info("realtime listener connected");
+          },
+          onDisconnected: () => {
+            realtimeListenerConnected = false;
+          },
+          onError: (error) =>
+            app.log.error({ err: error }, "realtime subscriber failed"),
+        })
+      : Promise.resolve();
   const shouldStartOutbox =
     options.startOutboxDispatcher ?? process.env.NODE_ENV !== "test";
   const outboxTask = shouldStartOutbox
@@ -686,8 +777,12 @@ export function buildAppFromEnv(
     : Promise.resolve();
   app.addHook("onClose", async () => {
     outboxAbort.abort();
+    realtimeAbort.abort();
     await outboxTask;
+    await realtimeTask;
     clearInterval(eventBufferCleanupTimer);
+    clearInterval(realtimeReconciliationTimer);
+    realtimeRetentionCleanup.stop();
     eventBuffer.dispose();
     connectionManager.dispose();
   });
@@ -756,7 +851,9 @@ export function buildAppFromEnv(
     }
   });
 
-  void registerHealthRoutes(app, env);
+  void registerHealthRoutes(app, env, {
+    realtimeReady: () => realtimeListenerConnected,
+  });
   void registerFontsRoutes(app, { env });
   const imageAllowedHosts = ["replicate.delivery", "replicate.com"];
   if (env.supabaseUrl) {

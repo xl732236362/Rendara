@@ -13,12 +13,18 @@
     "test:packages": "turbo run test",
     "test:e2e": "node --env-file=.env.local node_modules/@playwright/test/cli.js test",
     "test": "pnpm run test:workspace && pnpm run test:packages",
+    "supabase:start": "supabase start",
+    "supabase:stop": "supabase stop",
+    "supabase:status": "supabase status",
+    "supabase:reset": "supabase db reset",
+    "supabase:test": "supabase test db",
     "seed": "node scripts/seed-test-accounts.mjs",
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
     "@playwright/test": "^1.62.1",
+    "supabase": "^2.115.0",
     "turbo": "^2.3.3",
     "typescript": "^5.7.3",
     "vitest": "^3.0.7"

@@ -46,6 +46,19 @@ describe("ConnectionManager identity", () => {
     });
   });
 
+  it("lists only canvases with currently bound connections", () => {
+    const manager = new ConnectionManager();
+    const socket = { readyState: 1, send: vi.fn() } as never;
+    manager.register("connection-1", "user-1", socket);
+    manager.register("connection-2", "user-2", socket);
+    manager.bindCanvas("connection-1", "canvas-1");
+    manager.bindCanvas("connection-2", "canvas-2");
+
+    expect(manager.listBoundCanvasIds()).toEqual(["canvas-1", "canvas-2"]);
+    manager.remove("connection-1");
+    expect(manager.listBoundCanvasIds()).toEqual(["canvas-2"]);
+  });
+
   it("routes canvas RPCs only to the user's connection bound to that canvas", async () => {
     const manager = new ConnectionManager();
     const sent: Array<{ connectionId: string; payload: string }> = [];

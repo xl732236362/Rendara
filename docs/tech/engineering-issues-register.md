@@ -31,7 +31,7 @@
 | ENG-003 | P1 | 已解决 | 构建与部署 | 后端构建只生成标记文件，生产环境直接运行 TypeScript 源码 |
 | ENG-004 | P1 | 已解决 | 构建与部署 | 前端生产构建忽略 TypeScript 错误 |
 | ENG-005 | P1 | 已确认 | 测试 | 后端关键业务链路缺少自动化测试 |
-| ENG-006 | P1 | 部分解决 | 工程规范 | lint 基线不可用，无法作为质量门禁 |
+| ENG-006 | P1 | 已解决 | 工程规范 | lint 基线可作为质量门禁，历史 warning 按模块持续治理 |
 | ENG-007 | P2 | 已确认 | 模块边界 | Agent、聊天和画布等核心文件职责过度集中 |
 | ENG-008 | P2 | 已确认 | 可观测性 | 业务日志未统一接入结构化日志和链路上下文 |
 | ENG-009 | P2 | 已确认 | Monorepo 边界 | `config` 与 `ui` 共享包尚未承担真实共享职责 |
@@ -57,7 +57,7 @@
 | ENG-029 | P0 | 已解决 | 外部请求安全 | 图片代理与 skill 导入存在 SSRF 和无界下载风险 |
 | ENG-030 | P0 | 已解决 | Skill 供应链 | 用户/外部 Skill 产品与数据路径已永久移除 |
 | ENG-031 | P1 | 已解决 | 滥用防护 | 高成本 HTTP、WebSocket、上传和代理接口缺少统一限流 |
-| ENG-032 | P1 | 已确认 | 横向扩展 | WebSocket、事件回放和活跃运行状态仅保存在单进程内存中 |
+| ENG-032 | P1 | 已解决 | 横向扩展 | PostgreSQL 持久重放、跨副本通知补偿和持久运行权威已通过完整验收 |
 | ENG-033 | P1 | 已确认 | 认证 | Token 缓存缺少硬容量上限和主动失效机制 |
 | ENG-034 | P2 | 已确认 | 数据库性能 | 部分 RLS 策略仍使用逐行 `auth.uid()` 并缺少系统化索引验证 |
 | ENG-035 | P2 | 已确认 | 数据访问 | 消息、项目、技能等列表接口缺少一致的分页策略 |
@@ -72,7 +72,7 @@
 ### ENG-001：创建任务与发送队列消息缺少原子一致性边界
 
 - 严重度：P0
-- 状态：已确认
+- 状态：已解决（阶段 2）
 - 证据：`apps/server/src/features/jobs/job-service.ts` 先插入 `background_jobs`，随后调用 `pgmq.send`；发送失败时再尝试删除任务记录。
 - 影响：数据库与队列可能出现单边成功；客户端重试或消息重复投递可能造成重复生成、重复扣费或永久停留在 `queued` 的任务。
 - 备注：README 中“PGMQ guarantees exactly-once delivery”的表述与实际可靠性模型不符，业务应按至少一次投递设计。
@@ -341,10 +341,11 @@
 ### ENG-032：实时链路依赖单进程内存状态
 
 - 严重度：P1
-- 状态：已确认
+- 状态：已解决
 - 证据：`ConnectionManager`、`CanvasEventBuffer`、activeRuns、pending RPC 和 Agent run 状态均保存在当前 API 进程内存；没有共享 pub/sub、持久 event cursor 或 replica ownership 协议。
 - 影响：API 重启会丢失回放和活跃运行状态；多副本部署时连接到另一副本的用户收不到事件，重连也无法恢复。内存 buffer 默认每画布最多 5000 事件，活跃画布增加时内存不可预测。
 - 建议方向：明确单副本限制并在部署层强制，或引入 Redis/Postgres/NATS 等共享事件层、持久 cursor 和 run ownership/lease；WebSocket 使用 sticky session 只能作为过渡，不解决故障恢复。
+- 阶段 5 结果：PostgreSQL durable canvas cursor、LISTEN/NOTIFY 提醒、五秒补偿读取、持久 active-run 查询、fenced attempt ownership、realtime readiness 和保留清理均已落地；真实两副本 fan-out/restart 测试 3/3、阶段 5 pgTAP 18/18、全量 pgTAP 175/175、`pnpm ci:check` 通过。关闭于 2026-08-21，详见 `phase-5-verification.md`。
 
 ### ENG-033：认证缓存容量与失效策略不完整
 
@@ -396,10 +397,10 @@
 
 ### 阶段 4 验收记录：画布领域模型
 
-- 状态：核心交付完成，待处理全仓 lint 基础设施问题。
+- 状态：已完成
 - 证据：`docs/tech/phase-4-verification.md`；shared/server/domain 测试和全仓 typecheck/test 已通过。
 - 结果：节点类型通过单一 sealed registry 管理；patch 使用显式 base revision；asset manifest 拒绝重复、越权路径和非法 hash；server canvas operation boundary 已接入 registry 校验。
-- 遗留：Biome 仍扫描 `.worktrees/phase-3-tool-only-agent` 并产生历史诊断，需修复 ignore 边界后才能恢复全仓 lint 绿灯。
+- 收尾：Biome 已明确忽略 root `.worktrees` 与 `.next-*` 生成目录，`pnpm ci:check` 通过；保留的历史 lint warning 不阻断门禁。
 
 ## 验证基线
 

@@ -104,7 +104,9 @@ describe("ChatSidebar", () => {
         {
           id: "server-assistant",
           role: "assistant",
-          contentBlocks: [{ type: "text", text: "completed response with tail" }],
+          contentBlocks: [
+            { type: "text", text: "completed response with tail" },
+          ],
         },
       ],
       [

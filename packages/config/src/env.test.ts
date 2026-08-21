@@ -47,7 +47,7 @@ describe("server environment schema", () => {
 
   it("requires production API dependencies and its resolved default provider", () => {
     expect(() => parseServerEnvironment({}, { process: "api" })).toThrow(
-      /SUPABASE_URL[\s\S]*SUPABASE_ANON_KEY[\s\S]*SUPABASE_SERVICE_ROLE_KEY[\s\S]*OPENAI_API_KEY/,
+      /SUPABASE_URL[\s\S]*SUPABASE_ANON_KEY[\s\S]*SUPABASE_SERVICE_ROLE_KEY[\s\S]*SUPABASE_DB_URL[\s\S]*OPENAI_API_KEY/,
     );
   });
 
@@ -63,6 +63,7 @@ describe("server environment schema", () => {
         {
           GOOGLE_API_KEY: "google-secret",
           SUPABASE_ANON_KEY: "anon",
+          SUPABASE_DB_URL: "postgresql://example",
           SUPABASE_SERVICE_ROLE_KEY: "service",
           SUPABASE_URL: "https://example.supabase.co",
         },
@@ -113,6 +114,13 @@ describe("server environment schema", () => {
     expect(publicUrl).toMatchObject({
       sensitivity: "public",
       processes: ["web"],
+    });
+    expect(
+      envDescriptors.find(({ key }) => key === "SUPABASE_DB_URL"),
+    ).toMatchObject({
+      sensitivity: "secret",
+      processes: ["api", "worker"],
+      requiredFor: ["api", "worker"],
     });
     expect(JSON.stringify(envDescriptors)).not.toContain("google-secret");
   });

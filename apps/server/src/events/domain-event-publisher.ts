@@ -4,13 +4,15 @@ import { z } from "zod";
 import type { OutboxEvent } from "./outbox-dispatcher.js";
 
 type PublisherPorts = {
-  rememberCanvasEvent(
-    canvasId: string,
-    eventId: string,
-    event: StreamEvent,
-  ): boolean;
-  getLatestCanvasSeq?(canvasId: string): number;
+  appendCanvasEvent(input: {
+    eventId: string;
+    canvasId: string;
+    eventType: string;
+    payload: Record<string, unknown>;
+    occurredAt: string;
+  }): Promise<{ seq: number; inserted: boolean }>;
   pushCanvas(canvasId: string, event: StreamEvent, seq?: number): void;
+  markCanvasDelivered?(canvasId: string, seq: number): void;
   sendToUser(userId: string, message: Record<string, unknown>): boolean;
 };
 
@@ -33,18 +35,16 @@ export function createDomainEventPublisher(ports: PublisherPorts) {
         revision: event.aggregate_version,
         timestamp: event.occurred_at,
       };
-      if (
-        ports.rememberCanvasEvent(
-          event.aggregate_id,
-          event.event_id,
-          streamEvent,
-        )
-      ) {
-        ports.pushCanvas(
-          event.aggregate_id,
-          streamEvent,
-          ports.getLatestCanvasSeq?.(event.aggregate_id),
-        );
+      const stored = await ports.appendCanvasEvent({
+        eventId: event.event_id,
+        canvasId: event.aggregate_id,
+        eventType: streamEvent.type,
+        payload: streamEvent,
+        occurredAt: event.occurred_at,
+      });
+      if (stored.inserted) {
+        ports.pushCanvas(event.aggregate_id, streamEvent, stored.seq);
+        ports.markCanvasDelivered?.(event.aggregate_id, stored.seq);
       }
       return;
     }
