@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { BaseLanguageModel } from "@langchain/core/language_models/base";
-import { HumanMessage } from "@langchain/core/messages";
+import { HumanMessage, ToolMessage } from "@langchain/core/messages";
 import type {
   ImageAttachment,
   ImageGenerationPreference,
@@ -14,6 +14,7 @@ import type {
   StreamEvent,
   VideoGenerationPreference,
 } from "@loomic/shared";
+import { z } from "zod";
 
 import {
   type BillingErrorCode,
@@ -62,12 +63,19 @@ import {
 } from "./capabilities.js";
 import type { AgentExecutionContext } from "./execution-context.js";
 import {
+  type GeneratedMediaToolResult,
+  generatedMediaToolResultSchema,
+} from "./generated-media-result.js";
+import {
   type LoomicAgent,
   type LoomicAgentFactory,
   createDefaultModelSpecifier,
   createLoomicAgent,
 } from "./loomic-agent.js";
-import type { AgentPersistenceService } from "./persistence/index.js";
+import type {
+  AgentPersistence,
+  AgentPersistenceService,
+} from "./persistence/index.js";
 import { createRunDeadlineGuard } from "./run-deadlines.js";
 import { adaptDeepAgentStream, toPublicToolEvent } from "./stream-adapter.js";
 import type { SubmitImageJobFn } from "./tools/image-generate.js";
@@ -818,6 +826,9 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
             );
           };
 
+          const scope = await resolveGenerationScope();
+          assertGenerationScope(executionContext, scope, canMutateCanvas);
+          const { workspaceId } = scope;
           const effect = await beginRuntimeEffect(
             options.agentExecutionRepository,
             run,
@@ -825,11 +836,15 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
             input,
           );
           if (effect?.status === "completed") {
-            return effect.result as Awaited<ReturnType<SubmitImageJobFn>>;
+            return recoverGeneratedMediaEffect({
+              result: effect.result,
+              scope,
+              canvasId,
+              jobService: jobSvc,
+              attachments: options.generatedAssetAttachments,
+              principal: { userId, workspaceId, accessToken },
+            });
           }
-          const scope = await resolveGenerationScope();
-          assertGenerationScope(executionContext, scope, canMutateCanvas);
-          const { workspaceId } = scope;
           const attachment = canMutateCanvas
             ? createAgentAttachmentContext({
                 run,
@@ -909,10 +924,10 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
               const artifact = {
                 type: "image" as const,
                 title: input.title,
+                source: { kind: "asset" as const, assetId: result.asset_id },
                 url: `/api/assets/${result.asset_id}`,
                 width: result.width ?? 1024,
                 height: result.height ?? 1024,
-                source: { kind: "asset" as const, assetId: result.asset_id },
                 mimeType: result.mime_type ?? "image/png",
                 jobId: job.id,
               };
@@ -1344,10 +1359,22 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
           userMessage = new HumanMessage(enrichedPrompt);
         }
 
+        const checkpointRepairs = await danglingToolCallRepairs(
+          persistence?.checkpointer,
+          run.threadId,
+        );
+        if (checkpointRepairs.length > 0) {
+          rlog.warn("agent.checkpoint.dangling_tool_calls_repaired", {
+            threadId: run.threadId,
+            count: checkpointRepairs.length,
+            toolNames: checkpointRepairs.map((message) => message.name),
+          });
+        }
+
         rlog.lap("stream_call_start");
         stream = agent.streamEvents(
           {
-            messages: [userMessage],
+            messages: [...checkpointRepairs, userMessage],
           },
           {
             ...(run.threadId ||
@@ -1566,6 +1593,59 @@ export function createAgentRunService(options: CreateAgentRuntimeOptions) {
   };
 }
 
+async function danglingToolCallRepairs(
+  checkpointer: AgentPersistence["checkpointer"] | undefined,
+  threadId: string | undefined,
+): Promise<ToolMessage[]> {
+  if (!checkpointer || !threadId) return [];
+  const tuple = await checkpointer.getTuple({
+    configurable: { thread_id: threadId },
+  });
+  const messages = tuple?.checkpoint.channel_values.messages;
+  if (!Array.isArray(messages)) return [];
+
+  const completedCallIds = new Set(
+    messages
+      .map((message) =>
+        message && typeof message === "object" && "tool_call_id" in message
+          ? (message as { tool_call_id?: unknown }).tool_call_id
+          : undefined,
+      )
+      .filter((id): id is string => typeof id === "string" && id.length > 0),
+  );
+  const repairs: ToolMessage[] = [];
+  for (const message of messages) {
+    if (!message || typeof message !== "object" || !("tool_calls" in message)) {
+      continue;
+    }
+    const calls = (message as { tool_calls?: unknown }).tool_calls;
+    if (!Array.isArray(calls)) continue;
+    for (const call of calls) {
+      if (!call || typeof call !== "object") continue;
+      const { id, name } = call as { id?: unknown; name?: unknown };
+      if (
+        typeof id !== "string" ||
+        !id ||
+        typeof name !== "string" ||
+        !name ||
+        completedCallIds.has(id)
+      ) {
+        continue;
+      }
+      repairs.push(
+        new ToolMessage({
+          content:
+            "The previous tool execution ended before its result was checkpointed. Re-evaluate the current state before retrying.",
+          name,
+          status: "error",
+          tool_call_id: id,
+        }),
+      );
+    }
+  }
+  return repairs;
+}
+
 function pendingAttachmentResult<T extends Record<string, unknown>>(
   jobId: string,
   canvasId: string,
@@ -1586,6 +1666,122 @@ function pendingAttachmentResult<T extends Record<string, unknown>>(
       retryable: true,
     },
   };
+}
+
+class GeneratedMediaEffectInvalidError extends Error {
+  readonly code = "generated_media_effect_invalid" as const;
+
+  constructor(cause?: unknown) {
+    super("Stored generated media effect is invalid.", { cause });
+    this.name = "GeneratedMediaEffectInvalidError";
+  }
+}
+
+const attachmentReceiptSchema = z
+  .object({
+    attachmentStatus: z.literal("attached"),
+    jobId: z.string().uuid(),
+    canvasId: z.string().uuid(),
+    elementId: z.string().min(1).max(256),
+    canvasRevision: z.number().int().positive().safe(),
+  })
+  .strict();
+
+async function recoverGeneratedMediaEffect(options: {
+  result: unknown;
+  scope: GenerationWorkspaceScope;
+  canvasId?: string | undefined;
+  jobService: JobService;
+  attachments?: GeneratedAssetAttachmentRecovery | undefined;
+  principal: { userId: string; workspaceId: string; accessToken: string };
+}): Promise<GeneratedMediaToolResult> {
+  const parsed = generatedMediaToolResultSchema.safeParse(options.result);
+  if (parsed.success) {
+    if (
+      (parsed.data.attachmentStatus === "pending" ||
+        parsed.data.attachmentStatus === "not_attached") &&
+      options.attachments &&
+      options.canvasId
+    ) {
+      const current = await options.attachments.getStatus(options.principal, {
+        canvasId: options.canvasId,
+        jobId: parsed.data.jobId,
+      });
+      if (current.attachmentStatus === "attached") {
+        const artifact =
+          parsed.data.artifact ??
+          (await hydrateGeneratedMediaArtifact({
+            jobId: parsed.data.jobId,
+            scope: options.scope,
+            ...(options.canvasId ? { canvasId: options.canvasId } : {}),
+            jobService: options.jobService,
+          }));
+        return { ...current, artifact };
+      }
+    }
+    return parsed.data;
+  }
+
+  const receipt = attachmentReceiptSchema.safeParse(options.result);
+  if (!receipt.success) throw new GeneratedMediaEffectInvalidError();
+  if (options.canvasId && receipt.data.canvasId !== options.canvasId) {
+    throw new GeneratedMediaEffectInvalidError();
+  }
+  const artifact = await hydrateGeneratedMediaArtifact({
+    jobId: receipt.data.jobId,
+    scope: options.scope,
+    ...(options.canvasId ? { canvasId: options.canvasId } : {}),
+    jobService: options.jobService,
+  });
+  return { ...receipt.data, artifact };
+}
+
+async function hydrateGeneratedMediaArtifact(options: {
+  jobId: string;
+  scope: GenerationWorkspaceScope;
+  canvasId?: string;
+  jobService: JobService;
+}): Promise<
+  Extract<GeneratedMediaToolResult, { artifact: unknown }>["artifact"]
+> {
+  try {
+    const job = await options.jobService.getJobAdmin(options.jobId);
+    if (
+      job.status !== "succeeded" ||
+      job.workspace_id !== options.scope.workspaceId ||
+      (options.scope.projectId !== undefined &&
+        job.project_id !== options.scope.projectId) ||
+      (options.canvasId !== undefined && job.canvas_id !== options.canvasId)
+    ) {
+      throw new Error("generated_media_scope_mismatch");
+    }
+    const result = job.result as Record<string, unknown> | null;
+    const assetId = typeof result?.asset_id === "string" ? result.asset_id : "";
+    const width = typeof result?.width === "number" ? result.width : 0;
+    const height = typeof result?.height === "number" ? result.height : 0;
+    const mimeType =
+      typeof result?.mime_type === "string" ? result.mime_type : "";
+    const artifact = {
+      type: "image" as const,
+      source: { kind: "asset" as const, assetId },
+      url: `/api/assets/${assetId}`,
+      width,
+      height,
+      mimeType,
+      jobId: options.jobId,
+    };
+    const parsed = generatedMediaToolResultSchema.safeParse({
+      attachmentStatus: "not_requested",
+      jobId: options.jobId,
+      artifact,
+    });
+    if (!parsed.success || parsed.data.attachmentStatus !== "not_requested") {
+      throw new Error("generated_media_artifact_invalid");
+    }
+    return parsed.data.artifact;
+  } catch (error) {
+    throw new GeneratedMediaEffectInvalidError(error);
+  }
 }
 
 function agentGenerationKey(
@@ -1704,20 +1900,43 @@ function attachmentPlacement(
   mediaType: "image" | "video",
 ): AgentAttachmentPlacement {
   const placement = input as {
-    placementX?: number;
-    placementY?: number;
-    placementWidth?: number;
-    placementHeight?: number;
+    placement?: {
+      kind?: string;
+      x?: number;
+      y?: number;
+      width?: number;
+      height?: number;
+      elementId?: string;
+      relation?: "above" | "below" | "left" | "right";
+      gap?: number;
+      maxWidth?: number;
+      maxHeight?: number;
+    };
   };
-  if (placement.placementX == null || placement.placementY == null) {
+  const requested = placement.placement;
+  if (!requested || requested.kind === "auto_right") {
     return { kind: "auto_right" };
+  }
+  if (requested.kind === "relative") {
+    return {
+      kind: "relative",
+      elementId: requested.elementId ?? "",
+      relation: requested.relation ?? "below",
+      gap: requested.gap ?? 48,
+      ...(requested.maxWidth === undefined
+        ? {}
+        : { maxWidth: requested.maxWidth }),
+      ...(requested.maxHeight === undefined
+        ? {}
+        : { maxHeight: requested.maxHeight }),
+    };
   }
   return {
     kind: "explicit",
-    x: placement.placementX,
-    y: placement.placementY,
-    width: placement.placementWidth ?? (mediaType === "image" ? 512 : 640),
-    height: placement.placementHeight ?? (mediaType === "image" ? 512 : 360),
+    x: requested.x ?? 0,
+    y: requested.y ?? 0,
+    width: requested.width ?? (mediaType === "image" ? 512 : 640),
+    height: requested.height ?? (mediaType === "image" ? 512 : 360),
   };
 }
 

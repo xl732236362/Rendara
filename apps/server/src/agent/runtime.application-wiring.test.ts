@@ -1,3 +1,4 @@
+import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { describe, expect, it, vi } from "vitest";
 
 import { loadServerEnv } from "../config/env.js";
@@ -10,6 +11,71 @@ import type { SubmitImageJobFn } from "./tools/image-generate.js";
 import type { SubmitVideoJobFn } from "./tools/video-generate.js";
 
 describe("Agent runtime application wiring", () => {
+  it("repairs a dangling checkpoint tool call before appending the next user message", async () => {
+    let streamInput: { messages: unknown[] } | undefined;
+    const service = createAgentRunService({
+      agentPersistenceService: {
+        getPersistence: async () => ({
+          checkpointer: {
+            getTuple: async () => ({
+              checkpoint: {
+                channel_values: {
+                  messages: [
+                    new AIMessage({
+                      content: "",
+                      tool_calls: [
+                        {
+                          id: "call-interrupted",
+                          name: "manipulate_canvas",
+                          args: { operations: [] },
+                          type: "tool_call",
+                        },
+                      ],
+                    }),
+                  ],
+                },
+              },
+            }),
+          } as never,
+          store: {} as never,
+        }),
+      },
+      agentFactory: (() => ({
+        async *streamEvents(input: { messages: unknown[] }) {
+          streamInput = input;
+          yield* [];
+        },
+        async *stream() {},
+      })) as never,
+      env: loadServerEnv({}, {}),
+      providerRegistry: new ProviderRegistry().seal(),
+    });
+    service.createRun(
+      {
+        canvasId: "canvas-checkpoint-repair",
+        clientRequestId: "request-checkpoint-repair",
+        conversationId: "conversation-checkpoint-repair",
+        prompt: "try again",
+        sessionId: "session-checkpoint-repair",
+      },
+      {
+        runId: "run-checkpoint-repair",
+        threadId: "thread-checkpoint-repair",
+      },
+    );
+
+    for await (const _event of service.streamRun("run-checkpoint-repair")) {
+    }
+
+    expect(streamInput?.messages).toHaveLength(2);
+    expect(ToolMessage.isInstance(streamInput?.messages[0])).toBe(true);
+    expect(streamInput?.messages[0]).toMatchObject({
+      name: "manipulate_canvas",
+      status: "error",
+      tool_call_id: "call-interrupted",
+    });
+  });
+
   it("passes the current fenced effect as a private attachment intent", async () => {
     const ids = {
       run: "11111111-1111-4111-8111-111111111111",
