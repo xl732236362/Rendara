@@ -3,7 +3,9 @@ import { z } from "zod";
 import {
   type CursorPage,
   INVALID_CURSOR_ERROR_CODE,
+  type InvalidCursorErrorCode,
   createCursorPageSchema,
+  invalidCursorErrorCodeSchema,
   paginationQuerySchema,
 } from "./pagination.js";
 
@@ -56,5 +58,17 @@ describe("cursor page contract", () => {
   it("publishes a stable invalid cursor error code", () => {
     expect(INVALID_CURSOR_ERROR_CODE).toBe("invalid_cursor");
     expectTypeOf(INVALID_CURSOR_ERROR_CODE).toEqualTypeOf<"invalid_cursor">();
+  });
+
+  it("parses only the invalid cursor error code", () => {
+    expect(invalidCursorErrorCodeSchema.parse("invalid_cursor")).toBe(
+      "invalid_cursor",
+    );
+    expect(() =>
+      invalidCursorErrorCodeSchema.parse("invalid_request"),
+    ).toThrow();
+    expectTypeOf<
+      z.infer<typeof invalidCursorErrorCodeSchema>
+    >().toEqualTypeOf<InvalidCursorErrorCode>();
   });
 });

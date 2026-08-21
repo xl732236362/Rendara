@@ -4,6 +4,13 @@ export const PAGINATION_DEFAULT_LIMIT = 50;
 export const PAGINATION_MAX_LIMIT = 100;
 export const PAGINATION_MAX_CURSOR_LENGTH = 4_096;
 export const INVALID_CURSOR_ERROR_CODE = "invalid_cursor" as const;
+export const invalidCursorErrorCodeSchema = z.literal(
+  INVALID_CURSOR_ERROR_CODE,
+);
+
+export type InvalidCursorErrorCode = z.infer<
+  typeof invalidCursorErrorCodeSchema
+>;
 
 export const paginationQuerySchema = z
   .object({
