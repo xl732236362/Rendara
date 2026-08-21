@@ -7,6 +7,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from "react";
 
@@ -16,6 +17,7 @@ interface AuthContextValue {
   user: User | null;
   session: Session | null;
   accessToken: string | null;
+  getAccessToken: () => string | null;
   authGeneration: number;
   loading: boolean;
   signOut: () => Promise<void>;
@@ -73,6 +75,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const accessToken = authState.session?.access_token ?? null;
+  const accessTokenRef = useRef(accessToken);
+  accessTokenRef.current = accessToken;
+  const getAccessToken = useCallback(() => accessTokenRef.current, []);
 
   return (
     <AuthContext.Provider
@@ -80,6 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user: authState.user,
         session: authState.session,
         accessToken,
+        getAccessToken,
         authGeneration: authState.generation,
         loading,
         signOut,

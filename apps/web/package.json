@@ -8,6 +8,7 @@
     "@excalidraw/excalidraw": "^0.18.0",
     "@loomic/shared": "workspace:*",
     "@supabase/supabase-js": "^2.57.0",
+    "@tanstack/react-query": "5.101.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "framer-motion": "^12.38.0",
