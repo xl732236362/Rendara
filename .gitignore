@@ -33,6 +33,9 @@ supabase/.temp/
 
 # debug
 .codex-logs/
+# Transitional ignore for processes started before logs were redirected.
+/.codex-*.stdout.log
+/.codex-*.stderr.log
 .codex-dev-*.log
 .codex-*-dev.*.log
 npm-debug.log*
