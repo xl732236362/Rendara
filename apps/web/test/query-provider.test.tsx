@@ -7,7 +7,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, StrictMode, useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { getSessionMock, onAuthStateChangeMock } = vi.hoisted(() => ({
@@ -26,6 +26,7 @@ vi.mock("../src/lib/supabase-browser", () => ({
 }));
 
 import { Providers } from "../src/components/providers";
+import { ApiApplicationError, ApiNetworkError } from "../src/lib/api-client";
 import { AuthProvider, useAuth } from "../src/lib/auth-context";
 import { createLoomicQueryClient } from "../src/lib/query/query-client";
 import { IdentityQueryProvider } from "../src/lib/query/query-provider";
@@ -103,6 +104,19 @@ interface AbortableDeferred<T> {
   signal: AbortSignal | null;
 }
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolvePromise!: (value: T) => void;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return { promise, resolve: resolvePromise };
+}
+
 function createAbortableDeferred<T>(): AbortableDeferred<T> {
   let resolvePromise!: (value: T) => void;
   let rejectPromise!: (reason: unknown) => void;
@@ -153,6 +167,51 @@ function DeferredQueryProbe({
   );
 }
 
+function StrictModeQueryProbe({
+  queryFn,
+  onClient,
+}: {
+  queryFn: () => Promise<string>;
+  onClient: (client: QueryClient) => void;
+}) {
+  const client = useQueryClient();
+  const query = useQuery({ queryKey: ["strict-mode-cache"], queryFn });
+
+  useEffect(() => {
+    onClient(client);
+  }, [client, onClient]);
+
+  return <span data-testid="strict-result">{query.data ?? query.status}</span>;
+}
+
+function SignalIgnoringQueryProbe({
+  requests,
+  onClient,
+}: {
+  requests: Deferred<string>[];
+  onClient: (client: QueryClient) => void;
+}) {
+  const client = useQueryClient();
+  const query = useQuery({
+    queryKey: ["signal-ignoring-request"],
+    queryFn: () => {
+      const request = requests.shift();
+      if (!request) throw new Error("Missing deferred query request");
+      return request.promise;
+    },
+  });
+
+  useEffect(() => {
+    onClient(client);
+  }, [client, onClient]);
+
+  return (
+    <span data-testid="signal-ignoring-result">
+      {query.data ?? query.status}
+    </span>
+  );
+}
+
 describe("identity-scoped query runtime", () => {
   let authChange: AuthChange;
 
@@ -193,13 +252,23 @@ describe("identity-scoped query runtime", () => {
       throw new Error("Expected functional query retry defaults");
     }
 
-    expect(retry(0, new TypeError("network failed"))).toBe(true);
+    expect(retry(0, new ApiNetworkError())).toBe(true);
     expect(
-      retry(1, Object.assign(new Error("unavailable"), { status: 503 })),
+      retry(
+        1,
+        new ApiApplicationError("unavailable", "Unavailable", { status: 503 }),
+      ),
     ).toBe(true);
-    expect(retry(2, new TypeError("network failed"))).toBe(false);
+    expect(retry(2, new ApiNetworkError())).toBe(false);
+    expect(retry(0, new TypeError("query implementation bug"))).toBe(false);
     expect(
-      retry(0, Object.assign(new Error("bad request"), { status: 400 })),
+      retry(0, Object.assign(new Error("fake status"), { status: 503 })),
+    ).toBe(false);
+    expect(
+      retry(
+        0,
+        new ApiApplicationError("bad_request", "Bad request", { status: 400 }),
+      ),
     ).toBe(false);
     expect(retryDelay(1, new Error("retry"))).toBeGreaterThan(
       retryDelay(0, new Error("retry")),
@@ -294,6 +363,37 @@ describe("identity-scoped query runtime", () => {
     });
   });
 
+  it("keeps the committed identity client intact during StrictMode effect replay", async () => {
+    getSessionMock.mockResolvedValue({
+      data: { session: session("user-1", "token-1") },
+      error: null,
+    });
+    const queryFn = vi.fn(async () => "strict-mode-result");
+    const clients: QueryClient[] = [];
+
+    render(
+      <StrictMode>
+        <QueryRuntime>
+          <StrictModeQueryProbe
+            queryFn={queryFn}
+            onClient={(client) => clients.push(client)}
+          />
+        </QueryRuntime>
+      </StrictMode>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("strict-result")).toHaveTextContent(
+        "strict-mode-result",
+      );
+    });
+    const client = lastValue(clients);
+    expect(queryFn).toHaveBeenCalledOnce();
+    expect(client.getQueryData(["strict-mode-cache"])).toBe(
+      "strict-mode-result",
+    );
+  });
+
   it("aborts an old user's in-flight query without writing into the new client", async () => {
     getSessionMock.mockResolvedValue({
       data: { session: session("user-1", "token-1") },
@@ -333,5 +433,49 @@ describe("identity-scoped query runtime", () => {
     expect(newClient.getQueryData(["identity-scoped-request"])).toBe(
       "fresh-user-2-result",
     );
+  });
+
+  it("drops a late old-identity result even when its query ignores AbortSignal", async () => {
+    getSessionMock.mockResolvedValue({
+      data: { session: session("user-1", "token-1") },
+      error: null,
+    });
+    const oldRequest = createDeferred<string>();
+    const newRequest = createDeferred<string>();
+    const requests = [oldRequest, newRequest];
+    const clients: QueryClient[] = [];
+
+    render(
+      <QueryRuntime>
+        <SignalIgnoringQueryProbe
+          requests={requests}
+          onClient={(client) => clients.push(client)}
+        />
+      </QueryRuntime>,
+    );
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    const oldClient = lastValue(clients);
+
+    act(() => authChange("SIGNED_IN", session("user-2", "token-2")));
+
+    await waitFor(() => expect(requests).toHaveLength(0));
+    const newClient = lastValue(clients);
+    expect(newClient).not.toBe(oldClient);
+
+    await act(async () => {
+      oldRequest.resolve("stale-user-1-result");
+      await Promise.resolve();
+    });
+
+    expect(oldClient.getQueryData(["signal-ignoring-request"])).toBeUndefined();
+    expect(newClient.getQueryData(["signal-ignoring-request"])).toBeUndefined();
+
+    act(() => newRequest.resolve("fresh-user-2-result"));
+    await waitFor(() => {
+      expect(screen.getByTestId("signal-ignoring-result")).toHaveTextContent(
+        "fresh-user-2-result",
+      );
+    });
   });
 });

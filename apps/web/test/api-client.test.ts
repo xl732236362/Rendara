@@ -6,6 +6,7 @@ import {
   ApiAbortError,
   ApiApplicationError,
   ApiAuthError,
+  ApiNetworkError,
   ApiProtocolError,
   ApiTimeoutError,
   apiFetch,
@@ -45,6 +46,25 @@ describe("apiFetch", () => {
         responseSchema: z.object({ id: z.string() }),
       }),
     ).resolves.toEqual({ id: "p1" });
+  });
+
+  it("classifies a raw fetch rejection as a private network error", async () => {
+    mockFetch.mockRejectedValue(
+      new TypeError("Failed to reach private-upstream.internal"),
+    );
+
+    const error = await apiFetch({
+      method: "GET",
+      path: "/api/projects",
+      responseSchema: z.unknown(),
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ApiNetworkError);
+    expect(error).toMatchObject({
+      name: "ApiNetworkError",
+      message: "Network request failed",
+    });
+    expect(String(error)).not.toContain("private-upstream.internal");
   });
 
   it("preserves legacy application and auth error constructors", () => {

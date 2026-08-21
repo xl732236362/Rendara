@@ -1,35 +1,37 @@
 "use client";
 
 import { QueryClientProvider } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useState } from "react";
+import type { QueryClient } from "@tanstack/react-query";
+import {
+  type ReactNode,
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { useAuth } from "../auth-context";
 import { createLoomicQueryClient } from "./query-client";
 
-function OwnedQueryClient({
+interface QueryClientOwnership {
+  client: QueryClient;
+  identityKey: string;
+}
+
+function IdentityClientBoundary({
   children,
   identityKey,
+  onCommit,
 }: {
   children: ReactNode;
   identityKey: string;
+  onCommit: (ownership: QueryClientOwnership) => void;
 }) {
   const [client] = useState(createLoomicQueryClient);
 
-  useEffect(() => {
-    return () => {
-      // Cancellation observes query AbortSignals synchronously; clearing then
-      // makes the old identity's data unreachable even if a query ignores it.
-      const cancellation = client.cancelQueries();
-      client.clear();
-      console.info("[query.runtime] identity_cache_disposed", { identityKey });
-      void cancellation.catch((error: unknown) => {
-        console.warn("[query.runtime] identity_query_cancel_failed", {
-          error,
-          identityKey,
-        });
-      });
-    };
-  }, [client, identityKey]);
+  useLayoutEffect(() => {
+    onCommit({ client, identityKey });
+  }, [client, identityKey, onCommit]);
 
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
@@ -37,10 +39,29 @@ function OwnedQueryClient({
 export function IdentityQueryProvider({ children }: { children: ReactNode }) {
   const { user } = useAuth();
   const identityKey = user ? `user:${user.id}` : "anonymous";
+  const committed = useRef<QueryClientOwnership | null>(null);
+  const commitOwnership = useCallback((ownership: QueryClientOwnership) => {
+    const previous = committed.current;
+    committed.current = ownership;
+    if (!previous || previous.client === ownership.client) return;
+
+    // A committed identity migration is the only disposal authority. This
+    // avoids clearing the live client during StrictMode's effect replay.
+    void previous.client.cancelQueries();
+    previous.client.clear();
+    console.info("[query.runtime] identity_changed", {
+      from: previous.identityKey,
+      to: ownership.identityKey,
+    });
+  }, []);
 
   return (
-    <OwnedQueryClient key={identityKey} identityKey={identityKey}>
+    <IdentityClientBoundary
+      key={identityKey}
+      identityKey={identityKey}
+      onCommit={commitOwnership}
+    >
       {children}
-    </OwnedQueryClient>
+    </IdentityClientBoundary>
   );
 }

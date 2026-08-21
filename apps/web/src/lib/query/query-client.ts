@@ -1,29 +1,22 @@
 import { QueryClient } from "@tanstack/react-query";
 
+import { ApiApplicationError, ApiNetworkError } from "../api-client";
+
 const MAX_QUERY_RETRIES = 2;
 const INITIAL_RETRY_DELAY_MS = 250;
 const MAX_RETRY_DELAY_MS = 2_000;
 
-function hasRetryableServerStatus(error: unknown): boolean {
-  if (!error || typeof error !== "object" || !("status" in error)) {
-    return false;
-  }
-  const status = error.status;
-  return typeof status === "number" && status >= 500 && status < 600;
-}
-
-function isNetworkFailure(error: unknown): boolean {
+function isRetryableQueryError(error: unknown): boolean {
   return (
-    error instanceof TypeError ||
-    (error instanceof DOMException && error.name === "NetworkError")
+    error instanceof ApiNetworkError ||
+    (error instanceof ApiApplicationError &&
+      error.status >= 500 &&
+      error.status < 600)
   );
 }
 
 function shouldRetryQuery(failureCount: number, error: unknown): boolean {
-  return (
-    failureCount < MAX_QUERY_RETRIES &&
-    (isNetworkFailure(error) || hasRetryableServerStatus(error))
-  );
+  return failureCount < MAX_QUERY_RETRIES && isRetryableQueryError(error);
 }
 
 function retryDelay(attemptIndex: number): number {

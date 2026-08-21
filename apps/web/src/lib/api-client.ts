@@ -13,6 +13,13 @@ export class ApiProtocolError extends Error {
   }
 }
 
+export class ApiNetworkError extends Error {
+  constructor() {
+    super("Network request failed");
+    this.name = "ApiNetworkError";
+  }
+}
+
 export class ApiApplicationError extends Error {
   readonly code: string;
   readonly correlationId: string | undefined;
@@ -106,7 +113,13 @@ export async function apiFetch<TRequest, TResponse>(
       signal: abort.signal,
     };
     if (request.body !== undefined) init.body = request.body;
-    const response = await fetch(buildApiUrl(options.path), init);
+    const url = buildApiUrl(options.path);
+    let response: Response;
+    try {
+      response = await fetch(url, init);
+    } catch {
+      throw new ApiNetworkError();
+    }
 
     if (!response.ok) {
       return await throwResponseError(response);

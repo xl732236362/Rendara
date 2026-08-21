@@ -7,6 +7,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -76,7 +77,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const accessToken = authState.session?.access_token ?? null;
   const accessTokenRef = useRef(accessToken);
-  accessTokenRef.current = accessToken;
+  useLayoutEffect(() => {
+    accessTokenRef.current = accessToken;
+  }, [accessToken]);
   const getAccessToken = useCallback(() => accessTokenRef.current, []);
 
   return (
