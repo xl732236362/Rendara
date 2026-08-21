@@ -19,11 +19,27 @@ interface QueryClientOwnership {
   identityKey: string;
 }
 
-async function disposeQueryClient(client: QueryClient): Promise<void> {
-  // Cancellation settles Query's internal state before clear removes its GC
-  // timer. Clearing first lets cancellation schedule a new timer afterward.
-  await client.cancelQueries();
-  client.clear();
+const clientDisposals = new WeakMap<QueryClient, Promise<void>>();
+
+function disposeQueryClient(client: QueryClient): Promise<void> {
+  const existing = clientDisposals.get(client);
+  if (existing) return existing;
+
+  const disposal = (async () => {
+    try {
+      // Cancellation settles Query's internal state before clear removes its
+      // GC timer. Clearing first lets cancellation schedule a timer afterward.
+      await client.cancelQueries();
+      client.clear();
+      console.info("[query.runtime] client_disposed");
+    } catch {
+      // Disposal is fire-and-forget. Contain subscriber failures without
+      // leaking error or identity details into logs or unhandled rejections.
+      console.warn("[query.runtime] client_dispose_failed");
+    }
+  })();
+  clientDisposals.set(client, disposal);
+  return disposal;
 }
 
 function IdentityClientBoundary({
@@ -53,12 +69,10 @@ function IdentityClientBoundary({
       // unmount has no replay, so ignored AbortSignals cannot retain cache.
       disposalTimer.current = setTimeout(() => {
         disposalTimer.current = null;
-        void disposeQueryClient(client).then(() => {
-          console.info("[query.runtime] client_unmounted", { identityKey });
-        });
+        void disposeQueryClient(client);
       }, 0);
     };
-  }, [client, identityKey]);
+  }, [client]);
 
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }

@@ -39,6 +39,15 @@ function lastValue<T>(values: T[]): T {
   return value;
 }
 
+async function flushDisposalWindow(): Promise<void> {
+  if (vi.isFakeTimers()) {
+    await vi.advanceTimersByTimeAsync(0);
+  } else {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  await Promise.resolve();
+}
+
 function session(userId: string, accessToken: string): Session {
   return {
     access_token: accessToken,
@@ -233,8 +242,9 @@ describe("identity-scoped query runtime", () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     cleanup();
+    await flushDisposalWindow();
     vi.useRealTimers();
     vi.clearAllMocks();
   });
@@ -478,6 +488,74 @@ describe("identity-scoped query runtime", () => {
         "fresh-user-2-result",
       );
     });
+  });
+
+  it("disposes an identity client only once when migration and unmount overlap", async () => {
+    getSessionMock.mockResolvedValue({
+      data: { session: session("user-1", "token-1") },
+      error: null,
+    });
+    const snapshots: RuntimeSnapshot[] = [];
+
+    render(
+      <QueryRuntime>
+        <RuntimeProbe onSnapshot={(snapshot) => snapshots.push(snapshot)} />
+      </QueryRuntime>,
+    );
+
+    await waitFor(() =>
+      expect(snapshots.at(-1)?.getAccessToken()).toBe("token-1"),
+    );
+    const oldClient = lastValue(snapshots).client;
+    const cancelQueries = vi.spyOn(oldClient, "cancelQueries");
+    const clear = vi.spyOn(oldClient, "clear");
+    vi.useFakeTimers();
+
+    act(() => authChange("SIGNED_IN", session("user-2", "token-2")));
+    expect(lastValue(snapshots).client).not.toBe(oldClient);
+    await act(async () => {
+      await flushDisposalWindow();
+    });
+
+    expect(cancelQueries).toHaveBeenCalledOnce();
+    expect(clear).toHaveBeenCalledOnce();
+  });
+
+  it("contains subscriber failures during disposal without leaking details", async () => {
+    getSessionMock.mockResolvedValue({
+      data: { session: session("user-1", "token-1") },
+      error: null,
+    });
+    const snapshots: RuntimeSnapshot[] = [];
+
+    render(
+      <QueryRuntime>
+        <RuntimeProbe onSnapshot={(snapshot) => snapshots.push(snapshot)} />
+      </QueryRuntime>,
+    );
+
+    await waitFor(() =>
+      expect(snapshots.at(-1)?.getAccessToken()).toBe("token-1"),
+    );
+    const oldClient = lastValue(snapshots).client;
+    oldClient.setQueryData(["throwing-subscriber"], "cached");
+    oldClient.getQueryCache().subscribe(() => {
+      throw new Error("private subscriber details");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    vi.useFakeTimers();
+
+    act(() => authChange("SIGNED_IN", session("user-2", "token-2")));
+    expect(lastValue(snapshots).client).not.toBe(oldClient);
+    await act(async () => {
+      await flushDisposalWindow();
+    });
+
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith("[query.runtime] client_dispose_failed");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(
+      "private subscriber details",
+    );
   });
 
   it("disposes a signal-ignoring query after the root provider unmounts", async () => {
