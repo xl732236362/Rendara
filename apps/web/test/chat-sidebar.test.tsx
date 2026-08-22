@@ -23,6 +23,7 @@ import {
   mergeReloadedMessages,
 } from "../src/hooks/use-chat-sessions";
 import type { WebSocketHandle } from "../src/hooks/use-websocket";
+import { ApiApplicationError } from "../src/lib/api-client";
 
 const {
   createSessionMock,
@@ -105,10 +106,19 @@ vi.mock("../src/lib/api/chat", () => ({
       };
     },
   ),
-  fetchChatMessagesPage: vi.fn(async (token: string, sessionId: string) => {
-    const result = await fetchMessagesMock(token, sessionId);
-    return { items: result.messages, nextCursor: null };
-  }),
+  fetchChatMessagesPage: vi.fn(
+    async (
+      token: string,
+      sessionId: string,
+      page: { cursor?: string; limit?: number },
+    ) => {
+      const result = await fetchMessagesMock(token, sessionId, page);
+      return {
+        items: result.messages,
+        nextCursor: result.nextCursor ?? null,
+      };
+    },
+  ),
 }));
 vi.mock("../src/lib/api/models", () => ({
   fetchAgentModels: fetchModelsMock,
@@ -410,6 +420,377 @@ describe("ChatSidebar", () => {
 
     await waitFor(() => expect(fetchSessionsMock).toHaveBeenCalledTimes(2));
     expect(screen.queryByText("Existing Chat")).toBeNull();
+  });
+
+  it("recovers only the sessions query from an invalid cursor at the first page", async () => {
+    fetchSessionsMock.mockImplementation(
+      async (_token, _canvasId, page: { cursor?: string }) => {
+        if (page.cursor === "stale-sessions") {
+          throw new ApiApplicationError("invalid_cursor", "stale");
+        }
+        return {
+          sessions: [
+            {
+              id: "session-real",
+              title: "Recent Chat",
+              updatedAt: "2026-03-24T00:00:00.000Z",
+            },
+          ],
+          nextCursor:
+            fetchSessionsMock.mock.calls.length === 1 ? "stale-sessions" : null,
+        };
+      },
+    );
+    const client = createTestQueryClient();
+    client.setQueryData(["unrelated-catalog"], { preserved: true });
+    const cancelSpy = vi.spyOn(client, "cancelQueries");
+    const removeSpy = vi.spyOn(client, "removeQueries");
+
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+      client,
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /recent chat/i }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Load older chats" }),
+    );
+
+    await waitFor(() => expect(fetchSessionsMock).toHaveBeenCalledTimes(3));
+    expect(fetchSessionsMock).toHaveBeenLastCalledWith(
+      "token_abc",
+      "canvas-1",
+      { cursor: undefined, limit: 20 },
+    );
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(cancelSpy.mock.invocationCallOrder[0]).toBeLessThan(
+      removeSpy.mock.invocationCallOrder[0] ?? 0,
+    );
+    expect(client.getQueryData(["unrelated-catalog"])).toEqual({
+      preserved: true,
+    });
+  });
+
+  it("preserves live overlay and unrelated cache during message cursor recovery", async () => {
+    fetchMessagesMock.mockImplementation(
+      async (_token, _sessionId, page: { cursor?: string }) => {
+        if (page.cursor === "stale-messages") {
+          throw new ApiApplicationError("invalid_cursor", "stale");
+        }
+        return {
+          messages: [serverMessage("durable-recent", "recent")],
+          nextCursor:
+            fetchMessagesMock.mock.calls.length === 1 ? "stale-messages" : null,
+        };
+      },
+    );
+    vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("11111111-1111-4111-8111-111111111111")
+      .mockReturnValueOnce("22222222-2222-4222-8222-222222222222");
+    const client = createTestQueryClient();
+    client.setQueryData(["unrelated-catalog"], { preserved: true });
+    const cancelSpy = vi.spyOn(client, "cancelQueries");
+    const removeSpy = vi.spyOn(client, "removeQueries");
+
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+      client,
+    );
+
+    const input = await screen.findByPlaceholderText(/start with an idea/i);
+    await userEvent.type(input, "pending message{Enter}");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Load older messages" }),
+    );
+
+    await waitFor(() => expect(fetchMessagesMock).toHaveBeenCalledTimes(3));
+    expect(fetchMessagesMock).toHaveBeenLastCalledWith(
+      "token_abc",
+      "session-real",
+      { cursor: undefined, limit: 30 },
+    );
+    expect(cancelSpy).toHaveBeenCalledTimes(1);
+    expect(removeSpy).toHaveBeenCalledTimes(1);
+    expect(
+      document.querySelectorAll(
+        '[data-message-id="11111111-1111-4111-8111-111111111111"]',
+      ),
+    ).toHaveLength(1);
+    expect(client.getQueryData(["unrelated-catalog"])).toEqual({
+      preserved: true,
+    });
+  });
+
+  it("does not loop when first-page session cursor recovery also fails", async () => {
+    fetchSessionsMock.mockImplementation(
+      async (_token, _canvasId, page: { cursor?: string }) => {
+        if (fetchSessionsMock.mock.calls.length > 1) {
+          throw new ApiApplicationError("invalid_cursor", "stale");
+        }
+        return {
+          sessions: [
+            {
+              id: "session-real",
+              title: "Recent Chat",
+              updatedAt: "2026-03-24T00:00:00.000Z",
+            },
+          ],
+          nextCursor: "stale-sessions",
+        };
+      },
+    );
+
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /recent chat/i }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Load older chats" }),
+    );
+
+    await waitFor(() => expect(fetchSessionsMock).toHaveBeenCalledTimes(3));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fetchSessionsMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("shows safe session and message errors with scoped retry actions", async () => {
+    fetchSessionsMock
+      .mockRejectedValueOnce(new ApiApplicationError("upstream", "secret"))
+      .mockResolvedValueOnce({
+        sessions: [
+          {
+            id: "session-real",
+            title: "Recovered Chat",
+            updatedAt: "2026-03-24T00:00:00.000Z",
+          },
+        ],
+      });
+    fetchMessagesMock
+      .mockRejectedValueOnce(new ApiApplicationError("upstream", "secret"))
+      .mockResolvedValueOnce({ messages: [] });
+
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    expect(
+      await screen.findByText("Unable to load chat history."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("secret")).toBeNull();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Retry chat history" }),
+    );
+    expect(
+      await screen.findByRole("button", { name: /recovered chat/i }),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByText("Unable to load messages."),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Retry messages" }),
+    );
+    await waitFor(() => expect(fetchMessagesMock).toHaveBeenCalledTimes(2));
+    expect(fetchSessionsMock).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Unable to load messages.")).toBeNull();
+  });
+
+  it("reloads the exact session catalog after a successful title mutation", async () => {
+    fetchSessionsMock
+      .mockResolvedValueOnce({
+        sessions: [
+          {
+            id: "session-real",
+            title: "Existing Chat",
+            updatedAt: "2026-03-24T00:00:00.000Z",
+          },
+        ],
+      })
+      .mockResolvedValue({
+        sessions: [
+          {
+            id: "session-real",
+            title: "Renamed Chat",
+            updatedAt: "2026-03-25T00:00:00.000Z",
+          },
+        ],
+      });
+
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    const input = await screen.findByPlaceholderText(/start with an idea/i);
+    await userEvent.type(input, "Renamed Chat{Enter}");
+
+    await waitFor(() =>
+      expect(updateSessionTitleMock).toHaveBeenCalledTimes(1),
+    );
+    await waitFor(() => expect(fetchSessionsMock).toHaveBeenCalledTimes(2));
+    expect(fetchSessionsMock).toHaveBeenLastCalledWith(
+      "token_abc",
+      "canvas-1",
+      { cursor: undefined, limit: 20 },
+    );
+  });
+
+  it("preserves the visible scroll anchor when older messages prepend", async () => {
+    let scrollHeight = 100;
+    fetchMessagesMock.mockImplementation(
+      async (_token, _sessionId, page: { cursor?: string }) => {
+        if (page.cursor === "older-page") {
+          scrollHeight = 160;
+          return {
+            messages: [serverMessage("durable-older", "older")],
+            nextCursor: null,
+          };
+        }
+        return {
+          messages: [serverMessage("durable-recent", "recent")],
+          nextCursor: "older-page",
+        };
+      },
+    );
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    const loadOlder = await screen.findByRole("button", {
+      name: "Load older messages",
+    });
+    const viewport = loadOlder.closest(
+      '[aria-live="polite"]',
+    ) as HTMLDivElement;
+    Object.defineProperty(viewport, "scrollHeight", {
+      configurable: true,
+      get: () => scrollHeight,
+    });
+    viewport.scrollTop = 20;
+
+    await userEvent.click(loadOlder);
+
+    await waitFor(() => expect(viewport.scrollTop).toBe(80));
+  });
+
+  it("keeps live overlay unique and after chronological durable pages", async () => {
+    fetchMessagesMock.mockImplementation(
+      async (_token, _sessionId, page: { cursor?: string }) =>
+        page.cursor === "older-page"
+          ? {
+              messages: [serverMessage("durable-older", "older")],
+              nextCursor: null,
+            }
+          : {
+              messages: [serverMessage("durable-recent", "recent")],
+              nextCursor: "older-page",
+            },
+    );
+    vi.spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("11111111-1111-4111-8111-111111111111")
+      .mockReturnValueOnce("22222222-2222-4222-8222-222222222222");
+
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    const input = await screen.findByPlaceholderText(/start with an idea/i);
+    await userEvent.type(input, "pending message{Enter}");
+    await waitFor(() =>
+      expect(document.querySelectorAll("[data-message-id]")).toHaveLength(3),
+    );
+    const liveIds = [...document.querySelectorAll("[data-message-id]")]
+      .map((element) => element.getAttribute("data-message-id"))
+      .filter((id) => id !== "durable-recent");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Load older messages" }),
+    );
+
+    await screen.findByText("older");
+    const ids = [...document.querySelectorAll("[data-message-id]")].map(
+      (element) => element.getAttribute("data-message-id"),
+    );
+    expect(ids).toEqual(["durable-older", "durable-recent", ...liveIds]);
+    expect(new Set(liveIds).size).toBe(2);
   });
 
   it("starts runs via WebSocket with the active real session id", async () => {
@@ -963,6 +1344,7 @@ describe("ChatSidebar", () => {
     expect(fetchMessagesMock).toHaveBeenLastCalledWith(
       "token_abc",
       "session-real",
+      { cursor: undefined, limit: 30 },
     );
     expect(listeners).toHaveLength(1);
 
@@ -1301,10 +1683,24 @@ describe("ChatSidebar", () => {
     expect(saveMessageMock).not.toHaveBeenCalled();
   });
 });
-function render(ui: ReactElement) {
-  const client = new QueryClient({
+function serverMessage(id: string, content: string) {
+  return {
+    id,
+    role: "assistant" as const,
+    content,
+    contentBlocks: [{ type: "text" as const, text: content }],
+    toolActivities: [],
+    createdAt: "2026-03-24T00:00:00.000Z",
+  };
+}
+
+function createTestQueryClient() {
+  return new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+}
+
+function render(ui: ReactElement, client = createTestQueryClient()) {
   return testingRender(ui, {
     wrapper: ({ children }) => (
       <QueryClientProvider client={client}>{children}</QueryClientProvider>

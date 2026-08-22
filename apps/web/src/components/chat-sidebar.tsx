@@ -141,6 +141,10 @@ export function ChatSidebar({
     setMessages,
     sessionsLoading,
     messagesLoading,
+    sessionsError,
+    messagesError,
+    retrySessions,
+    retryMessages,
     hasOlderSessions,
     loadingOlderSessions,
     loadOlderSessions,
@@ -1459,6 +1463,8 @@ export function ChatSidebar({
               hasMore={hasOlderSessions}
               loadingMore={loadingOlderSessions}
               onLoadMore={() => void loadOlderSessions()}
+              error={sessionsError}
+              onRetry={() => void retrySessions()}
             />
           )}
         </div>
@@ -1509,7 +1515,18 @@ export function ChatSidebar({
               {loadingOlderMessages ? "Loading..." : "Load older messages"}
             </button>
           )}
-          {sessionsLoading || messagesLoading ? (
+          {messagesError ? (
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+              <span>{messagesError}</span>
+              <button
+                type="button"
+                onClick={() => void retryMessages()}
+                className="rounded-md border border-border px-3 py-1.5 text-foreground hover:bg-muted"
+              >
+                Retry messages
+              </button>
+            </div>
+          ) : sessionsLoading || messagesLoading ? (
             <div className="flex h-full items-center justify-center">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-border border-t-foreground" />
             </div>

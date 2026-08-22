@@ -120,6 +120,14 @@ function uniqueMessages(messages: Message[]): Message[] {
   return [...byId.values()];
 }
 
+export function isInvalidCursorError(
+  error: unknown,
+): error is ApiApplicationError {
+  return (
+    error instanceof ApiApplicationError && error.code === "invalid_cursor"
+  );
+}
+
 // ── Hook ─────────────────────────────────────────────────────
 
 type UseChatSessionsOptions = {
@@ -198,7 +206,9 @@ export function useChatSessions({
   );
   const overlayRef = useRef(new Map<string, Message[]>());
   const creatingInitialSessionRef = useRef(false);
-  const invalidCursorResetRef = useRef(new Set<string>());
+  const invalidCursorRecoveryRef = useRef(
+    new Map<string, ApiApplicationError>(),
+  );
 
   // ── Update messages for a specific session ──
   // Always writes to cache; only syncs to React state if the session is visible.
@@ -301,33 +311,95 @@ export function useChatSessions({
   }, [activeSessionId, messagesQuery.data]);
 
   useEffect(() => {
-    const error = messagesQuery.error;
-    if (
-      !messagesKey ||
-      !(error instanceof ApiApplicationError) ||
-      error.code !== "invalid_cursor"
-    ) {
-      return;
+    if (sessionsQuery.error) setSessionsLoading(false);
+  }, [sessionsQuery.error]);
+
+  useEffect(() => {
+    if (messagesQuery.error) setMessagesLoading(false);
+  }, [messagesQuery.error]);
+
+  const recoverInvalidCursor = useCallback(
+    async (
+      key: readonly unknown[],
+      error: ApiApplicationError,
+      scope: "sessions" | "messages",
+      refetch: () => Promise<unknown>,
+    ) => {
+      const resetId = JSON.stringify(key);
+      if (invalidCursorRecoveryRef.current.has(resetId)) return;
+      invalidCursorRecoveryRef.current.set(resetId, error);
+      await queryClient.cancelQueries({ queryKey: key, exact: true });
+      queryClient.removeQueries({ queryKey: key, exact: true });
+      console.warn("[chat.query] invalid_cursor_reset", {
+        canvasId,
+        scope,
+      });
+      await refetch();
+    },
+    [canvasId, queryClient],
+  );
+
+  useEffect(() => {
+    if (sessionsKey && sessionsQuery.isSuccess) {
+      invalidCursorRecoveryRef.current.delete(JSON.stringify(sessionsKey));
     }
-    const resetId = JSON.stringify(messagesKey);
-    if (invalidCursorResetRef.current.has(resetId)) return;
-    invalidCursorResetRef.current.add(resetId);
-    queryClient.removeQueries({ queryKey: messagesKey, exact: true });
-    console.warn("[chat.query] invalid_cursor_reset", {
-      canvasId,
-      sessionId: activeSessionId,
-    });
-    void messagesQuery.refetch().finally(() => {
-      invalidCursorResetRef.current.delete(resetId);
-    });
+  }, [sessionsKey, sessionsQuery.isSuccess]);
+
+  useEffect(() => {
+    if (messagesKey && messagesQuery.isSuccess) {
+      invalidCursorRecoveryRef.current.delete(JSON.stringify(messagesKey));
+    }
+  }, [messagesKey, messagesQuery.isSuccess]);
+
+  useEffect(() => {
+    const error = sessionsQuery.error;
+    if (!sessionsKey || !isInvalidCursorError(error)) return;
+    void recoverInvalidCursor(
+      sessionsKey,
+      error,
+      "sessions",
+      sessionsQuery.refetch,
+    );
   }, [
-    activeSessionId,
-    canvasId,
+    recoverInvalidCursor,
+    sessionsKey,
+    sessionsQuery.error,
+    sessionsQuery.refetch,
+  ]);
+
+  useEffect(() => {
+    const error = messagesQuery.error;
+    if (!messagesKey || !isInvalidCursorError(error)) return;
+    void recoverInvalidCursor(
+      messagesKey,
+      error,
+      "messages",
+      messagesQuery.refetch,
+    );
+  }, [
     messagesKey,
     messagesQuery.error,
     messagesQuery.refetch,
-    queryClient,
+    recoverInvalidCursor,
   ]);
+
+  const retrySessions = useCallback(async () => {
+    setSessionsLoading(true);
+    try {
+      await sessionsQuery.refetch();
+    } finally {
+      setSessionsLoading(false);
+    }
+  }, [sessionsQuery.refetch]);
+
+  const retryMessages = useCallback(async () => {
+    setMessagesLoading(true);
+    try {
+      await messagesQuery.refetch();
+    } finally {
+      setMessagesLoading(false);
+    }
+  }, [messagesQuery.refetch]);
 
   // ── Session switch ──
   const handleSelectSession = useCallback(
@@ -409,18 +481,40 @@ export function useChatSessions({
   );
 
   // ── Auto-title first message ──
-  const autoTitleSession = useCallback((text: string) => {
-    const currentSessionId = activeSessionIdRef.current;
-    if (!currentSessionId) return;
-    const isFirstMessage = messagesRef.current.length === 0;
-    if (!isFirstMessage) return;
+  const autoTitleSession = useCallback(
+    (text: string) => {
+      const currentSessionId = activeSessionIdRef.current;
+      if (!currentSessionId) return;
+      const isFirstMessage = messagesRef.current.length === 0;
+      if (!isFirstMessage) return;
 
-    const title = text.length > 50 ? `${text.slice(0, 47)}...` : text;
-    void updateSessionTitle(accessTokenRef.current, currentSessionId, title);
-    setSessions((prev) =>
-      prev.map((s) => (s.id === currentSessionId ? { ...s, title } : s)),
-    );
-  }, []);
+      const title = text.length > 50 ? `${text.slice(0, 47)}...` : text;
+      void updateSessionTitle(
+        accessTokenRef.current,
+        currentSessionId,
+        title,
+      ).then(
+        () => {
+          if (sessionsKey) {
+            void queryClient.resetQueries({
+              queryKey: sessionsKey,
+              exact: true,
+            });
+          }
+        },
+        () => {
+          console.warn("[chat.query] title_update_failed", {
+            canvasId,
+            sessionId: currentSessionId,
+          });
+        },
+      );
+      setSessions((prev) =>
+        prev.map((s) => (s.id === currentSessionId ? { ...s, title } : s)),
+      );
+    },
+    [canvasId, queryClient, sessionsKey],
+  );
 
   // ── Reload messages (for reconnection) ──
   const reloadMessages = useCallback(
@@ -478,6 +572,20 @@ export function useChatSessions({
     setMessages,
     sessionsLoading,
     messagesLoading,
+    sessionsError:
+      sessionsQuery.error &&
+      !isInvalidCursorError(sessionsQuery.error) &&
+      !sessionsQuery.isFetching
+        ? "Unable to load chat history."
+        : null,
+    messagesError:
+      messagesQuery.error &&
+      !isInvalidCursorError(messagesQuery.error) &&
+      !messagesQuery.isFetching
+        ? "Unable to load messages."
+        : null,
+    retrySessions,
+    retryMessages,
     hasOlderSessions: sessionsQuery.hasNextPage,
     loadingOlderSessions: sessionsQuery.isFetchingNextPage,
     loadOlderSessions: sessionsQuery.fetchNextPage,

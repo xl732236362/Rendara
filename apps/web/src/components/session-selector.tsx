@@ -12,6 +12,8 @@ type SessionSelectorProps = {
   hasMore: boolean;
   loadingMore: boolean;
   onLoadMore: () => void;
+  error: string | null;
+  onRetry: () => void;
 };
 
 function HistoryIcon({ className }: { className?: string }) {
@@ -75,6 +77,8 @@ export function SessionSelector({
   hasMore,
   loadingMore,
   onLoadMore,
+  error,
+  onRetry,
 }: SessionSelectorProps) {
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const [open, setOpen] = useState(false);
@@ -119,6 +123,21 @@ export function SessionSelector({
     },
     [onDelete],
   );
+
+  if (error) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span>{error}</span>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="rounded-md border border-border px-2 py-1 text-foreground hover:bg-muted"
+        >
+          Retry chat history
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex items-center gap-1.5">
