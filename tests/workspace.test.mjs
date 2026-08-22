@@ -1616,6 +1616,50 @@ test("phase 6A lexical resolution respects shadowing and declaration order", () 
   );
 });
 
+test("phase 6A import provenance does not cross lexical shadows", () => {
+  const shadowedSources = [
+    {
+      path: "apps/web/src/components/domain-shadow.tsx",
+      source:
+        'import * as api from "../lib/api/projects";\nfunction Component(api: LocalApi) { return api.load(); }',
+    },
+    {
+      path: "apps/server/src/http/fastify-shadow.ts",
+      source:
+        'import Fastify from "fastify";\nfunction build(Fastify: LocalFactory) { const local = Fastify(); local.get("/api/widgets"); }',
+    },
+  ];
+  assert.deepEqual(scanPhase6AArchitectureSources(shadowedSources), []);
+
+  const domainFindings = scanPhase6AArchitectureSources([
+    {
+      path: "apps/web/src/components/domain-import.tsx",
+      source:
+        'import * as api from "../lib/api/projects";\nexport function Component() { return api.load(); }',
+    },
+  ]);
+  assert.equal(domainFindings[0]?.rule, "v2-fetch-ownership");
+
+  const fastifySources = [
+    {
+      path: "apps/server/src/http/imported-fastify.ts",
+      source:
+        'import Fastify from "fastify";\nconst app = Fastify();\napp.get("/api/widgets", async () => []);',
+    },
+  ];
+  assert.deepEqual(
+    phase6ABoundaries
+      .discoverPhase6AGetRoutes(fastifySources)
+      .map(({ path }) => path),
+    ["/api/widgets"],
+  );
+  assert.ok(
+    scanPhase6AArchitectureSources(fastifySources).some(
+      ({ rule }) => rule === "collection-route-inventory",
+    ),
+  );
+});
+
 test("phase 6A global keys allow fixed deployment constants", () => {
   const findings = scanPhase6AArchitectureSources([
     {
@@ -1773,10 +1817,32 @@ test("phase 6A collection inventory is unique, classified, and evidence-backed",
       assert.equal(typeof entry.capContract?.ownerExport, "string", entry.path);
       assert.equal(typeof entry.capContract?.method, "string", entry.path);
       assert.ok(
-        ["call", "property"].includes(entry.capContract?.kind),
+        ["awaited-query-call", "call-argument-property"].includes(
+          entry.capContract?.kind,
+        ),
         entry.path,
       );
-      assert.equal(typeof entry.capContract?.member, "string", entry.path);
+      if (entry.capContract.kind === "awaited-query-call") {
+        assert.equal(
+          typeof entry.capContract.queryVariable,
+          "string",
+          entry.path,
+        );
+        assert.equal(typeof entry.capContract.member, "string", entry.path);
+      } else {
+        assert.equal(typeof entry.capContract.calleeRoot, "string", entry.path);
+        assert.equal(
+          typeof entry.capContract.calleeMethod,
+          "string",
+          entry.path,
+        );
+        assert.equal(
+          typeof entry.capContract.argumentIndex,
+          "number",
+          entry.path,
+        );
+        assert.equal(typeof entry.capContract.property, "string", entry.path);
+      }
     }
   }
 });
@@ -1848,6 +1914,53 @@ test("phase 6A bounded evidence rejects unrelated same-value decoys", async () =
       `${entry.route} accepted an unrelated cap decoy`,
     );
   }
+});
+
+test("phase 6A bounded evidence follows the actual capped flow", async () => {
+  const sources = await collectPhase6AArchitectureSources(rootDir);
+  const cases = [
+    {
+      path: "apps/server/src/features/jobs/job-service.ts",
+      mutate(source) {
+        return source
+          .replace(".limit(50);", ".limit(runtimeLimit);")
+          .replace(
+            "      const { data: jobs, error } = await query;",
+            "      const runtimeLimit = 25;\n      query.limit(50);\n      const { data: jobs, error } = await query;",
+          );
+      },
+      route: "/api/jobs",
+    },
+    {
+      path: "apps/server/src/features/canvas/generated-asset-application-adapter.ts",
+      mutate(source) {
+        return source
+          .replace("        limit: 100,", "        limit: runtimeLimit,")
+          .replace(
+            "    listOutstanding(principal, command) {",
+            "    listOutstanding(principal, command) {\n      const runtimeLimit = 25;\n      const decoy = { nested: { limit: 100 } };",
+          );
+      },
+      route: "/api/canvases/:canvasId/generated-asset-attachments",
+    },
+  ];
+  const rejectedRoutes = [];
+  for (const entry of cases) {
+    const mutated = sources.map((source) =>
+      source.path === entry.path
+        ? { ...source, source: entry.mutate(source.source) }
+        : source,
+    );
+    const issues =
+      phase6ABoundaries.auditPhase6ACollectionRouteInventory(mutated);
+    if (issues.some((issue) => issue.includes(`${entry.route} cap`))) {
+      rejectedRoutes.push(entry.route);
+    }
+  }
+  assert.deepEqual(
+    rejectedRoutes,
+    cases.map(({ route }) => route),
+  );
 });
 
 test("phase 6A verification derives collection counts from the scanner inventory", async () => {

@@ -45,7 +45,8 @@ export const phase6ACollectionRouteInventory = Object.freeze([
     ownerFile: "apps/server/src/features/jobs/job-service.ts",
     ownerExport: "createJobService",
     method: "listJobs",
-    kind: "call",
+    kind: "awaited-query-call",
+    queryVariable: "query",
     member: "limit",
   }),
   boundedRoute(
@@ -57,8 +58,11 @@ export const phase6ACollectionRouteInventory = Object.freeze([
         "apps/server/src/features/canvas/generated-asset-application-adapter.ts",
       ownerExport: "createGeneratedAssetAttachmentRecoveryPort",
       method: "listOutstanding",
-      kind: "property",
-      member: "limit",
+      kind: "call-argument-property",
+      calleeRoot: "repository",
+      calleeMethod: "listOutstanding",
+      argumentIndex: 0,
+      property: "limit",
     },
   ),
   gapRoute("/api/fonts", "apps/server/src/http/fonts.ts"),
@@ -546,12 +550,18 @@ function scanComponentV2Fetches(context) {
       continue;
     const bindings = statement.importClause?.namedBindings;
     const defaultBinding = statement.importClause?.name;
-    if (defaultBinding) domainBindings.add(defaultBinding.text);
+    if (defaultBinding) {
+      const binding = resolveIdentifierBinding(defaultBinding, context);
+      if (binding) domainBindings.add(binding.node);
+    }
     if (bindings && ts.isNamedImports(bindings)) {
-      for (const element of bindings.elements)
-        domainBindings.add(element.name.text);
+      for (const element of bindings.elements) {
+        const binding = resolveIdentifierBinding(element.name, context);
+        if (binding) domainBindings.add(binding.node);
+      }
     } else if (bindings && ts.isNamespaceImport(bindings)) {
-      domainBindings.add(bindings.name.text);
+      const binding = resolveIdentifierBinding(bindings.name, context);
+      if (binding) domainBindings.add(binding.node);
     }
   }
   let changed = true;
@@ -561,11 +571,15 @@ function scanComponentV2Fetches(context) {
       if (!ts.isVariableStatement(statement)) continue;
       for (const declaration of statement.declarationList.declarations) {
         if (!declaration.initializer) continue;
-        const root = callRootIdentifier(declaration.initializer);
-        if (!root || !domainBindings.has(root)) continue;
-        for (const name of bindingIdentifiers(declaration.name)) {
-          if (!domainBindings.has(name)) {
-            domainBindings.add(name);
+        const root = rootAccess(declaration.initializer)?.rootNode;
+        const rootBinding = root
+          ? resolveIdentifierBinding(root, context)
+          : undefined;
+        if (!rootBinding || !domainBindings.has(rootBinding.node)) continue;
+        for (const identifier of bindingIdentifierNodes(declaration.name)) {
+          const binding = resolveIdentifierBinding(identifier, context);
+          if (binding && !domainBindings.has(binding.node)) {
+            domainBindings.add(binding.node);
             changed = true;
           }
         }
@@ -576,14 +590,19 @@ function scanComponentV2Fetches(context) {
     context,
     (node) =>
       ts.isCallExpression(node) &&
-      ((callRootIdentifier(node.expression) !== undefined &&
-        domainBindings.has(callRootIdentifier(node.expression))) ||
+      (isDomainBindingCall(node, domainBindings, context) ||
         isDirectV2Request(node, context)),
   ).map((finding) => ({
     ...finding,
     rule: "v2-fetch-ownership",
     message: "V2 collection fetches must be owned by the shared query layer",
   }));
+}
+
+function isDomainBindingCall(call, domainBindings, context) {
+  const root = rootAccess(call.expression)?.rootNode;
+  const binding = root ? resolveIdentifierBinding(root, context) : undefined;
+  return binding ? domainBindings.has(binding.node) : false;
 }
 
 function isDirectV2Request(call, context) {
@@ -1201,20 +1220,25 @@ function computeFastifyProvenance(sourceFile, context) {
       continue;
     }
     const importClause = statement.importClause;
-    if (importClause?.name) directFactories.add(importClause.name.text);
+    if (importClause?.name) {
+      const binding = resolveIdentifierBinding(importClause.name, context);
+      if (binding) directFactories.add(binding.node);
+    }
     const namedBindings = importClause?.namedBindings;
     if (namedBindings && ts.isNamedImports(namedBindings)) {
       for (const element of namedBindings.elements) {
         const importedName = element.propertyName?.text ?? element.name.text;
         if (/^(?:Fastify|fastify)$/.test(importedName)) {
-          directFactories.add(element.name.text);
+          const binding = resolveIdentifierBinding(element.name, context);
+          if (binding) directFactories.add(binding.node);
         }
         if (/^FastifyPlugin(?:Async|Callback)$/.test(importedName)) {
           pluginTypes.add(element.name.text);
         }
       }
     } else if (namedBindings && ts.isNamespaceImport(namedBindings)) {
-      factoryNamespaces.add(namedBindings.name.text);
+      const binding = resolveIdentifierBinding(namedBindings.name, context);
+      if (binding) factoryNamespaces.add(binding.node);
     }
   }
   let typeAliasesChanged = true;
@@ -1266,11 +1290,13 @@ function computeFastifyProvenance(sourceFile, context) {
   function isFastifyFactory(expression) {
     const access = rootAccess(expression);
     if (!access) return false;
-    if (directFactories.has(access.root) && access.members.length === 0) {
+    const binding = resolveIdentifierBinding(access.rootNode, context);
+    if (!binding) return false;
+    if (directFactories.has(binding.node) && access.members.length === 0) {
       return true;
     }
     return (
-      factoryNamespaces.has(access.root) &&
+      factoryNamespaces.has(binding.node) &&
       access.members.length === 1 &&
       /^(?:default|Fastify|fastify)$/.test(access.members[0])
     );
@@ -1665,25 +1691,14 @@ function verifyBoundedEvidence(entry, sourceByPath) {
   if (!source) return `${entry.path} evidence source is missing: ${filePath}`;
   const sourceFile = parseSourceFile(source, filePath);
   let matched = false;
-  function inspectMethod(node) {
-    if (
-      contract.kind === "call" &&
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      node.expression.name.text === contract.member &&
-      numericLiteralValue(node.arguments[0]) === entry.cap
-    ) {
-      matched = true;
+  function inspectMethod(method) {
+    if (contract.kind === "awaited-query-call") {
+      matched = provesAwaitedQueryCap(method, contract, entry.cap);
+      return;
     }
-    if (
-      contract.kind === "property" &&
-      ts.isPropertyAssignment(node) &&
-      propertyName(node.name) === contract.member &&
-      numericLiteralValue(node.initializer) === entry.cap
-    ) {
-      matched = true;
+    if (contract.kind === "call-argument-property") {
+      matched = provesCallArgumentCap(method, contract, entry.cap);
     }
-    ts.forEachChild(node, inspectMethod);
   }
   function visitOwner(node, insideOwner = false) {
     const isOwner =
@@ -1713,6 +1728,104 @@ function verifyBoundedEvidence(entry, sourceByPath) {
   return matched
     ? undefined
     : `${entry.path} cap ${entry.cap} is not proven by ${entry.implementationEvidence}`;
+}
+
+function provesAwaitedQueryCap(method, contract, cap) {
+  let queryDeclaration;
+  let consumptionPosition = Number.POSITIVE_INFINITY;
+  function findQueryFlow(node) {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === contract.queryVariable &&
+      !queryDeclaration
+    ) {
+      queryDeclaration = node;
+    }
+    if (ts.isAwaitExpression(node)) {
+      const root = rootAccess(node.expression)?.rootNode;
+      if (root?.text === contract.queryVariable) {
+        consumptionPosition = Math.min(consumptionPosition, node.pos);
+      }
+    }
+    if (ts.isReturnStatement(node) && node.expression) {
+      const root = rootAccess(node.expression)?.rootNode;
+      if (root?.text === contract.queryVariable) {
+        consumptionPosition = Math.min(consumptionPosition, node.pos);
+      }
+    }
+    ts.forEachChild(node, findQueryFlow);
+  }
+  findQueryFlow(method);
+  if (!queryDeclaration || !Number.isFinite(consumptionPosition)) return false;
+
+  const flowExpressions = [];
+  if (queryDeclaration.initializer) {
+    flowExpressions.push(queryDeclaration.initializer);
+  }
+  function collectAssignments(node) {
+    if (node.pos >= consumptionPosition) return;
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isIdentifier(unwrapExpression(node.left)) &&
+      unwrapExpression(node.left).text === contract.queryVariable
+    ) {
+      flowExpressions.push(node.right);
+    }
+    ts.forEachChild(node, collectAssignments);
+  }
+  collectAssignments(method);
+  return flowExpressions.some((expression) =>
+    containsLiteralMemberCall(expression, contract.member, cap),
+  );
+}
+
+function containsLiteralMemberCall(expression, member, cap) {
+  let matched = false;
+  function visit(node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === member &&
+      numericLiteralValue(node.arguments[0]) === cap
+    ) {
+      matched = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(expression);
+  return matched;
+}
+
+function provesCallArgumentCap(method, contract, cap) {
+  let matched = false;
+  function visit(node) {
+    if (!ts.isCallExpression(node)) {
+      ts.forEachChild(node, visit);
+      return;
+    }
+    const access = rootAccess(node.expression);
+    const isContractCall =
+      access?.root === contract.calleeRoot &&
+      access.members.length === 1 &&
+      access.members[0] === contract.calleeMethod;
+    if (isContractCall) {
+      const argument = unwrapExpression(node.arguments[contract.argumentIndex]);
+      if (argument && ts.isObjectLiteralExpression(argument)) {
+        matched = argument.properties.some(
+          (property) =>
+            ts.isPropertyAssignment(property) &&
+            propertyName(property.name) === contract.property &&
+            numericLiteralValue(property.initializer) === cap,
+        );
+      }
+    }
+    if (!matched) ts.forEachChild(node, visit);
+  }
+  visit(method);
+  return matched;
 }
 
 function numericLiteralValue(node) {
