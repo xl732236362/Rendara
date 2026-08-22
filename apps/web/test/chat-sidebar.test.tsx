@@ -2,8 +2,16 @@
 
 import "@testing-library/jest-dom/vitest";
 import type { StreamEvent } from "@loomic/shared";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  act,
+  cleanup,
+  screen,
+  render as testingRender,
+  waitFor,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ChatSidebar } from "../src/components/chat-sidebar";
@@ -11,6 +19,7 @@ import { TierLimitToastProvider } from "../src/components/credits/tier-limit-toa
 import { ToastProvider } from "../src/components/toast";
 import {
   mapServerMessages,
+  mergeMessagePages,
   mergeReloadedMessages,
 } from "../src/hooks/use-chat-sessions";
 import type { WebSocketHandle } from "../src/hooks/use-websocket";
@@ -54,6 +63,57 @@ vi.mock("../src/lib/server-api", () => ({
   retryGeneratedAssetAttachment: retryGeneratedAssetAttachmentMock,
   saveMessage: saveMessageMock,
   updateSessionTitle: updateSessionTitleMock,
+}));
+vi.mock("../src/lib/auth-context", () => ({
+  useAuth: () => ({
+    user: { id: "user-1" },
+    session: { access_token: "token_abc" },
+  }),
+}));
+vi.mock("../src/lib/api/viewer", () => ({
+  fetchViewer: vi.fn(async () => ({
+    profile: {
+      id: "user-1",
+      email: "u@example.com",
+      displayName: "U",
+      avatarUrl: null,
+    },
+    workspace: {
+      id: "workspace-1",
+      name: "W",
+      type: "personal",
+      ownerUserId: "user-1",
+    },
+    membership: {
+      workspaceId: "workspace-1",
+      userId: "user-1",
+      role: "owner",
+    },
+  })),
+}));
+vi.mock("../src/lib/api/chat", () => ({
+  fetchChatSessionsPage: vi.fn(
+    async (
+      token: string,
+      canvasId: string,
+      page: { cursor?: string; limit?: number },
+    ) => {
+      const result = await fetchSessionsMock(token, canvasId, page);
+      return {
+        items: result.sessions,
+        nextCursor: result.nextCursor ?? null,
+      };
+    },
+  ),
+  fetchChatMessagesPage: vi.fn(async (token: string, sessionId: string) => {
+    const result = await fetchMessagesMock(token, sessionId);
+    return { items: result.messages, nextCursor: null };
+  }),
+}));
+vi.mock("../src/lib/api/models", () => ({
+  fetchAgentModels: fetchModelsMock,
+  fetchImageModels: fetchImageModelsMock,
+  fetchVideoModels: vi.fn(async () => ({ models: [] })),
 }));
 
 function createMockWs(): WebSocketHandle {
@@ -109,11 +169,13 @@ describe("ChatSidebar", () => {
         }),
       ),
     );
-    expect(
-      document.querySelector(
-        '[data-message-id="11111111-1111-4111-8111-111111111111"]',
-      ),
-    ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        document.querySelector(
+          '[data-message-id="11111111-1111-4111-8111-111111111111"]',
+        ),
+      ).toBeInTheDocument(),
+    );
     expect(randomUUID).toHaveBeenCalledTimes(2);
     expect(ws.startRun).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -166,6 +228,23 @@ describe("ChatSidebar", () => {
     );
 
     expect(merged.map((message) => message.id)).toEqual(["server-assistant"]);
+  });
+
+  it("prepends older durable pages while preserving chronological order and unique IDs", () => {
+    const message = (id: string) => ({
+      id,
+      role: "user" as const,
+      content: id,
+      contentBlocks: [{ type: "text" as const, text: id }],
+      toolActivities: [],
+      createdAt: "2026-08-22T00:00:00.000Z",
+    });
+    expect(
+      mergeMessagePages([
+        { items: [message("m3"), message("m4")] },
+        { items: [message("m1"), message("m2"), message("m3")] },
+      ]).map((item) => item.id),
+    ).toEqual(["m1", "m2", "m3", "m4"]);
   });
 
   let mockWs: WebSocketHandle;
@@ -233,6 +312,104 @@ describe("ChatSidebar", () => {
     cleanup();
     vi.clearAllMocks();
     vi.restoreAllMocks();
+  });
+
+  it("loads older chat sessions from the next durable page", async () => {
+    fetchSessionsMock
+      .mockResolvedValueOnce({
+        sessions: [
+          {
+            id: "session-real",
+            title: "Recent Chat",
+            updatedAt: "2026-03-24T00:00:00.000Z",
+          },
+        ],
+        nextCursor: "older-page",
+      })
+      .mockResolvedValueOnce({
+        sessions: [
+          {
+            id: "session-older",
+            title: "Older Chat",
+            updatedAt: "2026-03-23T00:00:00.000Z",
+          },
+        ],
+        nextCursor: null,
+      });
+
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /recent chat/i }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Load older chats" }),
+    );
+
+    expect(await screen.findByText("Older Chat")).toBeInTheDocument();
+    expect(fetchSessionsMock).toHaveBeenLastCalledWith(
+      "token_abc",
+      "canvas-1",
+      { cursor: "older-page", limit: 20 },
+    );
+  });
+
+  it("refreshes the exact durable session catalog after deletion", async () => {
+    const remainingSession = {
+      id: "session-remaining",
+      title: "Remaining Chat",
+      updatedAt: "2026-03-23T00:00:00.000Z",
+    };
+    fetchSessionsMock
+      .mockResolvedValueOnce({
+        sessions: [
+          {
+            id: "session-real",
+            title: "Existing Chat",
+            updatedAt: "2026-03-24T00:00:00.000Z",
+          },
+          remainingSession,
+        ],
+      })
+      .mockResolvedValue({ sessions: [remainingSession] });
+    deleteSessionMock.mockResolvedValue(undefined);
+
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: /existing chat/i }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Delete Existing Chat" }),
+    );
+    await userEvent.click(screen.getByRole("button", { name: "删除" }));
+
+    await waitFor(() => expect(fetchSessionsMock).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText("Existing Chat")).toBeNull();
   });
 
   it("starts runs via WebSocket with the active real session id", async () => {
@@ -412,7 +589,7 @@ describe("ChatSidebar", () => {
   it("surfaces an outstanding attachment once and retries the same job", async () => {
     const canvasId = "22222222-2222-4222-8222-222222222222";
     const jobId = "11111111-1111-4111-8111-111111111111";
-    fetchOutstandingGeneratedAssetAttachmentsMock.mockResolvedValue({
+    const outstanding = {
       attachments: [
         {
           attachmentStatus: "not_attached",
@@ -425,7 +602,16 @@ describe("ChatSidebar", () => {
           },
         },
       ],
-    });
+    };
+    let resolveStaleRefresh: ((value: typeof outstanding) => void) | undefined;
+    fetchOutstandingGeneratedAssetAttachmentsMock
+      .mockResolvedValueOnce(outstanding)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveStaleRefresh = resolve;
+          }),
+      );
     retryGeneratedAssetAttachmentMock.mockResolvedValue({
       attachment: {
         attachmentStatus: "attached",
@@ -454,6 +640,11 @@ describe("ChatSidebar", () => {
     expect(
       await screen.findByText("Generated, but not attached"),
     ).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        fetchOutstandingGeneratedAssetAttachmentsMock,
+      ).toHaveBeenCalledTimes(2),
+    );
     const retry = screen.getByRole("button", { name: "Retry attachment" });
     await userEvent.click(retry);
 
@@ -467,6 +658,10 @@ describe("ChatSidebar", () => {
     expect(onCanvasSync).toHaveBeenCalledWith(
       expect.objectContaining({ canvasId, revision: 8, type: "canvas.sync" }),
     );
+    await act(async () => {
+      resolveStaleRefresh?.(outstanding);
+      await Promise.resolve();
+    });
     expect(
       screen.queryByRole("button", { name: "Retry attachment" }),
     ).toBeNull();
@@ -1106,3 +1301,13 @@ describe("ChatSidebar", () => {
     expect(saveMessageMock).not.toHaveBeenCalled();
   });
 });
+function render(ui: ReactElement) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return testingRender(ui, {
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    ),
+  });
+}

@@ -27,11 +27,15 @@ import { useImageAttachments } from "../hooks/use-image-attachments";
 import { useImageModelPreference } from "../hooks/use-image-model-preference";
 import { useVideoModelPreference } from "../hooks/use-video-model-preference";
 import type { RunCallbacks, WebSocketHandle } from "../hooks/use-websocket";
+import { useAuth } from "../lib/auth-context";
 import { fetchBrandKit } from "../lib/brand-kit-api";
 import { claimDailyCredits } from "../lib/credits-api";
 import {
+  useImageModelsQuery,
+  useViewerQuery,
+} from "../lib/query/workspace-queries";
+import {
   fetchGeneratedAssetAttachment,
-  fetchImageModels,
   fetchOutstandingGeneratedAssetAttachments,
   retryGeneratedAssetAttachment,
   saveMessage,
@@ -112,8 +116,22 @@ export function ChatSidebar({
 }: ChatSidebarProps) {
   const breakpoint = useBreakpoint();
   const isOverlay = breakpoint !== "desktop";
+  const { user } = useAuth();
+  const catalogTokenRef = useRef(accessToken);
+  catalogTokenRef.current = accessToken;
+  const getCatalogToken = useCallback(() => catalogTokenRef.current, []);
+  const viewer = useViewerQuery(user?.id, getCatalogToken);
+  const imageModelsQuery = useImageModelsQuery(
+    user
+      ? {
+          userId: user.id,
+          workspaceId: viewer.data?.workspace.id,
+          getAccessToken: getCatalogToken,
+        }
+      : undefined,
+  );
 
-  // ── Session & message management (extracted hook with LRU cache) ──
+  // ── Session and durable message-page management ──
   const {
     sessions,
     activeSessionId,
@@ -123,6 +141,12 @@ export function ChatSidebar({
     setMessages,
     sessionsLoading,
     messagesLoading,
+    hasOlderSessions,
+    loadingOlderSessions,
+    loadOlderSessions,
+    hasOlderMessages,
+    loadingOlderMessages,
+    loadOlderMessages,
     streaming,
     setStreaming,
     updateSessionMessages,
@@ -168,6 +192,8 @@ export function ChatSidebar({
 
   const initialPromptSent = useRef(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesViewportRef = useRef<HTMLDivElement>(null);
+  const preservingOlderAnchorRef = useRef(false);
   const abortRef = useRef(false);
   const messageMentionsRef = useRef(messageMentions);
   messageMentionsRef.current = messageMentions;
@@ -282,6 +308,7 @@ export function ChatSidebar({
   );
 
   const syncedAttachmentRevisionsRef = useRef(new Map<string, number>());
+  const attachedJobIdsRef = useRef(new Set<string>());
 
   const syncAttachedStatuses = useCallback(
     (
@@ -320,7 +347,19 @@ export function ChatSidebar({
         ReturnType<typeof fetchOutstandingGeneratedAssetAttachments>
       >["attachments"],
     ) => {
-      const byJob = new Map(statuses.map((status) => [status.jobId, status]));
+      for (const status of statuses) {
+        if (status.attachmentStatus === "attached") {
+          attachedJobIdsRef.current.add(status.jobId);
+        }
+      }
+      const applicableStatuses = statuses.filter(
+        (status) =>
+          status.attachmentStatus === "attached" ||
+          !attachedJobIdsRef.current.has(status.jobId),
+      );
+      const byJob = new Map(
+        applicableStatuses.map((status) => [status.jobId, status]),
+      );
       updateSessionMessages(sessionId, (prev) => {
         const knownJobs = new Set<string>();
         const updated = prev.map((message) => ({
@@ -362,7 +401,7 @@ export function ChatSidebar({
             return block;
           }),
         }));
-        for (const status of statuses) {
+        for (const status of applicableStatuses) {
           if (
             knownJobs.has(status.jobId) ||
             (status.attachmentStatus !== "pending" &&
@@ -464,10 +503,29 @@ export function ChatSidebar({
     ],
   );
 
+  const attachmentRecoveryKey = messages
+    .flatMap((message) => message.contentBlocks)
+    .filter(
+      (block): block is ToolBlock =>
+        block.type === "tool" &&
+        block.status === "failed" &&
+        block.recovery?.kind === "attach_generated_asset",
+    )
+    .map((block) => block.recovery?.jobId)
+    .filter(Boolean)
+    .sort()
+    .join(",");
+
   useEffect(() => {
-    if (sessionsLoading || !activeSessionId) return;
+    if (sessionsLoading || messagesLoading || !activeSessionId) return;
     void refreshAttachmentRecovery(activeSessionId);
-  }, [activeSessionId, refreshAttachmentRecovery, sessionsLoading]);
+  }, [
+    activeSessionId,
+    attachmentRecoveryKey,
+    messagesLoading,
+    refreshAttachmentRecovery,
+    sessionsLoading,
+  ]);
 
   // ── Sidebar resize ──
   const SIDEBAR_MIN = 300;
@@ -560,34 +618,40 @@ export function ChatSidebar({
   }, []);
 
   useEffect(() => {
+    if (preservingOlderAnchorRef.current) return;
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
+  const handleLoadOlderMessages = useCallback(async () => {
+    const viewport = messagesViewportRef.current;
+    if (!viewport) return;
+    const previousHeight = viewport.scrollHeight;
+    const previousTop = viewport.scrollTop;
+    preservingOlderAnchorRef.current = true;
+    try {
+      await loadOlderMessages();
+      requestAnimationFrame(() => {
+        viewport.scrollTop =
+          previousTop + (viewport.scrollHeight - previousHeight);
+        preservingOlderAnchorRef.current = false;
+      });
+    } catch {
+      preservingOlderAnchorRef.current = false;
+    }
+  }, [loadOlderMessages]);
+
   // ── Fetch image models for @mention picker ──
   useEffect(() => {
-    let cancelled = false;
-
-    fetchImageModels()
-      .then((data) => {
-        if (cancelled) return;
-        setImageModelMentionItems(
-          data.models.map((model) => ({
-            kind: "image-model",
-            id: model.id,
-            label: model.displayName,
-            description: model.description,
-            ...(model.iconUrl ? { iconUrl: model.iconUrl } : {}),
-          })),
-        );
-      })
-      .catch(() => {
-        if (!cancelled) setImageModelMentionItems([]);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+    setImageModelMentionItems(
+      (imageModelsQuery.data?.models ?? []).map((model) => ({
+        kind: "image-model",
+        id: model.id,
+        label: model.displayName,
+        description: model.description,
+        ...(model.iconUrl ? { iconUrl: model.iconUrl } : {}),
+      })),
+    );
+  }, [imageModelsQuery.data?.models]);
 
   // ── Fetch brand kit items for @mention picker ──
   useEffect(() => {
@@ -1392,6 +1456,9 @@ export function ChatSidebar({
               onSelect={handleSelectSession}
               onNewChat={handleNewChat}
               onDelete={handleDeleteSession}
+              hasMore={hasOlderSessions}
+              loadingMore={loadingOlderSessions}
+              onLoadMore={() => void loadOlderSessions()}
             />
           )}
         </div>
@@ -1427,10 +1494,21 @@ export function ChatSidebar({
         }
       >
         <div
+          ref={messagesViewportRef}
           className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col gap-6 px-4 py-4"
           aria-live="polite"
           aria-relevant="additions"
         >
+          {hasOlderMessages && (
+            <button
+              type="button"
+              disabled={loadingOlderMessages}
+              onClick={() => void handleLoadOlderMessages()}
+              className="mx-auto min-h-8 rounded-md border border-border px-3 text-xs text-muted-foreground disabled:opacity-50"
+            >
+              {loadingOlderMessages ? "Loading..." : "Load older messages"}
+            </button>
+          )}
           {sessionsLoading || messagesLoading ? (
             <div className="flex h-full items-center justify-center">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-border border-t-foreground" />

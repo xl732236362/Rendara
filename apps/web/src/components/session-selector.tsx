@@ -9,6 +9,9 @@ type SessionSelectorProps = {
   onSelect: (sessionId: string) => void;
   onNewChat: () => void;
   onDelete: (sessionId: string) => void;
+  hasMore: boolean;
+  loadingMore: boolean;
+  onLoadMore: () => void;
 };
 
 function HistoryIcon({ className }: { className?: string }) {
@@ -69,6 +72,9 @@ export function SessionSelector({
   onSelect,
   onNewChat,
   onDelete,
+  hasMore,
+  loadingMore,
+  onLoadMore,
 }: SessionSelectorProps) {
   const activeSession = sessions.find((s) => s.id === activeSessionId);
   const [open, setOpen] = useState(false);
@@ -236,6 +242,16 @@ export function SessionSelector({
                   )}
                 </div>
               ))}
+              {hasMore && (
+                <button
+                  type="button"
+                  disabled={loadingMore}
+                  onClick={onLoadMore}
+                  className="flex min-h-8 w-full items-center justify-center rounded-md px-3 text-xs text-muted-foreground hover:bg-muted disabled:opacity-50"
+                >
+                  {loadingMore ? "Loading..." : "Load older chats"}
+                </button>
+              )}
             </div>
           </div>
         )}

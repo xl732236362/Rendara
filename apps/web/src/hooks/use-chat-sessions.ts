@@ -1,14 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ChatSessionSummary, ContentBlock } from "@loomic/shared";
 import type { ChatMessage as ChatMessageData } from "@loomic/shared";
+import { ApiApplicationError } from "../lib/api-client";
+import { useAuth } from "../lib/auth-context";
+import { queryKeys } from "../lib/query/keys";
+import {
+  useChatMessagesInfiniteQuery,
+  useChatSessionsInfiniteQuery,
+  useViewerQuery,
+} from "../lib/query/workspace-queries";
 import {
   createSession,
   deleteSession as deleteSessionApi,
-  fetchMessages,
-  fetchSessions,
   updateSessionTitle,
 } from "../lib/server-api";
 
@@ -58,53 +65,6 @@ export function mergeReloadedMessages(
   return [...serverMessages, ...preserved];
 }
 
-// ── LRU message cache ────────────────────────────────────────
-// Limits memory usage by evicting the least-recently-accessed
-// session's messages when the cache exceeds MAX_CACHED_SESSIONS.
-
-const MAX_CACHED_SESSIONS = 10;
-
-type LRUMessageCache = {
-  get(sessionId: string): Message[] | undefined;
-  set(sessionId: string, messages: Message[]): void;
-  delete(sessionId: string): void;
-};
-
-function createLRUMessageCache(): LRUMessageCache {
-  // Map preserves insertion order; we move accessed keys to the end.
-  const cache = new Map<string, Message[]>();
-
-  return {
-    get(sessionId) {
-      const value = cache.get(sessionId);
-      if (value !== undefined) {
-        // Move to end (most recently used)
-        cache.delete(sessionId);
-        cache.set(sessionId, value);
-      }
-      return value;
-    },
-
-    set(sessionId, messages) {
-      // Delete first so re-insert moves to end
-      cache.delete(sessionId);
-      cache.set(sessionId, messages);
-
-      // Evict oldest if over capacity
-      if (cache.size > MAX_CACHED_SESSIONS) {
-        const oldest = cache.keys().next().value;
-        if (oldest !== undefined) {
-          cache.delete(oldest);
-        }
-      }
-    },
-
-    delete(sessionId) {
-      cache.delete(sessionId);
-    },
-  };
-}
-
 // ── Helpers ──────────────────────────────────────────────────
 
 export function mapServerMessages(
@@ -140,6 +100,26 @@ export function mapServerMessages(
   });
 }
 
+export function mergeMessagePages(
+  pages: readonly { items: ChatMessageData[] }[],
+): ChatMessageData[] {
+  const seen = new Set<string>();
+  return [...pages]
+    .reverse()
+    .flatMap((page) => page.items)
+    .filter((message) => {
+      if (seen.has(message.id)) return false;
+      seen.add(message.id);
+      return true;
+    });
+}
+
+function uniqueMessages(messages: Message[]): Message[] {
+  const byId = new Map<string, Message>();
+  for (const message of messages) byId.set(message.id, message);
+  return [...byId.values()];
+}
+
 // ── Hook ─────────────────────────────────────────────────────
 
 type UseChatSessionsOptions = {
@@ -155,6 +135,9 @@ export function useChatSessions({
   initialSessionId,
   onSessionChange,
 }: UseChatSessionsOptions) {
+  const { user } = useAuth();
+  const userId = user?.id;
+  const queryClient = useQueryClient();
   const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -173,17 +156,61 @@ export function useChatSessions({
   messagesRef.current = messages;
   const onSessionChangeRef = useRef(onSessionChange);
   onSessionChangeRef.current = onSessionChange;
-
-  // LRU message cache (replaces unbounded Record)
-  const msgCacheRef = useRef<LRUMessageCache>(createLRUMessageCache());
+  const getToken = useCallback(() => accessTokenRef.current ?? null, []);
+  const viewer = useViewerQuery(userId, getToken);
+  const workspaceId = viewer.data?.workspace.id;
+  const sessionsQuery = useChatSessionsInfiniteQuery({
+    userId: userId ?? "disabled",
+    workspaceId,
+    canvasId,
+    getAccessToken: getToken,
+    limit: 20,
+  });
+  const messagesQuery = useChatMessagesInfiniteQuery({
+    userId: userId ?? "disabled",
+    workspaceId,
+    canvasId,
+    sessionId: activeSessionId ?? "",
+    getAccessToken: getToken,
+    limit: 30,
+  });
+  const sessionsKey = useMemo(
+    () =>
+      userId && workspaceId
+        ? queryKeys.workspace.chatSessions(userId, workspaceId, canvasId, {
+            limit: 20,
+          })
+        : null,
+    [canvasId, userId, workspaceId],
+  );
+  const messagesKey = useMemo(
+    () =>
+      userId && workspaceId && activeSessionId
+        ? queryKeys.workspace.chatMessages(
+            userId,
+            workspaceId,
+            canvasId,
+            activeSessionId,
+            { limit: 30 },
+          )
+        : null,
+    [activeSessionId, canvasId, userId, workspaceId],
+  );
+  const overlayRef = useRef(new Map<string, Message[]>());
+  const creatingInitialSessionRef = useRef(false);
+  const invalidCursorResetRef = useRef(new Set<string>());
 
   // ── Update messages for a specific session ──
   // Always writes to cache; only syncs to React state if the session is visible.
   const updateSessionMessages = useCallback(
     (targetSessionId: string, updater: (prev: Message[]) => Message[]) => {
-      const prev = msgCacheRef.current.get(targetSessionId) ?? [];
-      const next = updater(prev);
-      msgCacheRef.current.set(targetSessionId, next);
+      const prev =
+        overlayRef.current.get(targetSessionId) ??
+        (activeSessionIdRef.current === targetSessionId
+          ? messagesRef.current
+          : []);
+      const next = uniqueMessages(updater(prev));
+      overlayRef.current.set(targetSessionId, next);
       if (activeSessionIdRef.current === targetSessionId) {
         setMessages(next);
       }
@@ -192,59 +219,115 @@ export function useChatSessions({
   );
 
   const getSessionMessages = useCallback(
-    (sessionId: string) => msgCacheRef.current.get(sessionId) ?? [],
+    (sessionId: string) =>
+      overlayRef.current.get(sessionId) ??
+      (activeSessionIdRef.current === sessionId ? messagesRef.current : []),
     [],
   );
 
-  // ── Load sessions on mount ──
+  // Durable pages are owned by React Query; this controller only selects a
+  // session and layers pending/streaming messages over persisted records.
   useEffect(() => {
-    let cancelled = false;
-
-    async function init() {
-      const token = accessTokenRef.current;
-      setSessionsLoading(true);
-      try {
-        const res = await fetchSessions(token, canvasId);
-        if (cancelled) return;
-
-        if (res.sessions.length > 0) {
-          setSessions(res.sessions);
-          const target = initialSessionId
-            ? (res.sessions.find(
-                (s: ChatSessionSummary) => s.id === initialSessionId,
-              ) ?? res.sessions[0]!)
-            : res.sessions[0]!;
-          setActiveSessionId(target.id);
-          onSessionChangeRef.current?.(target.id);
-          const msgRes = await fetchMessages(token, target.id);
-          if (cancelled) return;
-          const mapped = mapServerMessages(msgRes.messages);
-          msgCacheRef.current.set(target.id, mapped);
-          setMessages(mapped);
-        } else {
-          const created = await createSession(token, canvasId);
-          if (cancelled) return;
+    if (!sessionsQuery.data) return;
+    const seen = new Set<string>();
+    const durableSessions = sessionsQuery.data.pages.flatMap((page) =>
+      page.items.filter((session) => {
+        if (seen.has(session.id)) return false;
+        seen.add(session.id);
+        return true;
+      }),
+    );
+    setSessions(durableSessions);
+    setSessionsLoading(false);
+    if (durableSessions.length === 0) {
+      if (creatingInitialSessionRef.current) return;
+      creatingInitialSessionRef.current = true;
+      void createSession(accessTokenRef.current, canvasId)
+        .then((created) => {
           setSessions([created.session]);
           setActiveSessionId(created.session.id);
           onSessionChangeRef.current?.(created.session.id);
-          setMessages([]);
-        }
-      } catch {
-        // Session loading failed — remain in empty state
-      } finally {
-        if (!cancelled) setSessionsLoading(false);
-      }
+          if (sessionsKey) {
+            void queryClient.resetQueries({
+              queryKey: sessionsKey,
+              exact: true,
+            });
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          creatingInitialSessionRef.current = false;
+        });
+      return;
     }
+    if (activeSessionIdRef.current) return;
+    const target =
+      (initialSessionId
+        ? durableSessions.find((session) => session.id === initialSessionId)
+        : undefined) ?? durableSessions[0];
+    if (!target) return;
+    setMessagesLoading(true);
+    setActiveSessionId(target.id);
+    onSessionChangeRef.current?.(target.id);
+  }, [
+    canvasId,
+    initialSessionId,
+    queryClient,
+    sessionsKey,
+    sessionsQuery.data,
+  ]);
 
-    void init();
-    return () => {
-      cancelled = true;
-    };
-    // Intentionally depends only on canvasId — accessTokenRef, onSessionChangeRef,
-    // initialSessionId, and msgCacheRef are stable refs that never trigger re-runs.
-    // This effect is a one-time init per canvas, not a token-refresh handler.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canvasId]);
+  useEffect(() => {
+    if (!activeSessionId || !messagesQuery.data) return;
+    const durable = mapServerMessages(
+      mergeMessagePages(messagesQuery.data.pages),
+    );
+    const overlay = overlayRef.current.get(activeSessionId) ?? [];
+    const next = mergeReloadedMessages(
+      durable,
+      overlay,
+      new Set(overlay.map((message) => message.id)),
+    );
+    const pendingOverlay = next.filter(
+      (message) => !durable.some((item) => item.id === message.id),
+    );
+    if (pendingOverlay.length > 0) {
+      overlayRef.current.set(activeSessionId, pendingOverlay);
+    } else {
+      overlayRef.current.delete(activeSessionId);
+    }
+    setMessages(next);
+    setMessagesLoading(false);
+  }, [activeSessionId, messagesQuery.data]);
+
+  useEffect(() => {
+    const error = messagesQuery.error;
+    if (
+      !messagesKey ||
+      !(error instanceof ApiApplicationError) ||
+      error.code !== "invalid_cursor"
+    ) {
+      return;
+    }
+    const resetId = JSON.stringify(messagesKey);
+    if (invalidCursorResetRef.current.has(resetId)) return;
+    invalidCursorResetRef.current.add(resetId);
+    queryClient.removeQueries({ queryKey: messagesKey, exact: true });
+    console.warn("[chat.query] invalid_cursor_reset", {
+      canvasId,
+      sessionId: activeSessionId,
+    });
+    void messagesQuery.refetch().finally(() => {
+      invalidCursorResetRef.current.delete(resetId);
+    });
+  }, [
+    activeSessionId,
+    canvasId,
+    messagesKey,
+    messagesQuery.error,
+    messagesQuery.refetch,
+    queryClient,
+  ]);
 
   // ── Session switch ──
   const handleSelectSession = useCallback(
@@ -254,23 +337,8 @@ export function useChatSessions({
       setActiveSessionId(sessionId);
       onSessionChangeRef.current?.(sessionId);
 
-      const cached = msgCacheRef.current.get(sessionId);
-      if (cached && cached.length > 0) {
-        setMessages(cached);
-      } else {
-        setMessages([]);
-        setMessagesLoading(true);
-        try {
-          const msgRes = await fetchMessages(accessTokenRef.current, sessionId);
-          const mapped = mapServerMessages(msgRes.messages);
-          msgCacheRef.current.set(sessionId, mapped);
-          setMessages(mapped);
-        } catch (err) {
-          console.error("[chat] Failed to load session messages:", err);
-        } finally {
-          setMessagesLoading(false);
-        }
-      }
+      setMessages(overlayRef.current.get(sessionId) ?? []);
+      setMessagesLoading(true);
     },
     [streaming],
   );
@@ -284,10 +352,13 @@ export function useChatSessions({
       setActiveSessionId(res.session.id);
       onSessionChangeRef.current?.(res.session.id);
       setMessages([]);
+      if (sessionsKey) {
+        void queryClient.resetQueries({ queryKey: sessionsKey, exact: true });
+      }
     } catch {
       // Silently fail
     }
-  }, [canvasId, streaming]);
+  }, [canvasId, queryClient, sessionsKey, streaming]);
 
   // ── Delete session ──
   const handleDeleteSession = useCallback(
@@ -313,28 +384,28 @@ export function useChatSessions({
           setActiveSessionId(next.id);
           onSessionChangeRef.current?.(next.id);
           setMessagesLoading(true);
-          fetchMessages(token, next.id)
-            .then((msgRes) => {
-              const mapped = mapServerMessages(msgRes.messages);
-              msgCacheRef.current.set(next.id, mapped);
-              setMessages(mapped);
-            })
-            .catch(() => setMessages([]))
-            .finally(() => setMessagesLoading(false));
+          setMessages(overlayRef.current.get(next.id) ?? []);
         }
       }
 
       // Delete in background
-      deleteSessionApi(token, sessionId).catch(() => {
-        fetchSessions(token, canvasId)
-          .then((res) => setSessions(res.sessions))
-          .catch(() => {});
-      });
+      const reconcileSessions = () => {
+        if (sessionsKey) {
+          void queryClient.resetQueries({
+            queryKey: sessionsKey,
+            exact: true,
+          });
+        }
+      };
+      void deleteSessionApi(token, sessionId).then(
+        reconcileSessions,
+        reconcileSessions,
+      );
 
       // Clean up cached messages for deleted session
-      msgCacheRef.current.delete(sessionId);
+      overlayRef.current.delete(sessionId);
     },
-    [canvasId, streaming],
+    [canvasId, queryClient, sessionsKey, streaming],
   );
 
   // ── Auto-title first message ──
@@ -364,24 +435,38 @@ export function useChatSessions({
         return;
       }
       try {
-        const msgRes = await fetchMessages(accessTokenRef.current, sessionId);
-        const mapped = mapServerMessages(msgRes.messages ?? []);
-        const next = mergeReloadedMessages(
-          mapped,
-          msgCacheRef.current.get(sessionId) ?? [],
-          preserveLocalMessageIds,
+        const existing = overlayRef.current.get(sessionId) ?? [];
+        overlayRef.current.set(
+          sessionId,
+          existing.filter((message) => preserveLocalMessageIds.has(message.id)),
         );
-        msgCacheRef.current.set(sessionId, next);
-        // Only update React state if the session is still active
-        // (user may have switched sessions during the async fetch)
-        if (activeSessionIdRef.current === sessionId) {
-          setMessages(next);
+        if (sessionId === activeSessionIdRef.current) {
+          setMessagesLoading(true);
+          try {
+            await messagesQuery.refetch();
+          } finally {
+            setMessagesLoading(false);
+          }
+        } else if (userId && workspaceId) {
+          await queryClient.resetQueries({
+            queryKey: queryKeys.workspace.chatMessages(
+              userId,
+              workspaceId,
+              canvasId,
+              sessionId,
+              { limit: 30 },
+            ),
+            exact: true,
+          });
         }
-      } catch (err) {
-        console.warn("[chat] Failed to reload messages on reconnect:", err);
+      } catch {
+        console.warn("[chat.query] reconnect_reload_failed", {
+          canvasId,
+          sessionId,
+        });
       }
     },
-    [],
+    [canvasId, messagesQuery.refetch, queryClient, userId, workspaceId],
   );
 
   return {
@@ -393,6 +478,12 @@ export function useChatSessions({
     setMessages,
     sessionsLoading,
     messagesLoading,
+    hasOlderSessions: sessionsQuery.hasNextPage,
+    loadingOlderSessions: sessionsQuery.isFetchingNextPage,
+    loadOlderSessions: sessionsQuery.fetchNextPage,
+    hasOlderMessages: messagesQuery.hasNextPage,
+    loadingOlderMessages: messagesQuery.isFetchingNextPage,
+    loadOlderMessages: messagesQuery.fetchNextPage,
     streaming,
     setStreaming,
     updateSessionMessages,

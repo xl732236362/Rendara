@@ -145,7 +145,7 @@ export function useChatMessagesInfiniteQuery(
           { limit },
         )
       : queryKeys.disabled("chat-messages"),
-    enabled: Boolean(workspaceId),
+    enabled: Boolean(workspaceId && sessionId),
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam, signal }) =>
       fetchChatMessagesPage(
