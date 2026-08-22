@@ -2,9 +2,12 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 
 import {
   applicationErrorResponseSchema,
+  createCursorPageSchema,
+  paginationQuerySchema,
   projectCreateRequestSchema,
   projectCreateResponseSchema,
   projectListResponseSchema,
+  projectSummarySchema,
   projectUpdateRequestSchema,
   unauthenticatedErrorResponseSchema,
 } from "@loomic/shared";
@@ -21,6 +24,8 @@ import {
   throwLegacyServiceError,
 } from "./route-errors.js";
 
+const projectPageSchema = createCursorPageSchema(projectSummarySchema);
+
 export async function registerProjectRoutes(
   app: FastifyInstance,
   options: {
@@ -28,6 +33,15 @@ export async function registerProjectRoutes(
     projectService: ProjectService;
   },
 ) {
+  app.get("/api/v2/projects", async (request, reply) => {
+    const user = await options.auth.authenticate(request);
+    if (!user) return sendUnauthenticated();
+
+    const query = parseRequest(paginationQuerySchema, request.query);
+    const page = await options.projectService.listProjectsPage(user, query);
+    return reply.code(200).send(projectPageSchema.parse(page));
+  });
+
   app.get("/api/projects/:projectId", async (request, reply) => {
     const user = await options.auth.authenticate(request);
 
@@ -176,5 +190,17 @@ export async function registerProjectRoutes(
 
       return reply.code(200).send(result);
     },
+  );
+}
+
+function sendUnauthenticated(): never {
+  return raiseBoundaryError(
+    {
+      error: {
+        code: "unauthorized",
+        message: "Missing or invalid bearer token.",
+      },
+    },
+    401,
   );
 }

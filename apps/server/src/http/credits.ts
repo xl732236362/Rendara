@@ -6,8 +6,11 @@ import {
   PLAN_CONFIGS,
   applicationErrorResponseSchema,
   claimDailyResponseSchema,
+  createCursorPageSchema,
   creditBalanceResponseSchema,
+  creditTransactionSchema,
   creditTransactionsResponseSchema,
+  paginationQuerySchema,
   setPlanRequestSchema,
   unauthenticatedErrorResponseSchema,
 } from "@loomic/shared";
@@ -27,6 +30,9 @@ import {
 const creditTransactionsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
+const creditTransactionPageSchema = createCursorPageSchema(
+  creditTransactionSchema,
+);
 
 export async function registerCreditRoutes(
   app: FastifyInstance,
@@ -36,6 +42,20 @@ export async function registerCreditRoutes(
     viewerService: ViewerService;
   },
 ) {
+  app.get("/api/v2/credits/transactions", async (request, reply) => {
+    const user = await options.auth.authenticate(request);
+    if (!user) return sendUnauthenticated(reply);
+
+    const query = parseRequest(paginationQuerySchema, request.query);
+    const viewer = await options.viewerService.ensureViewer(user);
+    const page = await options.creditService.listTransactionsPage(
+      viewer.workspace.id,
+      user.id,
+      query,
+    );
+    return reply.code(200).send(creditTransactionPageSchema.parse(page));
+  });
+
   // GET /api/credits — balance info
   app.get("/api/credits", async (request, reply) => {
     const user = await options.auth.authenticate(request);

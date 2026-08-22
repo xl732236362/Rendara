@@ -8,10 +8,14 @@ import {
   brandKitCreateRequestSchema,
   brandKitDetailResponseSchema,
   brandKitListResponseSchema,
+  brandKitSummarySchema,
   brandKitUpdateRequestSchema,
+  createCursorPageSchema,
+  paginationQuerySchema,
   unauthenticatedErrorResponseSchema,
 } from "@loomic/shared";
 
+import type { ViewerService } from "../features/bootstrap/ensure-user-foundation.js";
 import {
   type BrandKitService,
   BrandKitServiceError,
@@ -31,6 +35,7 @@ const ALLOWED_UPLOAD_MIME_TYPES = new Set([
   "image/gif",
   "image/svg+xml",
 ]);
+const brandKitPageSchema = createCursorPageSchema(brandKitSummarySchema);
 
 type BrandKitErrorFallbackCode =
   | "brand_kit_not_found"
@@ -46,8 +51,23 @@ export async function registerBrandKitRoutes(
   options: {
     auth: RequestAuthenticator;
     brandKitService: BrandKitService;
+    viewerService: ViewerService;
   },
 ) {
+  app.get("/api/v2/brand-kits", async (request, reply) => {
+    const user = await options.auth.authenticate(request);
+    if (!user) return sendUnauthenticated(reply);
+
+    const query = parseRequest(paginationQuerySchema, request.query);
+    const viewer = await options.viewerService.ensureViewer(user);
+    const page = await options.brandKitService.listKitsPage(
+      user,
+      viewer.workspace.id,
+      query,
+    );
+    return reply.code(200).send(brandKitPageSchema.parse(page));
+  });
+
   // GET /api/brand-kits — list kits
   app.get("/api/brand-kits", async (request, reply) => {
     const user = await options.auth.authenticate(request);

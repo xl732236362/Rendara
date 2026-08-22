@@ -135,6 +135,7 @@ import { registerUploadRoutes } from "./http/uploads.js";
 import { registerVideoModelRoutes } from "./http/video-models.js";
 import { registerViewerRoutes } from "./http/viewer.js";
 import { sanitizeRequestUrl } from "./logging/sanitize-log-data.js";
+import { createCursorCodec } from "./pagination/cursor-codec.js";
 import { createPgmqClient } from "./queue/pgmq-client.js";
 import { registerRateLimiting } from "./security/rate-limit.js";
 import {
@@ -383,11 +384,27 @@ export function buildAppFromEnv(
     });
   const viewerService =
     options.viewerService ?? createViewerService({ getAdminClient });
+  const cursorCodec = createCursorCodec({
+    activeKey: {
+      keyId: env.paginationCursorActiveKeyId as string,
+      secret: env.paginationCursorActiveKey as string,
+    },
+    ...(env.paginationCursorPreviousKeyId && env.paginationCursorPreviousKey
+      ? {
+          previousKey: {
+            keyId: env.paginationCursorPreviousKeyId,
+            secret: env.paginationCursorPreviousKey,
+          },
+        }
+      : {}),
+    now: Date.now,
+  });
   const projectService =
     options.projectService ??
-    createProjectService({ createUserClient, viewerService });
+    createProjectService({ createUserClient, cursorCodec, viewerService });
   const brandKitService =
-    options.brandKitService ?? createBrandKitService({ createUserClient });
+    options.brandKitService ??
+    createBrandKitService({ createUserClient, cursorCodec });
   const canvasService =
     options.canvasService ??
     createCanvasService({ createUserClient, getAdminClient });
@@ -395,7 +412,7 @@ export function buildAppFromEnv(
     options.threadService ?? createThreadService({ createUserClient });
   const chatService =
     options.chatService ??
-    createChatService({ createUserClient, threadService });
+    createChatService({ createUserClient, cursorCodec, threadService });
   const agentRunMetadataService =
     options.agentRunMetadataService ??
     createAgentRunMetadataService({ getAdminClient });
@@ -445,7 +462,8 @@ export function buildAppFromEnv(
     options.jobService ??
     (pgmq ? createJobService({ createUserClient, getAdminClient }) : undefined);
   const creditService =
-    options.creditService ?? createCreditService({ getAdminClient });
+    options.creditService ??
+    createCreditService({ cursorCodec, getAdminClient });
   const tierGuard = options.tierGuard ?? createTierGuard({ getAdminClient });
   const toAuthenticatedUser = (principal: {
     userId: string;
@@ -891,6 +909,7 @@ export function buildAppFromEnv(
   void registerBrandKitRoutes(app, {
     auth,
     brandKitService,
+    viewerService,
   });
   void registerProjectRoutes(app, {
     auth,

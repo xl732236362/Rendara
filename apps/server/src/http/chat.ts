@@ -4,8 +4,12 @@ import { z } from "zod";
 import {
   applicationErrorResponseSchema,
   chatMessageCreateRequestSchema,
+  chatMessageSchema,
+  chatSessionSummarySchema,
+  createCursorPageSchema,
   messageCreateResponseSchema,
   messageListResponseSchema,
+  paginationQuerySchema,
   sessionCreateResponseSchema,
   sessionListResponseSchema,
   unauthenticatedErrorResponseSchema,
@@ -26,6 +30,8 @@ import {
 const sessionTitleRequestSchema = z.object({
   title: z.string().trim().min(1).optional(),
 });
+const chatSessionPageSchema = createCursorPageSchema(chatSessionSummarySchema);
+const chatMessagePageSchema = createCursorPageSchema(chatMessageSchema);
 
 export async function registerChatRoutes(
   app: FastifyInstance,
@@ -34,6 +40,40 @@ export async function registerChatRoutes(
     chatService: ChatService;
   },
 ) {
+  app.get<{ Params: { canvasId: string } }>(
+    "/api/v2/canvases/:canvasId/sessions",
+    async (request, reply) => {
+      const user = await options.auth.authenticate(request);
+      if (!user) return sendUnauthorized(reply);
+
+      const query = parseRequest(paginationQuerySchema, request.query);
+      const { canvasId } = parseStringParams(request.params, ["canvasId"]);
+      const page = await options.chatService.listSessionsPage(
+        user,
+        canvasId,
+        query,
+      );
+      return reply.code(200).send(chatSessionPageSchema.parse(page));
+    },
+  );
+
+  app.get<{ Params: { sessionId: string } }>(
+    "/api/v2/sessions/:sessionId/messages",
+    async (request, reply) => {
+      const user = await options.auth.authenticate(request);
+      if (!user) return sendUnauthorized(reply);
+
+      const query = parseRequest(paginationQuerySchema, request.query);
+      const { sessionId } = parseStringParams(request.params, ["sessionId"]);
+      const page = await options.chatService.listMessagesPage(
+        user,
+        sessionId,
+        query,
+      );
+      return reply.code(200).send(chatMessagePageSchema.parse(page));
+    },
+  );
+
   // List sessions for a canvas
   app.get<{ Params: { canvasId: string } }>(
     "/api/canvases/:canvasId/sessions",
