@@ -41,17 +41,25 @@ export const phase6ACollectionRouteInventory = Object.freeze([
   gapRoute("/api/credits/transactions", "apps/server/src/http/credits.ts"),
   gapRoute("/api/canvases/:canvasId/sessions", "apps/server/src/http/chat.ts"),
   gapRoute("/api/sessions/:sessionId/messages", "apps/server/src/http/chat.ts"),
-  boundedRoute(
-    "/api/jobs",
-    "apps/server/src/http/jobs.ts",
-    50,
-    "apps/server/src/features/jobs/job-service.ts#call:limit",
-  ),
+  boundedRoute("/api/jobs", "apps/server/src/http/jobs.ts", 50, {
+    ownerFile: "apps/server/src/features/jobs/job-service.ts",
+    ownerExport: "createJobService",
+    method: "listJobs",
+    kind: "call",
+    member: "limit",
+  }),
   boundedRoute(
     "/api/canvases/:canvasId/generated-asset-attachments",
     "apps/server/src/http/jobs.ts",
     100,
-    "apps/server/src/features/canvas/generated-asset-application-adapter.ts#property:limit",
+    {
+      ownerFile:
+        "apps/server/src/features/canvas/generated-asset-application-adapter.ts",
+      ownerExport: "createGeneratedAssetAttachmentRecoveryPort",
+      method: "listOutstanding",
+      kind: "property",
+      member: "limit",
+    },
   ),
   gapRoute("/api/fonts", "apps/server/src/http/fonts.ts"),
   gapRoute("/api/models", "apps/server/src/http/models.ts"),
@@ -158,13 +166,14 @@ function cursorRoute(pathname, file) {
   });
 }
 
-function boundedRoute(pathname, file, cap, implementationEvidence) {
+function boundedRoute(pathname, file, cap, capContract) {
   return Object.freeze({
     path: pathname,
     file,
     classification: "bounded",
     cap,
-    implementationEvidence,
+    capContract: Object.freeze(capContract),
+    implementationEvidence: `${capContract.ownerFile}#${capContract.ownerExport}.${capContract.method}:${capContract.kind}:${capContract.member}`,
   });
 }
 
@@ -325,14 +334,13 @@ function scanRawQueryKeys(context) {
 function isProvenQueryFactoryExpression(expression, context, seen = new Set()) {
   const current = unwrapExpression(expression);
   if (!current) return false;
-  if (ts.isIdentifier(current) && context.bindings.has(current.text)) {
-    if (seen.has(current.text)) return false;
-    seen.add(current.text);
-    return isProvenQueryFactoryExpression(
-      context.bindings.get(current.text),
-      context,
-      seen,
-    );
+  if (ts.isIdentifier(current)) {
+    const binding = resolveIdentifierBinding(current, context);
+    if (binding?.initializer) {
+      if (seen.has(binding.node)) return false;
+      seen.add(binding.node);
+      return isProvenQueryFactoryExpression(binding.initializer, context, seen);
+    }
   }
   if (ts.isIdentifier(current)) {
     return isProvenQueryKeyParameter(current, context, seen);
@@ -371,7 +379,7 @@ function isProvenQueryFactoryExpression(expression, context, seen = new Set()) {
 function isAuthoritativeQueryKeyAccess(expression, context) {
   const access = rootAccess(expression);
   if (!access) return false;
-  const origin = resolveImportOrigin(access.root, access.members, context);
+  const origin = resolveImportOrigin(access.rootNode, access.members, context);
   return (
     origin?.modulePath === "apps/web/src/lib/query/keys.ts" &&
     origin.exportName === "queryKeys"
@@ -510,7 +518,7 @@ function capturesTaintedBinding(factory, context) {
     if (
       ts.isIdentifier(node) &&
       !localNames.has(node.text) &&
-      context.taintedBindings.has(node.text)
+      isTaintedIdentifier(node, context)
     ) {
       captured = true;
       return;
@@ -592,24 +600,23 @@ function evaluateStaticString(expression, context, seen = new Set()) {
   const current = unwrapExpression(expression);
   if (!current)
     return { known: false, hasApiFragment: false, hasV2Binding: false };
-  if (ts.isIdentifier(current) && context.bindings.has(current.text)) {
-    if (seen.has(current.text)) {
+  if (ts.isIdentifier(current)) {
+    const binding = resolveIdentifierBinding(current, context);
+    if (binding?.initializer) {
+      if (seen.has(binding.node)) {
+        return {
+          known: false,
+          hasApiFragment: false,
+          hasV2Binding: /v2/i.test(current.text),
+        };
+      }
+      seen.add(binding.node);
+      const result = evaluateStaticString(binding.initializer, context, seen);
       return {
-        known: false,
-        hasApiFragment: false,
-        hasV2Binding: /v2/i.test(current.text),
+        ...result,
+        hasV2Binding: result.hasV2Binding || /v2/i.test(current.text),
       };
     }
-    seen.add(current.text);
-    const result = evaluateStaticString(
-      context.bindings.get(current.text),
-      context,
-      seen,
-    );
-    return {
-      ...result,
-      hasV2Binding: result.hasV2Binding || /v2/i.test(current.text),
-    };
   }
   if (
     ts.isStringLiteral(current) ||
@@ -744,10 +751,11 @@ function scanMutationRetries(context) {
 }
 
 function resolveCommandOrigin(expression, context) {
+  if (!expression) return undefined;
   const resolved = resolveExpression(expression, context);
   const access = rootAccess(resolved);
   if (!access) return undefined;
-  return resolveImportOrigin(access.root, access.members, context);
+  return resolveImportOrigin(access.rootNode, access.members, context);
 }
 
 function isCallNamed(expression, name) {
@@ -793,16 +801,17 @@ function discoverGetRoutesInContext(context) {
   function visit(node) {
     if (ts.isCallExpression(node)) {
       const propertyCall = ts.isPropertyAccessExpression(node.expression);
-      const receiver = propertyCall
-        ? callRootIdentifier(node.expression.expression)
+      const receiverAccess = propertyCall
+        ? rootAccess(node.expression.expression)
         : undefined;
       const methodName = propertyCall
         ? node.expression.name.text
         : ts.isIdentifier(node.expression)
-          ? context.fastifyMethods.get(node.expression.text)
+          ? fastifyMethodForIdentifier(node.expression, context)
           : undefined;
       const fastifyCall = propertyCall
-        ? receiver !== undefined && context.fastifyBindings.has(receiver)
+        ? receiverAccess !== undefined &&
+          isFastifyReceiver(receiverAccess.rootNode, context)
         : methodName !== undefined;
       if (fastifyCall) {
         if (methodName === "get") {
@@ -839,6 +848,18 @@ function discoverGetRoutesInContext(context) {
   }
   visit(context.sourceFile);
   return routes;
+}
+
+function isFastifyReceiver(identifier, context) {
+  const binding = resolveIdentifierBinding(identifier, context);
+  return binding ? context.fastifyBindingDeclarations.has(binding.node) : false;
+}
+
+function fastifyMethodForIdentifier(identifier, context) {
+  const binding = resolveIdentifierBinding(identifier, context);
+  return binding
+    ? context.fastifyMethodDeclarations.get(binding.node)
+    : undefined;
 }
 
 function evaluateHttpMethods(expression, context) {
@@ -966,38 +987,172 @@ function createPhase6AContext(filePath, sourceFile, sourceGraph) {
     ts.forEachChild(node, visit);
   }
   visit(sourceFile);
-  const context = { filePath, sourceFile, bindings, sourceGraph };
-  context.taintedBindings = computeTaintedBindings(
+  const context = {
+    filePath,
+    sourceFile,
     bindings,
+    lexicalBindings: createLexicalBindings(sourceFile),
+    sourceGraph,
+  };
+  context.taintedBindingDeclarations = computeTaintedBindings(
     parameters,
     taintSeeds,
     context,
   );
-  const fastify = computeFastifyProvenance(sourceFile);
-  context.fastifyBindings = fastify.bindings;
-  context.fastifyMethods = fastify.methods;
+  const fastify = computeFastifyProvenance(sourceFile, context);
+  context.fastifyBindingDeclarations = fastify.bindings;
+  context.fastifyMethodDeclarations = fastify.methods;
   return context;
 }
 
-function computeTaintedBindings(bindings, parameters, taintSeeds, context) {
-  const tainted = new Set(taintSeeds);
+function createLexicalBindings(sourceFile) {
+  const scopes = new Map();
+  function scopeMap(scope) {
+    let map = scopes.get(scope);
+    if (!map) {
+      map = new Map();
+      scopes.set(scope, map);
+    }
+    return map;
+  }
+  function enclosingScope(node) {
+    let current = node.parent;
+    while (current) {
+      if (
+        ts.isSourceFile(current) ||
+        ts.isBlock(current) ||
+        ts.isCatchClause(current) ||
+        ts.isArrowFunction(current) ||
+        ts.isFunctionExpression(current) ||
+        ts.isFunctionDeclaration(current)
+      ) {
+        return current;
+      }
+      current = current.parent;
+    }
+    return sourceFile;
+  }
+  function declare(nameNode, record, scope) {
+    for (const name of bindingIdentifiers(nameNode)) {
+      scopeMap(scope).set(name, { ...record, name });
+    }
+  }
+  function visit(node) {
+    if (ts.isImportDeclaration(node)) {
+      const clause = node.importClause;
+      if (clause?.name) {
+        declare(
+          clause.name,
+          {
+            kind: "import",
+            node: clause.name,
+            importKind: "default",
+            declaration: node,
+          },
+          sourceFile,
+        );
+      }
+      const named = clause?.namedBindings;
+      if (named && ts.isNamedImports(named)) {
+        for (const element of named.elements) {
+          declare(
+            element.name,
+            {
+              kind: "import",
+              node: element.name,
+              importKind: "named",
+              exportName: element.propertyName?.text ?? element.name.text,
+              declaration: node,
+            },
+            sourceFile,
+          );
+        }
+      } else if (named && ts.isNamespaceImport(named)) {
+        declare(
+          named.name,
+          {
+            kind: "import",
+            node: named.name,
+            importKind: "namespace",
+            declaration: node,
+          },
+          sourceFile,
+        );
+      }
+    }
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      declare(
+        node.name,
+        { kind: "variable", node: node.name, initializer: node.initializer },
+        enclosingScope(node),
+      );
+    }
+    if (ts.isFunctionDeclaration(node) && node.name) {
+      declare(
+        node.name,
+        { kind: "function", node: node.name, initializer: node },
+        enclosingScope(node),
+      );
+    }
+    if (ts.isParameter(node)) {
+      const owner = node.parent;
+      declare(node.name, { kind: "parameter", node: node.name }, owner);
+    }
+    if (ts.isCatchClause(node) && node.variableDeclaration) {
+      declare(
+        node.variableDeclaration.name,
+        { kind: "catch", node: node.variableDeclaration.name },
+        node,
+      );
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+  return scopes;
+}
+
+function resolveIdentifierBinding(identifier, context) {
+  if (!identifier || !ts.isIdentifier(identifier)) return undefined;
+  let current = identifier.parent;
+  while (current) {
+    const binding = context.lexicalBindings?.get(current)?.get(identifier.text);
+    if (binding) return binding;
+    current = current.parent;
+  }
+  return undefined;
+}
+
+function computeTaintedBindings(parameters, taintSeeds, context) {
+  const records = [
+    ...new Set(
+      [...context.lexicalBindings.values()].flatMap((scope) => [
+        ...scope.values(),
+      ]),
+    ),
+  ];
+  const tainted = new Set();
+  for (const record of records) {
+    if (taintSeeds.has(record.name) || isScopedIdentityName(record.name)) {
+      tainted.add(record.node);
+    }
+  }
   for (const parameter of parameters) {
     const typeText = parameter.type?.getText(context.sourceFile) ?? "";
     const names = bindingIdentifiers(parameter.name);
     if (names.some(isScopedIdentityName) || isScopedIdentityName(typeText)) {
-      for (const name of names) tainted.add(name);
+      for (const node of bindingIdentifierNodes(parameter.name)) {
+        const binding = resolveIdentifierBinding(node, context);
+        if (binding) tainted.add(binding.node);
+      }
     }
-  }
-  for (const name of bindings.keys()) {
-    if (isScopedIdentityName(name)) tainted.add(name);
   }
   let changed = true;
   while (changed) {
     changed = false;
-    for (const [name, initializer] of bindings) {
-      if (tainted.has(name)) continue;
-      if (expressionReferencesTaint(initializer, tainted)) {
-        tainted.add(name);
+    for (const record of records) {
+      if (tainted.has(record.node) || !record.initializer) continue;
+      if (expressionReferencesTaint(record.initializer, tainted, context)) {
+        tainted.add(record.node);
         changed = true;
       }
     }
@@ -1018,13 +1173,25 @@ function bindingIdentifiers(name) {
   return names;
 }
 
-function computeFastifyProvenance(sourceFile) {
+function bindingIdentifierNodes(name) {
+  if (ts.isIdentifier(name)) return [name];
+  if (!ts.isObjectBindingPattern(name) && !ts.isArrayBindingPattern(name)) {
+    return [];
+  }
+  const nodes = [];
+  for (const element of name.elements) {
+    if (ts.isOmittedExpression(element)) continue;
+    nodes.push(...bindingIdentifierNodes(element.name));
+  }
+  return nodes;
+}
+
+function computeFastifyProvenance(sourceFile, context) {
   const bindings = new Set();
   const methods = new Map();
   const directFactories = new Set();
   const factoryNamespaces = new Set();
   const pluginTypes = new Set(["FastifyPluginAsync", "FastifyPluginCallback"]);
-  const callbackBindings = new Map();
   for (const statement of sourceFile.statements) {
     if (
       !ts.isImportDeclaration(statement) ||
@@ -1066,30 +1233,14 @@ function computeFastifyProvenance(sourceFile) {
       }
     }
   }
-  function collectCallbackBindings(node) {
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer
-    ) {
-      callbackBindings.set(node.name.text, node.initializer);
-    }
-    if (ts.isFunctionDeclaration(node) && node.name) {
-      callbackBindings.set(node.name.text, node);
-    }
-    ts.forEachChild(node, collectCallbackBindings);
-  }
-  collectCallbackBindings(sourceFile);
   function resolveCallback(expression, seen = new Set()) {
     let current = unwrapExpression(expression);
-    while (
-      current &&
-      ts.isIdentifier(current) &&
-      callbackBindings.has(current.text)
-    ) {
-      if (seen.has(current.text)) return undefined;
-      seen.add(current.text);
-      current = unwrapExpression(callbackBindings.get(current.text));
+    while (current && ts.isIdentifier(current)) {
+      const binding = resolveIdentifierBinding(current, context);
+      if (!binding?.initializer) return undefined;
+      if (seen.has(binding.node)) return undefined;
+      seen.add(binding.node);
+      current = unwrapExpression(binding.initializer);
     }
     return current &&
       (ts.isArrowFunction(current) ||
@@ -1103,9 +1254,10 @@ function computeFastifyProvenance(sourceFile) {
     const parameter = callback?.parameters[0];
     if (!parameter) return false;
     let added = false;
-    for (const name of bindingIdentifiers(parameter.name)) {
-      if (!bindings.has(name)) {
-        bindings.add(name);
+    for (const node of bindingIdentifierNodes(parameter.name)) {
+      const binding = resolveIdentifierBinding(node, context);
+      if (binding && !bindings.has(binding.node)) {
+        bindings.add(binding.node);
         added = true;
       }
     }
@@ -1127,7 +1279,10 @@ function computeFastifyProvenance(sourceFile) {
     if (ts.isParameter(node)) {
       const typeText = node.type?.getText(sourceFile) ?? "";
       if (/\bFastifyInstance\b/.test(typeText)) {
-        for (const name of bindingIdentifiers(node.name)) bindings.add(name);
+        for (const identifier of bindingIdentifierNodes(node.name)) {
+          const binding = resolveIdentifierBinding(identifier, context);
+          if (binding) bindings.add(binding.node);
+        }
       }
     }
     if (
@@ -1137,7 +1292,8 @@ function computeFastifyProvenance(sourceFile) {
       ts.isCallExpression(unwrapExpression(node.initializer)) &&
       isFastifyFactory(unwrapExpression(node.initializer).expression)
     ) {
-      bindings.add(node.name.text);
+      const binding = resolveIdentifierBinding(node.name, context);
+      if (binding) bindings.add(binding.node);
     }
     if (
       ts.isVariableDeclaration(node) &&
@@ -1155,32 +1311,48 @@ function computeFastifyProvenance(sourceFile) {
     changed = false;
     function visitAliases(node) {
       if (ts.isVariableDeclaration(node) && node.initializer) {
-        const root = callRootIdentifier(node.initializer);
-        if (root && bindings.has(root)) {
-          if (ts.isIdentifier(node.name) && !bindings.has(node.name.text)) {
-            bindings.add(node.name.text);
-            changed = true;
+        const root = rootAccess(node.initializer)?.rootNode;
+        const rootBinding = root
+          ? resolveIdentifierBinding(root, context)
+          : undefined;
+        if (rootBinding && bindings.has(rootBinding.node)) {
+          if (ts.isIdentifier(node.name)) {
+            const aliasBinding = resolveIdentifierBinding(node.name, context);
+            if (aliasBinding && !bindings.has(aliasBinding.node)) {
+              bindings.add(aliasBinding.node);
+              changed = true;
+            }
           }
           if (ts.isObjectBindingPattern(node.name)) {
             for (const element of node.name.elements) {
               const importedMethod = propertyName(
                 element.propertyName ?? element.name,
               );
-              for (const localName of bindingIdentifiers(element.name)) {
+              for (const localNode of bindingIdentifierNodes(element.name)) {
+                const localBinding = resolveIdentifierBinding(
+                  localNode,
+                  context,
+                );
                 if (
+                  localBinding &&
                   (importedMethod === "get" || importedMethod === "route") &&
-                  methods.get(localName) !== importedMethod
+                  methods.get(localBinding.node) !== importedMethod
                 ) {
-                  methods.set(localName, importedMethod);
+                  methods.set(localBinding.node, importedMethod);
                   changed = true;
                 }
               }
             }
           }
-        } else if (ts.isIdentifier(node.name) && root && methods.has(root)) {
-          const method = methods.get(root);
-          if (methods.get(node.name.text) !== method) {
-            methods.set(node.name.text, method);
+        } else if (
+          ts.isIdentifier(node.name) &&
+          rootBinding &&
+          methods.has(rootBinding.node)
+        ) {
+          const method = methods.get(rootBinding.node);
+          const aliasBinding = resolveIdentifierBinding(node.name, context);
+          if (aliasBinding && methods.get(aliasBinding.node) !== method) {
+            methods.set(aliasBinding.node, method);
             changed = true;
           }
         }
@@ -1190,10 +1362,13 @@ function computeFastifyProvenance(sourceFile) {
         ts.isPropertyAccessExpression(node.expression) &&
         node.expression.name.text === "register"
       ) {
-        const receiver = callRootIdentifier(node.expression.expression);
+        const receiver = rootAccess(node.expression.expression)?.rootNode;
+        const receiverBinding = receiver
+          ? resolveIdentifierBinding(receiver, context)
+          : undefined;
         if (
-          receiver &&
-          bindings.has(receiver) &&
+          receiverBinding &&
+          bindings.has(receiverBinding.node) &&
           seedCallbackReceiver(node.arguments[0])
         ) {
           changed = true;
@@ -1215,12 +1390,13 @@ function typeReferenceRoot(typeNode) {
   return ts.isIdentifier(name) ? name.text : undefined;
 }
 
-function expressionReferencesTaint(expression, tainted) {
+function expressionReferencesTaint(expression, tainted, context) {
   let found = false;
   function visit(node) {
     if (
       ts.isIdentifier(node) &&
-      (tainted.has(node.text) || isScopedIdentityName(node.text))
+      (isTaintedIdentifier(node, context, tainted) ||
+        isScopedIdentityName(node.text))
     ) {
       found = true;
       return;
@@ -1231,6 +1407,15 @@ function expressionReferencesTaint(expression, tainted) {
   return found;
 }
 
+function isTaintedIdentifier(
+  identifier,
+  context,
+  tainted = context.taintedBindingDeclarations,
+) {
+  const binding = resolveIdentifierBinding(identifier, context);
+  return binding ? tainted.has(binding.node) : false;
+}
+
 function isScopedIdentityName(name) {
   return /(?:auth|viewer|user|workspace|session|canvas|owner|identity|scope)/i.test(
     name,
@@ -1239,49 +1424,41 @@ function isScopedIdentityName(name) {
 
 function rootAccess(expression) {
   let current = unwrapExpression(expression);
+  if (!current) return undefined;
   const members = [];
   while (ts.isPropertyAccessExpression(current)) {
     members.unshift(current.name.text);
     current = unwrapExpression(current.expression);
   }
-  return ts.isIdentifier(current) ? { root: current.text, members } : undefined;
+  return ts.isIdentifier(current)
+    ? { root: current.text, rootNode: current, members }
+    : undefined;
 }
 
-function resolveImportOrigin(localName, members, context) {
-  for (const statement of context.sourceFile.statements) {
-    if (!ts.isImportDeclaration(statement)) continue;
-    const moduleSpecifier = statement.moduleSpecifier;
-    if (!ts.isStringLiteral(moduleSpecifier)) continue;
-    const modulePath = resolveModulePath(
-      context.filePath,
-      moduleSpecifier.text,
+function resolveImportOrigin(rootNode, members, context) {
+  const binding = resolveIdentifierBinding(rootNode, context);
+  if (binding?.kind !== "import") return undefined;
+  const moduleSpecifier = binding.declaration.moduleSpecifier;
+  if (!ts.isStringLiteral(moduleSpecifier)) return undefined;
+  const modulePath = resolveModulePath(
+    context.filePath,
+    moduleSpecifier.text,
+    context.sourceGraph,
+  );
+  if (binding.importKind === "default") {
+    return resolveExportOrigin(modulePath, "default", context.sourceGraph);
+  }
+  if (binding.importKind === "named") {
+    return resolveExportOrigin(
+      modulePath,
+      binding.exportName,
       context.sourceGraph,
     );
-    const importClause = statement.importClause;
-    if (importClause?.name?.text === localName) {
-      return resolveExportOrigin(modulePath, "default", context.sourceGraph);
-    }
-    const bindings = importClause?.namedBindings;
-    if (bindings && ts.isNamedImports(bindings)) {
-      const element = bindings.elements.find(
-        (candidate) => candidate.name.text === localName,
-      );
-      if (element) {
-        const exportName = element.propertyName?.text ?? element.name.text;
-        return resolveExportOrigin(modulePath, exportName, context.sourceGraph);
-      }
-    }
-    if (
-      bindings &&
-      ts.isNamespaceImport(bindings) &&
-      bindings.name.text === localName
-    ) {
-      const [exportName] = members;
-      if (!exportName) return undefined;
-      return resolveExportOrigin(modulePath, exportName, context.sourceGraph);
-    }
   }
-  return undefined;
+  const [exportName] = members;
+  return exportName
+    ? resolveExportOrigin(modulePath, exportName, context.sourceGraph)
+    : undefined;
 }
 
 function resolveExportOrigin(
@@ -1346,14 +1523,12 @@ function resolveModulePath(importerPath, moduleSpecifier, sourceGraph) {
 
 function resolveExpression(expression, context, seen = new Set()) {
   let current = unwrapExpression(expression);
-  while (
-    current &&
-    ts.isIdentifier(current) &&
-    context.bindings.has(current.text)
-  ) {
-    if (seen.has(current.text)) return current;
-    seen.add(current.text);
-    current = unwrapExpression(context.bindings.get(current.text));
+  while (current && ts.isIdentifier(current)) {
+    const binding = resolveIdentifierBinding(current, context);
+    if (!binding?.initializer) break;
+    if (seen.has(binding.node)) return current;
+    seen.add(binding.node);
+    current = unwrapExpression(binding.initializer);
   }
   return current;
 }
@@ -1483,33 +1658,58 @@ function isCursorCollectionHandler(handler) {
 }
 
 function verifyBoundedEvidence(entry, sourceByPath) {
-  const [filePath, evidence] = entry.implementationEvidence.split("#");
+  const contract = entry.capContract;
+  if (!contract) return `${entry.path} has no structured cap contract`;
+  const filePath = contract.ownerFile;
   const source = sourceByPath.get(filePath);
   if (!source) return `${entry.path} evidence source is missing: ${filePath}`;
   const sourceFile = parseSourceFile(source, filePath);
-  const [kind, name] = evidence.split(":");
   let matched = false;
-  function visit(node) {
+  function inspectMethod(node) {
     if (
-      kind === "call" &&
+      contract.kind === "call" &&
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
-      node.expression.name.text === name &&
+      node.expression.name.text === contract.member &&
       numericLiteralValue(node.arguments[0]) === entry.cap
     ) {
       matched = true;
     }
     if (
-      kind === "property" &&
+      contract.kind === "property" &&
       ts.isPropertyAssignment(node) &&
-      propertyName(node.name) === name &&
+      propertyName(node.name) === contract.member &&
       numericLiteralValue(node.initializer) === entry.cap
     ) {
       matched = true;
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, inspectMethod);
   }
-  visit(sourceFile);
+  function visitOwner(node, insideOwner = false) {
+    const isOwner =
+      ts.isFunctionDeclaration(node) &&
+      node.name?.text === contract.ownerExport &&
+      node.modifiers?.some(
+        (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+      );
+    const owner = insideOwner || isOwner;
+    if (
+      owner &&
+      ((ts.isMethodDeclaration(node) &&
+        propertyName(node.name) === contract.method) ||
+        (ts.isPropertyAssignment(node) &&
+          propertyName(node.name) === contract.method &&
+          (ts.isArrowFunction(node.initializer) ||
+            ts.isFunctionExpression(node.initializer))) ||
+        (ts.isMethodSignature(node) &&
+          propertyName(node.name) === contract.method))
+    ) {
+      inspectMethod(node);
+      return;
+    }
+    ts.forEachChild(node, (child) => visitOwner(child, owner));
+  }
+  visitOwner(sourceFile);
   return matched
     ? undefined
     : `${entry.path} cap ${entry.cap} is not proven by ${entry.implementationEvidence}`;

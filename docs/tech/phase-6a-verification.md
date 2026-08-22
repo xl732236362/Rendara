@@ -2,7 +2,7 @@
 
 ## Verification context
 
-- Time: 2026-08-22 16:24-17:49 +08:00
+- Time: 2026-08-22 16:24-18:03 +08:00
 - Baseline HEAD: `96a4e5828de6`
 - Runtime: Windows, Node `v24.14.0`, pnpm `10.26.2`, Supabase CLI `2.115.0`, Docker Engine `29.6.1`
 - Local database: Supabase worktree stack on the checked-in ports; no persistent configuration changes
@@ -12,7 +12,7 @@
 
 | Command | Result | Exact evidence |
 | --- | --- | --- |
-| `pnpm ci:check` | exit 0 | lint 485 files, 0 errors and 506 historical warnings; typecheck 8/8 tasks; workspace 157/157; Config 34/34; Shared 69/69; Server 588 passed/10 skipped; Web 211/211; UI typecheck; build 5/5 packages and Web 14/14 static pages |
+| `pnpm ci:check` | exit 0 | lint 485 files, 0 errors and 506 historical warnings; typecheck 8/8 tasks; workspace 160/160; Config 34/34; Shared 69/69; Server 588 passed/10 skipped; Web 211/211; UI typecheck; build 5/5 packages and Web 14/14 static pages |
 | `pnpm exec supabase db reset --yes` | exit 0 | 48 checked-in migration files and 48 `Applying migration` records through `20260823000001_phase6a_pagination.sql`; exact set difference is empty; no seed file configured |
 | `pnpm exec supabase test db` | exit 0 | 8 pgTAP files, 212/212 tests |
 | `pnpm exec supabase db lint --level warning` | exit 0 | extensions/langgraph/private/public schemas, 0 findings |
@@ -21,7 +21,7 @@
 
 | Workspace/package | Tests | Typecheck | Build |
 | --- | --- | --- | --- |
-| Workspace invariants | 157 passed | n/a | n/a |
+| Workspace invariants | 160 passed | n/a | n/a |
 | `@loomic/config` | 34 passed | exit 0 | exit 0 |
 | `@loomic/shared` | 69 passed | exit 0 | exit 0 |
 | `@loomic/ui` | test delegates to typecheck, exit 0 | exit 0 | exit 0 |
@@ -34,7 +34,7 @@ The first integration diagnostic without `PHASE2_TEST_DATABASE_URL`, and a secon
 
 ## Focused evidence
 
-- Architecture TDD: the original gate first failed because `collectPhase6AArchitectureSources` was absent. First-review hardening added 13 bypass fixtures; that RED run passed 95 and failed 13. Second-review provenance, direct V2 request, SQL and unknown-GET fixtures produced a RED of 109 passed and 14 failed, followed by 125 passed and 3 failed for alias/owner/global forwarding. Third-review identity-taint, URL-evaluator and unified route-discovery fixtures produced 130 passed and 11 failed; indirect helper and aliased-auth-import propagation each produced a subsequent RED with one failure. Fourth-review destructuring, unresolved component URL, namespace-domain and Fastify-provenance fixtures produced 144 passed and 10 failed; a subsequent focused positive-provenance RED failed 0/1 on a local same-name `Fastify` factory. Fifth-review typed-plugin and nested-register contextual provenance produced 154 passed and 3 failed. The final workspace run passed 157/157, including 68 Phase 6A checks and a full production-source scan.
+- Architecture TDD: the original gate first failed because `collectPhase6AArchitectureSources` was absent. First-review hardening added 13 bypass fixtures; that RED run passed 95 and failed 13. Second-review provenance, direct V2 request, SQL and unknown-GET fixtures produced a RED of 109 passed and 14 failed, followed by 125 passed and 3 failed for alias/owner/global forwarding. Third-review identity-taint, URL-evaluator and unified route-discovery fixtures produced 130 passed and 11 failed; indirect helper and aliased-auth-import propagation each produced a subsequent RED with one failure. Fourth-review destructuring, unresolved component URL, namespace-domain and Fastify-provenance fixtures produced 144 passed and 10 failed; a subsequent focused positive-provenance RED failed 0/1 on a local same-name `Fastify` factory. Fifth-review typed-plugin and nested-register contextual provenance produced 154 passed and 3 failed. Sixth-review lexical shadowing, mutation diagnostic continuity, and bounded-cap decoy fixtures produced 157 passed and 3 failed. The final workspace run passed 160/160, including 71 Phase 6A checks and a full production-source scan.
 - Cursor rotation and wiring: `src/pagination/cursor-codec.test.ts` plus `src/app.env.test.ts` passed 55/55. This covers active/previous-key decoding, expiry/scope rejection, startup validation, redacted cursor logging, and composition wiring.
 - Legacy compatibility: five old list endpoints remain registered beside V2: projects, brand kits, credit transactions, chat sessions, and chat messages. Current Web collection owners use only the five cursor-paginated V2 endpoints.
 
@@ -42,7 +42,7 @@ The first integration diagnostic without `PHASE2_TEST_DATABASE_URL`, and a secon
 
 Inventory source: cursor=5, bounded=2, legacy-gap=9, total=16.
 
-The fail-closed GET inventory contains 29 registered production routes: the 16 collection routes above plus 13 explicitly justified singleton routes. One shared discovery pass resolves literal/const Fastify `.get` paths and `.route` GET method/path objects for both the scanner and inventory audit. Receiver provenance follows `FastifyInstance` parameters, `Fastify()` construction, typed `FastifyPluginAsync`/`FastifyPluginCallback` callbacks, nested `.register` callbacks, and lexical aliases instead of relying on the variable name `app`. Unknown or dynamic GET paths fail even when their service or SQL method name is unfamiliar.
+The fail-closed GET inventory contains 29 registered production routes: the 16 collection routes above plus 13 explicitly justified singleton routes. One shared discovery pass resolves literal/const Fastify `.get` paths and `.route` GET method/path objects for both the scanner and inventory audit. Receiver provenance follows `FastifyInstance` parameters, `Fastify()` construction, typed `FastifyPluginAsync`/`FastifyPluginCallback` callbacks, nested `.register` callbacks, and lexical aliases instead of relying on the variable name `app`. Identifier resolution uses the nearest source/function/block/catch declaration, so shadows cannot borrow import, URL, taint, callee, or receiver provenance from another scope. Bounded cap evidence is tied to an inventory-owned file/export/method/member contract instead of file-wide literals.
 
 | Class | Routes | Bound |
 | --- | --- | --- |

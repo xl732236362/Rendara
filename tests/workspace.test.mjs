@@ -1563,6 +1563,59 @@ test("phase 6A query factory provenance accepts authoritative imports only", () 
   assert.equal(forgedReexport[0]?.rule, "query-key-factory-boundary");
 });
 
+test("phase 6A lexical resolution respects shadowing and declaration order", () => {
+  const authoritativeKeys = 'import { queryKeys } from "../lib/query/keys";\n';
+  const cases = [
+    {
+      name: "later authoritative key cannot cover earlier raw key",
+      source: `${authoritativeKeys}function earlier() { const key = ["raw"]; useQuery({ queryKey: key }); }\nfunction later() { const key = queryKeys.workspace.projects(); useQuery({ queryKey: key }); }`,
+      rule: "query-key-factory-boundary",
+    },
+    {
+      name: "earlier authoritative key cannot hide later raw key",
+      source: `${authoritativeKeys}function earlier() { const key = queryKeys.workspace.projects(); useQuery({ queryKey: key }); }\nfunction later() { const key = ["raw"]; useQuery({ queryKey: key }); }`,
+      rule: "query-key-factory-boundary",
+    },
+    {
+      name: "later health URL cannot cover earlier V2 URL",
+      source:
+        'function earlier() { const url = "/api/v2/projects"; fetch(url); }\nfunction later() { const url = "/api/health"; fetch(url); }',
+      rule: "v2-fetch-ownership",
+    },
+    {
+      name: "earlier health URL cannot hide later V2 URL",
+      source:
+        'function earlier() { const url = "/api/health"; fetch(url); }\nfunction later() { const url = "/api/v2/projects"; fetch(url); }',
+      rule: "v2-fetch-ownership",
+    },
+    {
+      name: "parameter shadowing blocks imported queryKeys provenance",
+      source: `${authoritativeKeys}function Component(queryKeys: LocalKeys) { useQuery({ queryKey: queryKeys.workspace.projects() }); }`,
+      rule: "query-key-factory-boundary",
+    },
+  ];
+  for (const entry of cases) {
+    const findings = scanPhase6AArchitectureSources([
+      {
+        path: "apps/web/src/components/lexical.tsx",
+        source: entry.source,
+      },
+    ]);
+    assert.equal(findings.length, 1, entry.name);
+    assert.equal(findings[0]?.rule, entry.rule, entry.name);
+  }
+
+  assert.deepEqual(
+    scanPhase6AArchitectureSources([
+      {
+        path: "apps/web/src/components/lexical-positive.tsx",
+        source: `${authoritativeKeys}function keys() { const value = queryKeys.workspace.projects(); useQuery({ queryKey: value }); }\nfunction health() { const value = "/api/health"; fetch(value); }`,
+      },
+    ]),
+    [],
+  );
+});
+
 test("phase 6A global keys allow fixed deployment constants", () => {
   const findings = scanPhase6AArchitectureSources([
     {
@@ -1687,6 +1740,20 @@ test("phase 6A mutation retry allowlist accepts only proven exports", () => {
   assert.equal(unknown[0]?.rule, "mutation-retry-policy");
 });
 
+test("phase 6A mutation retry diagnostics fail closed without crashing", () => {
+  const findings = scanPhase6AArchitectureSources([
+    {
+      path: "apps/web/src/components/mutations.tsx",
+      source:
+        'import { useMutation } from "@tanstack/react-query";\nuseMutation({ retry: 2 });\nuseMutation({ mutationFn: unresolvedCommand, retry: 3 });\nfetch("/api/v2/projects");',
+    },
+  ]);
+  assert.deepEqual(
+    findings.map(({ rule }) => rule),
+    ["mutation-retry-policy", "mutation-retry-policy", "v2-fetch-ownership"],
+  );
+});
+
 test("phase 6A collection inventory is unique, classified, and evidence-backed", () => {
   const inventory = phase6ABoundaries.phase6ACollectionRouteInventory;
   assert.equal(inventory.length, 16);
@@ -1702,6 +1769,14 @@ test("phase 6A collection inventory is unique, classified, and evidence-backed",
     if (entry.classification === "bounded") {
       assert.equal(typeof entry.cap, "number", `${entry.path} needs a cap`);
       assert.ok(entry.cap > 0, `${entry.path} cap must be positive`);
+      assert.equal(typeof entry.capContract?.ownerFile, "string", entry.path);
+      assert.equal(typeof entry.capContract?.ownerExport, "string", entry.path);
+      assert.equal(typeof entry.capContract?.method, "string", entry.path);
+      assert.ok(
+        ["call", "property"].includes(entry.capContract?.kind),
+        entry.path,
+      );
+      assert.equal(typeof entry.capContract?.member, "string", entry.path);
     }
   }
 });
@@ -1737,6 +1812,42 @@ test("phase 6A collection inventory matches every registered collection GET", as
     phase6ABoundaries.auditPhase6ACollectionRouteInventory(sources),
     [],
   );
+});
+
+test("phase 6A bounded evidence rejects unrelated same-value decoys", async () => {
+  const sources = await collectPhase6AArchitectureSources(rootDir);
+  const cases = [
+    {
+      path: "apps/server/src/features/jobs/job-service.ts",
+      actual: ".limit(50);",
+      replacement: ";",
+      decoy: "const unrelatedJobLimit = query.limit(50);",
+      route: "/api/jobs",
+    },
+    {
+      path: "apps/server/src/features/canvas/generated-asset-application-adapter.ts",
+      actual: "limit: 100,",
+      replacement: "",
+      decoy: "const unrelatedAttachmentOptions = { limit: 100 };",
+      route: "/api/canvases/:canvasId/generated-asset-attachments",
+    },
+  ];
+  for (const entry of cases) {
+    const mutated = sources.map((source) =>
+      source.path === entry.path
+        ? {
+            ...source,
+            source: `${source.source.replace(entry.actual, entry.replacement)}\n${entry.decoy}`,
+          }
+        : source,
+    );
+    const issues =
+      phase6ABoundaries.auditPhase6ACollectionRouteInventory(mutated);
+    assert.ok(
+      issues.some((issue) => issue.includes(`${entry.route} cap`)),
+      `${entry.route} accepted an unrelated cap decoy`,
+    );
+  }
 });
 
 test("phase 6A verification derives collection counts from the scanner inventory", async () => {
