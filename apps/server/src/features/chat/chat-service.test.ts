@@ -314,6 +314,45 @@ describe("chat message append-only identity", () => {
     },
   );
 
+  it.each([
+    [
+      "query error",
+      { existingError: { code: "42501", message: "permission denied" } },
+    ],
+    ["row unavailable", {}],
+  ])(
+    "returns a safe server error when duplicate verification has a %s",
+    async (_label, verification) => {
+      const logger = { error: vi.fn() };
+      const db = messageDatabase({
+        insertError: { code: "23505", message: "duplicate key" },
+        ...verification,
+      });
+
+      await expect(
+        messageService(db, logger).createMessage(
+          authenticatedUser,
+          "session-1",
+          stableInput,
+        ),
+      ).rejects.toMatchObject({ code: "chat_error", statusCode: 500 });
+
+      expect(db.sessionUpdates).toEqual([]);
+      expect(logger.error).toHaveBeenCalledWith(
+        "chat.message_idempotency_verification_failed",
+        {
+          code: "stable_message_verification_unavailable",
+          stage: "idempotency_verification",
+        },
+      );
+      const logged = JSON.stringify(logger.error.mock.calls);
+      expect(logged).not.toContain(authenticatedUser.accessToken);
+      expect(logged).not.toContain(stableInput.id);
+      expect(logged).not.toContain(stableInput.content);
+      expect(logged).not.toContain("tool-1");
+    },
+  );
+
   it("maps non-duplicate insert failures to a safe server error", async () => {
     const db = messageDatabase({
       insertError: { code: "42501", message: "permission denied" },
@@ -387,6 +426,7 @@ function messageDatabase(options: {
   insertData?: ReturnType<typeof persistedRow>;
   insertError?: { code: string; message: string };
   existing?: ReturnType<typeof persistedRow>;
+  existingError?: { code: string; message: string };
 }) {
   const insert = vi.fn();
   const upsert = vi.fn();
@@ -432,7 +472,7 @@ function messageDatabase(options: {
       });
       query.maybeSingle = async () => ({
         data: options.existing ?? null,
-        error: null,
+        error: options.existingError ?? null,
       });
       return query;
     },

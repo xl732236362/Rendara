@@ -432,11 +432,21 @@ export function createChatService(options: {
           )
           .eq("id", input.id)
           .maybeSingle();
-        if (
-          existingError ||
-          !existing ||
-          !isIdempotentMessage(existing, sessionId, input)
-        ) {
+        if (existingError || !existing) {
+          options.logger?.error(
+            "chat.message_idempotency_verification_failed",
+            {
+              code: "stable_message_verification_unavailable",
+              stage: "idempotency_verification",
+            },
+          );
+          throw new ChatServiceError(
+            "chat_error",
+            "Failed to verify the existing message.",
+            500,
+          );
+        }
+        if (!isIdempotentMessage(existing, sessionId, input)) {
           options.logger?.error("chat.message_conflict", {
             code: "stable_message_id_conflict",
             stage: "idempotency_verification",
