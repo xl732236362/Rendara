@@ -30,6 +30,10 @@ const LEGACY_PUBLIC_ERRORS: Partial<
     statusCode: 409,
     message: "Project name is already in use.",
   },
+  idempotency_conflict: {
+    statusCode: 409,
+    message: "Message identity conflicts with an existing message.",
+  },
   canvas_not_found: { statusCode: 404, message: "Canvas not found." },
   session_not_found: { statusCode: 404, message: "Session not found." },
   job_not_found: { statusCode: 404, message: "Job not found." },

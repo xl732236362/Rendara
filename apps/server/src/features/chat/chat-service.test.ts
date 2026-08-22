@@ -299,7 +299,10 @@ describe("chat message append-only identity", () => {
           "session-1",
           stableInput,
         ),
-      ).rejects.toMatchObject({ code: "message_conflict", statusCode: 409 });
+      ).rejects.toMatchObject({
+        code: "idempotency_conflict",
+        statusCode: 409,
+      });
 
       expect(db.sessionUpdates).toEqual([]);
       expect(logger.error).toHaveBeenCalledWith("chat.message_conflict", {

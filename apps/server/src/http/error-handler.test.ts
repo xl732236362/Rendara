@@ -293,6 +293,36 @@ describe("Fastify error boundary", () => {
     await app.close();
   });
 
+  it("maps an idempotency conflict to the centralized safe 409 response", async () => {
+    const app = createTestApp();
+    app.post("/legacy-idempotency-conflict", async () => {
+      throw Object.assign(
+        new Error("content=private-message; token=private-token"),
+        {
+          code: "idempotency_conflict",
+          statusCode: 409,
+        },
+      );
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/legacy-idempotency-conflict",
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: {
+        code: "idempotency_conflict",
+        message: "Message identity conflicts with an existing message.",
+      },
+    });
+    expect(() => errorEnvelopeSchema.parse(response.json())).not.toThrow();
+    expect(response.body).not.toContain("private-message");
+    expect(response.body).not.toContain("private-token");
+    await app.close();
+  });
+
   it("rejects generation_failed paired with a client status", async () => {
     const app = createTestApp();
     app.get("/legacy-generation", async () => {

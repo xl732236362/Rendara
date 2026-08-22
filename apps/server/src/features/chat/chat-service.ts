@@ -23,10 +23,10 @@ import { buildKeysetPredicate } from "../../pagination/keyset.js";
 
 export class ChatServiceError extends Error {
   readonly statusCode: number;
-  readonly code: "chat_error" | "message_conflict" | "session_not_found";
+  readonly code: "chat_error" | "idempotency_conflict" | "session_not_found";
 
   constructor(
-    code: "chat_error" | "message_conflict" | "session_not_found",
+    code: "chat_error" | "idempotency_conflict" | "session_not_found",
     message: string,
     statusCode: number,
   ) {
@@ -452,7 +452,7 @@ export function createChatService(options: {
             stage: "idempotency_verification",
           });
           throw new ChatServiceError(
-            "message_conflict",
+            "idempotency_conflict",
             "Message identity conflicts with an existing message.",
             409,
           );
