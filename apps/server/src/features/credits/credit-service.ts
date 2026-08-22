@@ -2,12 +2,16 @@
 import type {
   BillingPeriod,
   CreditTransaction,
+  CursorPage,
+  PaginationQuery,
   SubscriptionPlan,
 } from "@loomic/shared";
 import { PLAN_CONFIGS } from "@loomic/shared";
 import { z } from "zod";
 
 import type { AdminSupabaseClient } from "../../supabase/admin.js";
+import type { CursorCodec, CursorScope } from "../../pagination/cursor-codec.js";
+import { buildKeysetPredicate } from "../../pagination/keyset.js";
 
 // ── Error ────────────────────────────────────────────────────
 
@@ -72,6 +76,7 @@ export type CreditService = {
     workspaceId: string,
     limit?: number,
   ): Promise<CreditTransaction[]>;
+  listTransactionsPage(workspaceId: string, userId: string, query: PaginationQuery): Promise<CursorPage<CreditTransaction>>;
   getSubscription(workspaceId: string): Promise<SubscriptionInfo>;
   updatePlan(workspaceId: string, plan: SubscriptionPlan): Promise<void>;
 };
@@ -94,7 +99,9 @@ const compensationResultSchema = z.object({
 // ── Factory ──────────────────────────────────────────────────
 
 export function createCreditService(options: {
+  cursorCodec?: CursorCodec;
   getAdminClient: () => AdminSupabaseClient;
+  logger?: { error(event: string, context: Record<string, unknown>): void };
 }): CreditService {
   return {
     async getBalance(workspaceId) {
@@ -299,6 +306,29 @@ export function createCreditService(options: {
 
       return (data ?? []) as CreditTransaction[];
     },
+    async listTransactionsPage(workspaceId, userId, query) {
+      const cursorCodec = requireCreditCursorCodec(options.cursorCodec);
+      const scope: CursorScope = { userId, workspaceId, owner: "credit-transactions", filterHash: "all", direction: "desc" };
+      const boundary = query.cursor ? cursorCodec.decode(query.cursor, scope) : undefined;
+      const admin = options.getAdminClient();
+      let transactionQuery = admin
+        .from("credit_transactions")
+        .select("id, transaction_type, amount, balance_after, job_id, description, created_at")
+        .eq("workspace_id", workspaceId)
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(query.limit + 1);
+      if (boundary) transactionQuery = transactionQuery.or(serializeTransactionKeyset(boundary));
+      const { data, error } = await transactionQuery;
+      if (error) {
+        options.logger?.error("pagination.query_failed", { collection: "credit-transactions", stage: "collection_query", userId, workspaceId });
+        throw new CreditServiceError("credit_query_failed", "Failed to query transactions.", 500);
+      }
+      const hasMore = data.length > query.limit;
+      const items = (data.slice(0, query.limit) ?? []) as CreditTransaction[];
+      const tail = items.at(-1);
+      return { items, nextCursor: hasMore && tail ? cursorCodec.encode(scope, { timestamp: tail.created_at, id: tail.id }) : null };
+    },
 
     async getSubscription(workspaceId) {
       const admin = options.getAdminClient();
@@ -352,4 +382,14 @@ export function createCreditService(options: {
       }
     },
   };
+}
+
+function requireCreditCursorCodec(codec: CursorCodec | undefined): CursorCodec {
+  if (!codec) throw new Error("CursorCodec is required for paged credit transaction queries.");
+  return codec;
+}
+
+function serializeTransactionKeyset(boundary: { timestamp: string; id: string }): string {
+  const range = buildKeysetPredicate("desc", boundary).branches[0][0];
+  return `created_at.${range.operator}.${range.value},and(created_at.eq.${boundary.timestamp},id.${range.operator}.${boundary.id})`;
 }

@@ -6,8 +6,12 @@ import type {
   BrandKitDetail,
   BrandKitSummary,
   BrandKitUpdateRequest,
+  CursorPage,
+  PaginationQuery,
 } from "@loomic/shared";
 
+import type { CursorCodec, CursorScope } from "../../pagination/cursor-codec.js";
+import { buildKeysetPredicate } from "../../pagination/keyset.js";
 import type {
   AuthenticatedUser,
   UserSupabaseClient,
@@ -50,6 +54,7 @@ export class BrandKitServiceError extends Error {
 
 export type BrandKitService = {
   listKits(user: AuthenticatedUser): Promise<BrandKitSummary[]>;
+  listKitsPage(user: AuthenticatedUser, workspaceId: string, query: PaginationQuery): Promise<CursorPage<BrandKitSummary>>;
   getKit(user: AuthenticatedUser, kitId: string): Promise<BrandKitDetail>;
   createKit(
     user: AuthenticatedUser,
@@ -90,6 +95,8 @@ export type BrandKitService = {
 
 export function createBrandKitService(options: {
   createUserClient: (accessToken: string) => UserSupabaseClient;
+  cursorCodec?: CursorCodec;
+  logger?: { error(event: string, context: Record<string, unknown>): void };
 }): BrandKitService {
   async function fetchKitDetail(
     client: UserSupabaseClient,
@@ -239,6 +246,45 @@ export function createBrandKitService(options: {
           updated_at: kit.updated_at,
         }),
       );
+    },
+    async listKitsPage(user, workspaceId, query) {
+      const cursorCodec = requireBrandKitCursorCodec(options.cursorCodec);
+      const scope: CursorScope = { userId: user.id, workspaceId, owner: "brand-kits", filterHash: "all", direction: "asc" };
+      const boundary = query.cursor ? cursorCodec.decode(query.cursor, scope) : undefined;
+      const client = options.createUserClient(user.accessToken);
+      let kitQuery = client
+        .from("brand_kits")
+        .select("id, name, is_default, cover_url, created_at, updated_at")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .limit(query.limit + 1);
+      if (boundary) kitQuery = kitQuery.or(serializeBrandKitKeyset(boundary));
+      const { data, error } = await kitQuery;
+      if (error) {
+        options.logger?.error("pagination.query_failed", { collection: "brand-kits", stage: "collection_query", userId: user.id, workspaceId });
+        throw new BrandKitServiceError("brand_kit_query_failed", KIT_QUERY_FAILED_MESSAGE, 500);
+      }
+      const hasMore = data.length > query.limit;
+      const kits = data.slice(0, query.limit);
+      if (!kits.length) return { items: [], nextCursor: null };
+      const { data: assets, error: assetsError } = await client
+        .from("brand_kit_assets")
+        .select("kit_id, asset_type")
+        .in("kit_id", kits.map((kit) => kit.id));
+      if (assetsError) {
+        options.logger?.error("pagination.query_failed", { collection: "brand-kits", stage: "enrichment_query", userId: user.id, workspaceId });
+        throw new BrandKitServiceError("brand_kit_query_failed", KIT_QUERY_FAILED_MESSAGE, 500);
+      }
+      const counts = new Map<string, { color: number; font: number; logo: number; image: number }>();
+      for (const asset of assets ?? []) {
+        const value = counts.get(asset.kit_id) ?? { color: 0, font: 0, logo: 0, image: 0 };
+        value[asset.asset_type] += 1;
+        counts.set(asset.kit_id, value);
+      }
+      const items = kits.map((kit): BrandKitSummary => ({ ...kit, asset_counts: counts.get(kit.id) ?? { color: 0, font: 0, logo: 0, image: 0 } }));
+      const tail = kits.at(-1)!;
+      return { items, nextCursor: hasMore ? cursorCodec.encode(scope, { timestamp: tail.created_at, id: tail.id }) : null };
     },
 
     async getKit(user, kitId) {
@@ -710,6 +756,16 @@ export function createBrandKitService(options: {
       return fetchKitDetail(client, newKit.id);
     },
   };
+}
+
+function requireBrandKitCursorCodec(codec: CursorCodec | undefined): CursorCodec {
+  if (!codec) throw new Error("CursorCodec is required for paged brand kit queries.");
+  return codec;
+}
+
+function serializeBrandKitKeyset(boundary: { timestamp: string; id: string }): string {
+  const range = buildKeysetPredicate("asc", boundary).branches[0][0];
+  return `created_at.${range.operator}.${range.value},and(created_at.eq.${boundary.timestamp},id.${range.operator}.${boundary.id})`;
 }
 
 function mapAssetRow(row: {

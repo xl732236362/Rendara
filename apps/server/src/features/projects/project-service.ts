@@ -1,9 +1,13 @@
 import type {
+  CursorPage,
+  PaginationQuery,
   ProjectCreateRequest,
   ProjectSummary,
   ProjectUpdateRequest,
 } from "@loomic/shared";
 
+import type { CursorCodec, CursorScope } from "../../pagination/cursor-codec.js";
+import { buildKeysetPredicate } from "../../pagination/keyset.js";
 import type {
   AuthenticatedUser,
   UserSupabaseClient,
@@ -42,6 +46,10 @@ export type ProjectService = {
     updated_at: string;
   }>;
   listProjects(user: AuthenticatedUser): Promise<ProjectSummary[]>;
+  listProjectsPage(
+    user: AuthenticatedUser,
+    query: PaginationQuery,
+  ): Promise<CursorPage<ProjectSummary>>;
   saveThumbnail(
     user: AuthenticatedUser,
     projectId: string,
@@ -84,6 +92,8 @@ export class ProjectServiceError extends Error {
 
 export function createProjectService(options: {
   createUserClient: (accessToken: string) => UserSupabaseClient;
+  cursorCodec?: CursorCodec;
+  logger?: PaginationLogger;
   viewerService: ViewerService;
 }): ProjectService {
   return {
@@ -287,6 +297,61 @@ export function createProjectService(options: {
         });
       });
     },
+    async listProjectsPage(user, query) {
+      await ensureFoundation(options.viewerService, user, "project_query_failed");
+      const client = options.createUserClient(user.accessToken);
+      const workspace = await resolvePersonalWorkspace(client, user.id, "project_query_failed");
+      const cursorCodec = requireCursorCodec(options.cursorCodec);
+      const scope: CursorScope = {
+        userId: user.id,
+        workspaceId: workspace.id,
+        owner: "projects",
+        filterHash: "active",
+        direction: "desc",
+      };
+      const boundary = query.cursor ? cursorCodec.decode(query.cursor, scope) : undefined;
+
+      let projectQuery = client
+        .from("projects")
+        .select("id, name, slug, description, created_at, updated_at, workspace_id, thumbnail_path")
+        .eq("workspace_id", workspace.id)
+        .is("archived_at", null)
+        .order("updated_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(query.limit + 1);
+      if (boundary) projectQuery = projectQuery.or(serializeKeyset("updated_at", "desc", boundary));
+
+      const { data, error } = await projectQuery;
+      if (error) {
+        logPaginationFailure(options.logger, "projects", "collection_query", { userId: user.id, workspaceId: workspace.id });
+        throw new ProjectServiceError("project_query_failed", PROJECT_QUERY_FAILED_MESSAGE, 500);
+      }
+      const hasMore = data.length > query.limit;
+      const projects = data.slice(0, query.limit);
+      if (!projects.length) return { items: [], nextCursor: null };
+
+      const { data: canvases, error: canvasError } = await client
+        .from("canvases")
+        .select("id, name, is_primary, project_id")
+        .in("project_id", projects.map((project) => project.id))
+        .eq("is_primary", true);
+      if (canvasError) {
+        logPaginationFailure(options.logger, "projects", "enrichment_query", { userId: user.id, workspaceId: workspace.id });
+        throw new ProjectServiceError("project_query_failed", PROJECT_QUERY_FAILED_MESSAGE, 500);
+      }
+      const canvasByProject = new Map(canvases.map((canvas) => [canvas.project_id, canvas]));
+      const thumbnailUrls = generateThumbnailUrls(client, projects.filter((project) => project.thumbnail_path));
+      const items = projects.map((project) => {
+        const canvas = canvasByProject.get(project.id);
+        if (!canvas) throw new ProjectServiceError("project_query_failed", PROJECT_QUERY_FAILED_MESSAGE, 500);
+        return mapProjectSummary({ canvas, project, thumbnailUrl: thumbnailUrls.get(project.id) ?? null, workspace });
+      });
+      const tail = projects.at(-1)!;
+      return {
+        items,
+        nextCursor: hasMore ? cursorCodec.encode(scope, { timestamp: tail.updated_at, id: tail.id }) : null,
+      };
+    },
 
     async saveThumbnail(user, projectId, buffer, mimeType) {
       const client = options.createUserClient(user.accessToken);
@@ -374,6 +439,23 @@ export function createProjectService(options: {
       }
     },
   };
+}
+
+type PaginationLogger = { error(event: string, context: Record<string, unknown>): void };
+
+function requireCursorCodec(cursorCodec: CursorCodec | undefined): CursorCodec {
+  if (!cursorCodec) throw new Error("CursorCodec is required for paged project queries.");
+  return cursorCodec;
+}
+
+function logPaginationFailure(logger: PaginationLogger | undefined, collection: string, stage: string, scope: Record<string, string>) {
+  logger?.error("pagination.query_failed", { collection, stage, ...scope });
+}
+
+function serializeKeyset(timestampColumn: string, direction: "asc" | "desc", boundary: { timestamp: string; id: string }): string {
+  const predicate = buildKeysetPredicate(direction, boundary);
+  const range = predicate.branches[0][0];
+  return `${timestampColumn}.${range.operator}.${range.value},and(${timestampColumn}.eq.${boundary.timestamp},id.${range.operator}.${boundary.id})`;
 }
 
 async function ensureFoundation(
