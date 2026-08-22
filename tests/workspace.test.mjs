@@ -11,6 +11,7 @@ import {
   scanArchitectureSources,
   scanPhase6AArchitectureSources,
 } from "../scripts/check-architecture-boundaries.mjs";
+import * as phase6ABoundaries from "../scripts/check-architecture-boundaries.mjs";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(dirname, "..");
@@ -1108,6 +1109,13 @@ const phase6AArchitectureFixtures = [
       'useQuery({ queryKey: ["projects", workspaceId], queryFn: loadProjects });',
   },
   {
+    name: "raw query-key arrays through a lexical constant",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "query-key-factory-boundary",
+    source:
+      'const raw = ["projects", workspaceId] as const;\nuseQuery({ queryKey: raw, queryFn: loadProjects });',
+  },
+  {
     name: "identity-derived resources under global keys",
     path: "apps/web/src/lib/query/keys.ts",
     rule: "identity-scoped-query-keys",
@@ -1122,10 +1130,51 @@ const phase6AArchitectureFixtures = [
       'import { fetchProjectsPage } from "../lib/api/projects";\nexport function ProjectList() { return fetchProjectsPage(token, {}); }',
   },
   {
+    name: "namespace component-local V2 collection fetches",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "v2-fetch-ownership",
+    source:
+      'import * as api from "../lib/api/projects";\nexport function ProjectList() { return api.fetchProjectsPage(token, {}); }',
+  },
+  {
+    name: "re-exported component-local V2 collection fetches",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "v2-fetch-ownership",
+    source:
+      'import { projectsApi } from "../lib/domain-api";\nexport function ProjectList() { return projectsApi.fetchProjectsPage(token, {}); }',
+  },
+  {
+    name: "direct domain V2 client calls from components",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "v2-fetch-ownership",
+    source:
+      'import { projectClient } from "../lib/api/projects";\nexport function ProjectList() { return projectClient.page(token, {}); }',
+  },
+  {
     name: "mutation retries without an idempotent-command allowlist",
     path: "apps/web/src/components/project-list.tsx",
     rule: "mutation-retry-policy",
     source: "useMutation({ mutationFn: createProject, retry: 2 });",
+  },
+  {
+    name: "mutation retries inherited through config spread",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "mutation-retry-policy",
+    source:
+      "const base = { mutationFn: createProject };\nuseMutation({ ...base, retry: 2 });",
+  },
+  {
+    name: "mutation retries through a lexical variable",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "mutation-retry-policy",
+    source:
+      "const retry = 2;\nuseMutation({ mutationFn: createProject, retry });",
+  },
+  {
+    name: "nonfalse mutation defaults",
+    path: "apps/web/src/lib/query/query-client.ts",
+    rule: "mutation-retry-policy",
+    source: "new QueryClient({ defaultOptions: { mutations: { retry: 2 } } });",
   },
   {
     name: "unbounded collection services outside the route inventory",
@@ -1133,6 +1182,27 @@ const phase6AArchitectureFixtures = [
     rule: "collection-route-inventory",
     source:
       'export function register(app: FastifyInstance, service: WidgetService) { app.get("/api/widgets", async () => service.listWidgets()); }',
+  },
+  {
+    name: "unbounded fetchAll collection services",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      'export function register(app: FastifyInstance, service: WidgetService) { app.get("/api/widgets", async () => service.fetchAllWidgets()); }',
+  },
+  {
+    name: "direct Supabase collection selects",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      'export function register(app: FastifyInstance, client: SupabaseClient) { app.get("/api/widgets", async () => client.from("widgets").select("*")); }',
+  },
+  {
+    name: "aliased collection service methods",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      'export function register(app: FastifyInstance, service: WidgetService) { const load = service.fetchAllWidgets; app.get("/api/widgets", async () => load()); }',
   },
 ];
 
@@ -1144,6 +1214,68 @@ for (const fixture of phase6AArchitectureFixtures) {
     assert.match(findings[0].evidence, new RegExp(`^${fixture.path}:`));
   });
 }
+
+test("phase 6A mutation retry allowlist accepts only named idempotent commands", () => {
+  assert.deepEqual(phase6ABoundaries.phase6AIdempotentMutationRetryAllowlist, [
+    "retryGeneratedAssetAttachment",
+  ]);
+  const allowed = scanPhase6AArchitectureSources([
+    {
+      path: "apps/web/src/components/attachment-retry.tsx",
+      source:
+        "useMutation({ mutationFn: retryGeneratedAssetAttachment, retry: 2 });",
+    },
+  ]);
+  const unknown = scanPhase6AArchitectureSources([
+    {
+      path: "apps/web/src/components/attachment-retry.tsx",
+      source: "useMutation({ mutationFn: unknownCommand, retry: 2 });",
+    },
+  ]);
+
+  assert.deepEqual(allowed, []);
+  assert.equal(unknown[0]?.rule, "mutation-retry-policy");
+});
+
+test("phase 6A collection inventory is unique, classified, and evidence-backed", () => {
+  const inventory = phase6ABoundaries.phase6ACollectionRouteInventory;
+  assert.equal(inventory.length, 16);
+  const paths = inventory.map(({ path }) => path);
+  assert.equal(new Set(paths).size, paths.length, "duplicate inventory path");
+  for (const entry of inventory) {
+    assert.ok(
+      ["cursor", "bounded", "legacy-gap"].includes(entry.classification),
+      `${entry.path} has an invalid classification`,
+    );
+    assert.equal(typeof entry.implementationEvidence, "string", entry.path);
+    assert.ok(entry.implementationEvidence.length > 0, entry.path);
+    if (entry.classification === "bounded") {
+      assert.equal(typeof entry.cap, "number", `${entry.path} needs a cap`);
+      assert.ok(entry.cap > 0, `${entry.path} cap must be positive`);
+    }
+  }
+});
+
+test("phase 6A collection inventory matches every registered collection GET", async () => {
+  const sources = await collectPhase6AArchitectureSources(rootDir);
+  assert.deepEqual(
+    phase6ABoundaries.auditPhase6ACollectionRouteInventory(sources),
+    [],
+  );
+});
+
+test("phase 6A verification derives collection counts from the scanner inventory", async () => {
+  const verification = await readText("docs/tech/phase-6a-verification.md");
+  assert.match(
+    verification,
+    new RegExp(
+      `Inventory source: ${phase6ABoundaries.phase6ACollectionInventorySummary.replaceAll(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&",
+      )}`,
+    ),
+  );
+});
 
 test("phase 6A server-state and collection boundaries remain enforced", async () => {
   const sources = await collectPhase6AArchitectureSources(rootDir);

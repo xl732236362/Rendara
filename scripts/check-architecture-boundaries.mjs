@@ -14,27 +14,93 @@ const registryValueShapeWrappers = new Set([
   "Required",
 ]);
 
-const phase6ACollectionRouteInventory = new Map([
-  ["/api/v2/projects", "cursor-paginated"],
-  ["/api/v2/brand-kits", "cursor-paginated"],
-  ["/api/v2/credits/transactions", "cursor-paginated"],
-  ["/api/v2/canvases/:canvasId/sessions", "cursor-paginated"],
-  ["/api/v2/sessions/:sessionId/messages", "cursor-paginated"],
-  ["/api/projects", "legacy-compatibility-removal-window"],
-  ["/api/brand-kits", "legacy-compatibility-removal-window"],
-  ["/api/credits/transactions", "legacy-compatibility-removal-window"],
-  ["/api/canvases/:canvasId/sessions", "legacy-compatibility-removal-window"],
-  ["/api/sessions/:sessionId/messages", "legacy-compatibility-removal-window"],
-  ["/api/jobs", "intrinsically-bounded-service-limit"],
-  [
-    "/api/canvases/:canvasId/generated-asset-attachments",
-    "intrinsically-bounded-outstanding-only",
-  ],
-  ["/api/fonts", "intrinsically-bounded-upstream-catalog"],
-  ["/api/models", "intrinsically-bounded-static-catalog"],
-  ["/api/image-models", "intrinsically-bounded-provider-catalog"],
-  ["/api/video-models", "intrinsically-bounded-provider-catalog"],
+export const phase6AIdempotentMutationRetryAllowlist = Object.freeze([
+  "retryGeneratedAssetAttachment",
 ]);
+
+export const phase6ACollectionRouteInventory = Object.freeze([
+  cursorRoute("/api/v2/projects", "apps/server/src/http/projects.ts"),
+  cursorRoute("/api/v2/brand-kits", "apps/server/src/http/brand-kits.ts"),
+  cursorRoute(
+    "/api/v2/credits/transactions",
+    "apps/server/src/http/credits.ts",
+  ),
+  cursorRoute(
+    "/api/v2/canvases/:canvasId/sessions",
+    "apps/server/src/http/chat.ts",
+  ),
+  cursorRoute(
+    "/api/v2/sessions/:sessionId/messages",
+    "apps/server/src/http/chat.ts",
+  ),
+  gapRoute("/api/projects", "apps/server/src/http/projects.ts"),
+  gapRoute("/api/brand-kits", "apps/server/src/http/brand-kits.ts"),
+  gapRoute("/api/credits/transactions", "apps/server/src/http/credits.ts"),
+  gapRoute("/api/canvases/:canvasId/sessions", "apps/server/src/http/chat.ts"),
+  gapRoute("/api/sessions/:sessionId/messages", "apps/server/src/http/chat.ts"),
+  boundedRoute(
+    "/api/jobs",
+    "apps/server/src/http/jobs.ts",
+    50,
+    "apps/server/src/features/jobs/job-service.ts#call:limit",
+  ),
+  boundedRoute(
+    "/api/canvases/:canvasId/generated-asset-attachments",
+    "apps/server/src/http/jobs.ts",
+    100,
+    "apps/server/src/features/canvas/generated-asset-application-adapter.ts#property:limit",
+  ),
+  gapRoute("/api/fonts", "apps/server/src/http/fonts.ts"),
+  gapRoute("/api/models", "apps/server/src/http/models.ts"),
+  gapRoute("/api/image-models", "apps/server/src/http/image-models.ts"),
+  gapRoute("/api/video-models", "apps/server/src/http/video-models.ts"),
+]);
+
+export const phase6ACollectionInventorySummary = Object.freeze(
+  ["cursor", "bounded", "legacy-gap"]
+    .map(
+      (classification) =>
+        `${classification}=${
+          phase6ACollectionRouteInventory.filter(
+            (entry) => entry.classification === classification,
+          ).length
+        }`,
+    )
+    .concat(`total=${phase6ACollectionRouteInventory.length}`)
+    .join(", "),
+);
+
+const phase6ACollectionRoutesByPath = new Map(
+  phase6ACollectionRouteInventory.map((entry) => [entry.path, entry]),
+);
+
+function cursorRoute(pathname, file) {
+  return Object.freeze({
+    path: pathname,
+    file,
+    classification: "cursor",
+    implementationEvidence: `${file}#paginationQuerySchema+Page`,
+  });
+}
+
+function boundedRoute(pathname, file, cap, implementationEvidence) {
+  return Object.freeze({
+    path: pathname,
+    file,
+    classification: "bounded",
+    cap,
+    implementationEvidence,
+  });
+}
+
+function gapRoute(pathname, file) {
+  return Object.freeze({
+    path: pathname,
+    file,
+    classification: "legacy-gap",
+    implementationEvidence: `${file}#unbounded-compatibility-or-catalog-gap`,
+  });
+}
 
 const rules = [
   {
@@ -118,7 +184,7 @@ export function scanArchitectureSources(sources) {
     const filePath = normalizePath(entry.path);
     if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(filePath)) continue;
     const sourceFile = parseSourceFile(entry.source, filePath);
-    const context = { filePath, sourceFile };
+    const context = createPhase6AContext(filePath, sourceFile);
 
     for (const rule of rules) {
       if (!applies(rule, filePath)) continue;
@@ -139,7 +205,7 @@ export function scanPhase6AArchitectureSources(sources) {
     const filePath = normalizePath(entry.path);
     if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(filePath)) continue;
     const sourceFile = parseSourceFile(entry.source, filePath);
-    const context = { filePath, sourceFile };
+    const context = createPhase6AContext(filePath, sourceFile);
     findings.push(...scanRawQueryKeys(context));
     findings.push(...scanIdentityScopedKeys(context));
     findings.push(...scanComponentV2Fetches(context));
@@ -163,12 +229,123 @@ function scanRawQueryKeys(context) {
       propertyName(node.name) !== "queryKey"
     )
       return false;
-    return ts.isArrayLiteralExpression(unwrapExpression(node.initializer));
+    return !isProvenQueryFactoryExpression(node.initializer, context);
   }).map((finding) => ({
     ...finding,
     rule: "query-key-factory-boundary",
     message: "query keys must be created by apps/web/src/lib/query/keys.ts",
   }));
+}
+
+function isProvenQueryFactoryExpression(expression, context, seen = new Set()) {
+  const current = unwrapExpression(expression);
+  if (!current) return false;
+  if (ts.isIdentifier(current) && context.bindings.has(current.text)) {
+    if (seen.has(current.text)) return false;
+    seen.add(current.text);
+    return isProvenQueryFactoryExpression(
+      context.bindings.get(current.text),
+      context,
+      seen,
+    );
+  }
+  if (ts.isIdentifier(current)) {
+    return isProvenQueryKeyParameter(current, context, seen);
+  }
+  if (ts.isConditionalExpression(current)) {
+    return (
+      isProvenQueryFactoryExpression(
+        current.whenTrue,
+        context,
+        new Set(seen),
+      ) &&
+      isProvenQueryFactoryExpression(current.whenFalse, context, new Set(seen))
+    );
+  }
+  if (ts.isCallExpression(current)) {
+    if (
+      isCallNamed(current.expression, "useMemo") &&
+      current.arguments[0] &&
+      (ts.isArrowFunction(current.arguments[0]) ||
+        ts.isFunctionExpression(current.arguments[0]))
+    ) {
+      return isProvenQueryFactoryOrNull(
+        current.arguments[0].body,
+        context,
+        seen,
+      );
+    }
+    return callRootIdentifier(current.expression) === "queryKeys";
+  }
+  if (ts.isPropertyAccessExpression(current)) {
+    return callRootIdentifier(current) === "queryKeys";
+  }
+  return false;
+}
+
+function isProvenQueryFactoryOrNull(expression, context, seen) {
+  const current = unwrapExpression(expression);
+  if (current?.kind === ts.SyntaxKind.NullKeyword) return true;
+  if (current && ts.isConditionalExpression(current)) {
+    return (
+      isProvenQueryFactoryOrNull(current.whenTrue, context, new Set(seen)) &&
+      isProvenQueryFactoryOrNull(current.whenFalse, context, new Set(seen))
+    );
+  }
+  return isProvenQueryFactoryExpression(current, context, seen);
+}
+
+function isProvenQueryKeyParameter(identifier, context, seen) {
+  const owner = findContainingFunction(identifier);
+  if (!owner) return false;
+  const parameterIndex = owner.parameters.findIndex(
+    (parameter) =>
+      ts.isIdentifier(parameter.name) &&
+      parameter.name.text === identifier.text,
+  );
+  if (parameterIndex < 0) return false;
+  const callbackCall = owner.parent;
+  const declaration = callbackCall?.parent;
+  if (
+    !callbackCall ||
+    !ts.isCallExpression(callbackCall) ||
+    !declaration ||
+    !ts.isVariableDeclaration(declaration) ||
+    !ts.isIdentifier(declaration.name)
+  )
+    return false;
+  const argumentsAtCalls = [];
+  function visit(node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === declaration.name.text
+    ) {
+      argumentsAtCalls.push(node.arguments[parameterIndex]);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(context.sourceFile);
+  return (
+    argumentsAtCalls.length > 0 &&
+    argumentsAtCalls.every((argument) =>
+      isProvenQueryFactoryExpression(argument, context, new Set(seen)),
+    )
+  );
+}
+
+function findContainingFunction(node) {
+  let current = node.parent;
+  while (current) {
+    if (
+      ts.isArrowFunction(current) ||
+      ts.isFunctionExpression(current) ||
+      ts.isFunctionDeclaration(current)
+    )
+      return current;
+    current = current.parent;
+  }
+  return undefined;
 }
 
 function scanIdentityScopedKeys(context) {
@@ -214,25 +391,26 @@ function containsIdentityDerivedKey(node) {
 function scanComponentV2Fetches(context) {
   if (!/^apps\/web\/src\/(?:app|components|hooks)\//.test(context.filePath))
     return [];
-  const v2Bindings = new Set();
+  const domainBindings = new Set();
   for (const statement of context.sourceFile.statements) {
     if (!ts.isImportDeclaration(statement)) continue;
     const moduleName = statement.moduleSpecifier;
-    if (!ts.isStringLiteral(moduleName) || !/lib\/api\//.test(moduleName.text))
+    if (!ts.isStringLiteral(moduleName) || !isDomainApiModule(moduleName.text))
       continue;
     const bindings = statement.importClause?.namedBindings;
-    if (!bindings || !ts.isNamedImports(bindings)) continue;
-    for (const element of bindings.elements) {
-      const imported = (element.propertyName ?? element.name).text;
-      if (/^fetch\w+Page$/.test(imported)) v2Bindings.add(element.name.text);
+    if (bindings && ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements)
+        domainBindings.add(element.name.text);
+    } else if (bindings && ts.isNamespaceImport(bindings)) {
+      domainBindings.add(bindings.name.text);
     }
   }
   return collectMatchingNodes(
     context,
     (node) =>
       ts.isCallExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      v2Bindings.has(node.expression.text),
+      callRootIdentifier(node.expression) !== undefined &&
+      domainBindings.has(callRootIdentifier(node.expression)),
   ).map((finding) => ({
     ...finding,
     rule: "v2-fetch-ownership",
@@ -240,37 +418,87 @@ function scanComponentV2Fetches(context) {
   }));
 }
 
+function isDomainApiModule(moduleName) {
+  const parts = moduleName.replaceAll("\\", "/").split("/");
+  const libIndex = parts.lastIndexOf("lib");
+  return (
+    libIndex >= 0 &&
+    (parts[libIndex + 1] === "api" || parts[libIndex + 1] === "domain-api")
+  );
+}
+
+function callRootIdentifier(expression) {
+  let current = unwrapExpression(expression);
+  while (ts.isPropertyAccessExpression(current)) current = current.expression;
+  return ts.isIdentifier(current) ? current.text : undefined;
+}
+
 function scanMutationRetries(context) {
   if (!context.filePath.startsWith("apps/web/src/")) return [];
   const findings = [];
   function visit(node) {
-    if (ts.isObjectLiteralExpression(node)) {
-      const hasMutationFn = node.properties.some(
-        (property) => propertyName(property.name) === "mutationFn",
+    if (
+      ts.isCallExpression(node) &&
+      isCallNamed(node.expression, "useMutation")
+    ) {
+      inspectMutationOptions(node.arguments[0], node);
+    }
+    if (
+      ts.isNewExpression(node) &&
+      isCallNamed(node.expression, "QueryClient")
+    ) {
+      const root = resolveObjectProperties(node.arguments?.[0], context);
+      const defaults = resolveObjectProperties(
+        root.values.get("defaultOptions"),
+        context,
       );
-      const retry = node.properties.find(
-        (property) => propertyName(property.name) === "retry",
+      const mutations = resolveObjectProperties(
+        defaults.values.get("mutations"),
+        context,
       );
-      if (
-        hasMutationFn &&
-        retry &&
-        ts.isPropertyAssignment(retry) &&
-        retry.initializer.kind !== ts.SyntaxKind.FalseKeyword
-      ) {
-        findings.push(
-          phase6AFinding(
-            "mutation-retry-policy",
-            "mutation retry requires an explicitly allowlisted idempotent command",
-            retry,
-            context,
-          ),
-        );
-      }
+      inspectRetry(mutations, node, undefined);
     }
     ts.forEachChild(node, visit);
   }
   visit(context.sourceFile);
   return findings;
+
+  function inspectMutationOptions(expression, evidenceNode) {
+    const options = resolveObjectProperties(expression, context);
+    const mutationFn = options.values.get("mutationFn");
+    inspectRetry(
+      options,
+      evidenceNode,
+      resolvedSymbolName(mutationFn, context),
+    );
+  }
+
+  function inspectRetry(options, evidenceNode, commandName) {
+    if (!options.values.has("retry") && !options.unresolved) return;
+    const retry = resolveExpression(options.values.get("retry"), context);
+    const staticallyFalse = retry?.kind === ts.SyntaxKind.FalseKeyword;
+    const allowlisted =
+      commandName !== undefined &&
+      phase6AIdempotentMutationRetryAllowlist.includes(commandName);
+    if (!staticallyFalse && !allowlisted) {
+      findings.push(
+        phase6AFinding(
+          "mutation-retry-policy",
+          "mutation retry is nonfalse or unresolved; use false or an explicitly allowlisted idempotent command",
+          evidenceNode,
+          context,
+        ),
+      );
+    }
+  }
+}
+
+function isCallNamed(expression, name) {
+  const current = unwrapExpression(expression);
+  return (
+    (ts.isIdentifier(current) && current.text === name) ||
+    (ts.isPropertyAccessExpression(current) && current.name.text === name)
+  );
 }
 
 function scanCollectionRoutes(context) {
@@ -294,7 +522,7 @@ function scanCollectionRoutes(context) {
       routeArgument &&
       handler &&
       containsCollectionServiceCall(handler) &&
-      !phase6ACollectionRouteInventory.has(routeArgument.text)
+      !phase6ACollectionRoutesByPath.has(routeArgument.text)
     ) {
       findings.push(
         phase6AFinding(
@@ -316,8 +544,7 @@ function containsCollectionServiceCall(node) {
   function visit(current) {
     if (
       ts.isCallExpression(current) &&
-      ts.isPropertyAccessExpression(current.expression) &&
-      /^(?:list|getAvailable)\w+/.test(current.expression.name.text)
+      isCollectionAccessCall(current, contextForNode(node))
     ) {
       found = true;
       return;
@@ -328,10 +555,268 @@ function containsCollectionServiceCall(node) {
   return found;
 }
 
+function contextForNode(node) {
+  const sourceFile = node.getSourceFile();
+  return createPhase6AContext(sourceFile.fileName, sourceFile);
+}
+
+function isCollectionAccessCall(call, context) {
+  const callee = resolveExpression(call.expression, context);
+  if (ts.isPropertyAccessExpression(callee)) {
+    const name = callee.name.text;
+    if (
+      name.startsWith("list") ||
+      name.startsWith("fetchAll") ||
+      name.startsWith("getAvailable")
+    )
+      return true;
+    if (name === "select" && findCallInChain(callee.expression, "from"))
+      return true;
+  }
+  return false;
+}
+
+function findCallInChain(node, methodName) {
+  let current = unwrapExpression(node);
+  while (current) {
+    if (
+      ts.isCallExpression(current) &&
+      ts.isPropertyAccessExpression(current.expression) &&
+      current.expression.name.text === methodName
+    )
+      return true;
+    if (ts.isCallExpression(current)) current = current.expression;
+    else if (ts.isPropertyAccessExpression(current))
+      current = current.expression;
+    else return false;
+  }
+  return false;
+}
+
+function createPhase6AContext(filePath, sourceFile) {
+  const bindings = new Map();
+  function visit(node) {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer
+    ) {
+      bindings.set(node.name.text, node.initializer);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+  return { filePath, sourceFile, bindings };
+}
+
+function resolveExpression(expression, context, seen = new Set()) {
+  let current = unwrapExpression(expression);
+  while (
+    current &&
+    ts.isIdentifier(current) &&
+    context.bindings.has(current.text)
+  ) {
+    if (seen.has(current.text)) return current;
+    seen.add(current.text);
+    current = unwrapExpression(context.bindings.get(current.text));
+  }
+  return current;
+}
+
+function resolveObjectProperties(expression, context, seen = new Set()) {
+  const resolved = resolveExpression(expression, context, seen);
+  const values = new Map();
+  let unresolved = false;
+  if (!resolved || !ts.isObjectLiteralExpression(resolved)) {
+    return { values, unresolved: expression !== undefined };
+  }
+  for (const property of resolved.properties) {
+    if (ts.isSpreadAssignment(property)) {
+      const spread = resolveObjectProperties(
+        property.expression,
+        context,
+        seen,
+      );
+      for (const [key, value] of spread.values) values.set(key, value);
+      unresolved ||= spread.unresolved;
+      continue;
+    }
+    const name = propertyName(property.name);
+    if (!name) {
+      unresolved = true;
+      continue;
+    }
+    if (ts.isPropertyAssignment(property))
+      values.set(name, property.initializer);
+    else if (ts.isShorthandPropertyAssignment(property))
+      values.set(name, property.name);
+    else unresolved = true;
+  }
+  return { values, unresolved };
+}
+
+function resolvedSymbolName(expression, context) {
+  const resolved = resolveExpression(expression, context);
+  if (ts.isIdentifier(resolved)) return resolved.text;
+  if (ts.isPropertyAccessExpression(resolved)) return resolved.name.text;
+  return undefined;
+}
+
 function propertyName(name) {
   if (!name) return undefined;
   if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
   return undefined;
+}
+
+export function auditPhase6ACollectionRouteInventory(sources) {
+  const issues = [];
+  const sourceByPath = new Map(
+    sources.map((entry) => [normalizePath(entry.path), entry.source]),
+  );
+  const registered = [];
+  const discoveredCollections = new Set();
+
+  for (const entry of sources) {
+    const filePath = normalizePath(entry.path);
+    if (!filePath.startsWith("apps/server/src/http/")) continue;
+    const sourceFile = parseSourceFile(entry.source, filePath);
+    const context = createPhase6AContext(filePath, sourceFile);
+    for (const route of registeredGetRoutes(context)) {
+      registered.push({ ...route, filePath });
+      if (containsCollectionServiceCall(route.handler)) {
+        discoveredCollections.add(route.path);
+      }
+    }
+  }
+
+  const duplicates = duplicateValues(
+    phase6ACollectionRouteInventory.map((entry) => entry.path),
+  );
+  for (const pathname of duplicates)
+    issues.push(`duplicate inventory path: ${pathname}`);
+
+  for (const inventoryEntry of phase6ACollectionRouteInventory) {
+    const route = registered.find(
+      (candidate) =>
+        candidate.path === inventoryEntry.path &&
+        candidate.filePath === inventoryEntry.file,
+    );
+    if (!route) {
+      issues.push(
+        `${inventoryEntry.path} is not registered in ${inventoryEntry.file}`,
+      );
+      continue;
+    }
+    if (
+      inventoryEntry.classification === "cursor" &&
+      !isCursorCollectionHandler(route.handler)
+    ) {
+      issues.push(
+        `${inventoryEntry.path} lacks paginationQuerySchema + Page evidence`,
+      );
+    }
+    if (inventoryEntry.classification === "bounded") {
+      const evidenceIssue = verifyBoundedEvidence(inventoryEntry, sourceByPath);
+      if (evidenceIssue) issues.push(evidenceIssue);
+    }
+  }
+
+  for (const pathname of discoveredCollections) {
+    if (!phase6ACollectionRoutesByPath.has(pathname)) {
+      issues.push(`${pathname} is a collection GET missing from the inventory`);
+    }
+  }
+  return issues.sort();
+}
+
+function registeredGetRoutes(context) {
+  const routes = [];
+  function visit(node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "get"
+    ) {
+      const routeArgument = node.arguments.find(ts.isStringLiteral);
+      const handler = node.arguments.at(-1);
+      if (routeArgument && handler) {
+        routes.push({ path: routeArgument.text, handler });
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(context.sourceFile);
+  return routes;
+}
+
+function isCursorCollectionHandler(handler) {
+  let hasSchema = false;
+  let hasPageCall = false;
+  function visit(node) {
+    if (ts.isIdentifier(node) && node.text === "paginationQuerySchema") {
+      hasSchema = true;
+    }
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text.endsWith("Page")
+    ) {
+      hasPageCall = true;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(handler);
+  return hasSchema && hasPageCall;
+}
+
+function verifyBoundedEvidence(entry, sourceByPath) {
+  const [filePath, evidence] = entry.implementationEvidence.split("#");
+  const source = sourceByPath.get(filePath);
+  if (!source) return `${entry.path} evidence source is missing: ${filePath}`;
+  const sourceFile = parseSourceFile(source, filePath);
+  const [kind, name] = evidence.split(":");
+  let matched = false;
+  function visit(node) {
+    if (
+      kind === "call" &&
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === name &&
+      numericLiteralValue(node.arguments[0]) === entry.cap
+    ) {
+      matched = true;
+    }
+    if (
+      kind === "property" &&
+      ts.isPropertyAssignment(node) &&
+      propertyName(node.name) === name &&
+      numericLiteralValue(node.initializer) === entry.cap
+    ) {
+      matched = true;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(sourceFile);
+  return matched
+    ? undefined
+    : `${entry.path} cap ${entry.cap} is not proven by ${entry.implementationEvidence}`;
+}
+
+function numericLiteralValue(node) {
+  const current = unwrapExpression(node);
+  return current && ts.isNumericLiteral(current)
+    ? Number(current.text)
+    : undefined;
+}
+
+function duplicateValues(values) {
+  const seen = new Set();
+  const duplicates = new Set();
+  for (const value of values) {
+    if (seen.has(value)) duplicates.add(value);
+    seen.add(value);
+  }
+  return [...duplicates];
 }
 
 function parseSourceFile(source, filePath) {
@@ -717,6 +1202,8 @@ export async function collectPhase6AArchitectureSources(rootDir) {
   const targets = [
     ...(await productionTypeScriptFiles(rootDir, "apps/web/src")),
     ...(await productionTypeScriptFiles(rootDir, "apps/server/src/http")),
+    "apps/server/src/features/jobs/job-service.ts",
+    "apps/server/src/features/canvas/generated-asset-application-adapter.ts",
   ].sort();
   return Promise.all(
     targets.map(async (relativePath) => ({

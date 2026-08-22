@@ -2,7 +2,7 @@
 
 ## Verification context
 
-- Time: 2026-08-22 16:24-16:36 +08:00
+- Time: 2026-08-22 16:24-17:10 +08:00
 - Baseline HEAD: `96a4e5828de6`
 - Runtime: Windows, Node `v24.14.0`, pnpm `10.26.2`, Supabase CLI `2.115.0`, Docker Engine `29.6.1`
 - Local database: Supabase worktree stack on the checked-in ports; no persistent configuration changes
@@ -12,8 +12,8 @@
 
 | Command | Result | Exact evidence |
 | --- | --- | --- |
-| `pnpm ci:check` | exit 0 | lint 485 files, 0 errors and 506 historical warnings; typecheck 5/5 tasks; workspace 95/95; Config 34/34; Shared 69/69; Server 588 passed/10 skipped; Web 211/211; UI typecheck; build 5/5 packages and Web 14/14 static pages |
-| `pnpm exec supabase db reset --yes` | exit 0 | database recreated and 45 migrations applied through `20260823000001_phase6a_pagination.sql`; no seed file configured |
+| `pnpm ci:check` | exit 0 | lint 485 files, 0 errors and 506 historical warnings; typecheck 8/8 tasks; workspace 109/109; Config 34/34; Shared 69/69; Server 588 passed/10 skipped; Web 211/211; UI typecheck; build 5/5 packages and Web 14/14 static pages |
+| `pnpm exec supabase db reset --yes` | exit 0 | 48 checked-in migration files and 48 `Applying migration` records through `20260823000001_phase6a_pagination.sql`; exact set difference is empty; no seed file configured |
 | `pnpm exec supabase test db` | exit 0 | 8 pgTAP files, 212/212 tests |
 | `pnpm exec supabase db lint --level warning` | exit 0 | extensions/langgraph/private/public schemas, 0 findings |
 | `PHASE2_TEST_DATABASE_URL=<local> pnpm --filter @loomic/server test:integration` | exit 0 | 1 file, 7/7 real PostgreSQL concurrency/failpoint tests |
@@ -21,7 +21,7 @@
 
 | Workspace/package | Tests | Typecheck | Build |
 | --- | --- | --- | --- |
-| Workspace invariants | 95 passed | n/a | n/a |
+| Workspace invariants | 109 passed | n/a | n/a |
 | `@loomic/config` | 34 passed | exit 0 | exit 0 |
 | `@loomic/shared` | 69 passed | exit 0 | exit 0 |
 | `@loomic/ui` | test delegates to typecheck, exit 0 | exit 0 | exit 0 |
@@ -34,20 +34,22 @@ The first integration diagnostic without `PHASE2_TEST_DATABASE_URL`, and a secon
 
 ## Focused evidence
 
-- Architecture TDD: the new gate first failed because `collectPhase6AArchitectureSources` was absent. After implementing AST rules, workspace tests passed 95/95, including five negative fixtures and a full production-source scan.
+- Architecture TDD: the original gate first failed because `collectPhase6AArchitectureSources` was absent. Reviewer hardening then added 13 bypass fixtures; that RED run passed 95 and failed 13. After lexical resolution, fail-closed ownership checks, retry-default analysis, and structured route-inventory auditing, the final workspace run passed 109/109, including 20 Phase 6A checks and a full production-source scan.
 - Cursor rotation and wiring: `src/pagination/cursor-codec.test.ts` plus `src/app.env.test.ts` passed 55/55. This covers active/previous-key decoding, expiry/scope rejection, startup validation, redacted cursor logging, and composition wiring.
 - Legacy compatibility: five old list endpoints remain registered beside V2: projects, brand kits, credit transactions, chat sessions, and chat messages. Current Web collection owners use only the five cursor-paginated V2 endpoints.
 
 ## Collection route inventory
 
+Inventory source: cursor=5, bounded=2, legacy-gap=9, total=16.
+
 | Class | Routes | Bound |
 | --- | --- | --- |
 | Cursor-paginated | 5 V2 routes: projects, brand kits, credit transactions, chat sessions, chat messages | shared `limit` 1-100 plus signed scoped cursor |
-| Intrinsically bounded | jobs; generated-asset attachments; agent/image/video model catalogs | jobs 50; outstanding attachments 100 plus schema max; catalogs are sealed/static provider sets |
-| Upstream finite catalog | fonts | Google Fonts catalog cached for 24 hours; not database-growth-derived, but has no local response cap |
-| Compatibility gap | 5 legacy routes matching the V2 resources | unbounded service reads retained temporarily |
+| Bounded | jobs; generated-asset attachments | jobs `.limit(50)`; attachment adapter `limit: 100` plus response schema max |
+| Legacy compatibility gap | 5 legacy routes matching the V2 resources | unbounded service reads retained temporarily |
+| Uncapped catalog gap | fonts; agent/image/video models | finite at current runtime, but no locally enforced numeric cap or schema enum |
 
-ENG-035 remains partially resolved because the five legacy compatibility routes are still unbounded. Removal window: instrument calls, deploy V2 owners, require 14 consecutive days with zero legacy list calls, then remove in the next deployment window; earliest target is Phase 6B. Roll back by restoring the compatibility route registrations and legacy response schemas from the pre-removal release while leaving V2 routes intact.
+ENG-035 remains partially resolved because the five legacy compatibility routes and four catalog routes lack a locally proven cap. Removal window for legacy routes: instrument calls, deploy V2 owners, require 14 consecutive days with zero legacy list calls, then remove in the next deployment window; earliest target is Phase 6B. Roll back by restoring the compatibility route registrations and legacy response schemas from the pre-removal release while leaving V2 routes intact.
 
 ## Resource ownership inventory
 
