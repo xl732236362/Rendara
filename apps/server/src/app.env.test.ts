@@ -8,6 +8,12 @@ import { loadServerEnv } from "./config/env.js";
 import type { ServerEnv } from "./config/env.js";
 import { TierGuardError } from "./features/credits/tier-guard.js";
 import { ProviderRegistry } from "./generation/providers/registry.js";
+import { createCursorCodec } from "./pagination/cursor-codec.js";
+
+const ACTIVE_CURSOR_KEY_ID = "active";
+const ACTIVE_CURSOR_SECRET = "active-test-secret-with-enough-entropy";
+const PREVIOUS_CURSOR_KEY_ID = "previous";
+const PREVIOUS_CURSOR_SECRET = "previous-test-secret-with-enough-entropy";
 
 describe("application environment composition", () => {
   it("fails fast when the parsed environment lacks pagination cursor keys", () => {
@@ -30,6 +36,14 @@ describe("application environment composition", () => {
     } catch (error) {
       expect(String(error)).not.toContain(secretSentinel);
     }
+
+    expect(() =>
+      buildAppFromEnv({
+        ...testApiEnv(),
+        paginationCursorPreviousKeyId: ACTIVE_CURSOR_KEY_ID,
+        paginationCursorPreviousKey: PREVIOUS_CURSOR_SECRET,
+      }),
+    ).toThrow("Pagination cursor active and previous key IDs must differ.");
   });
 
   it("accepts an already parsed production environment without parsing it again", async () => {
@@ -43,29 +57,39 @@ describe("application environment composition", () => {
 
   it("wires active and previous keys into a default paged service", async () => {
     const timestamp = "2026-08-22T12:00:00.000Z";
-    let kitQueries = 0;
+    const previousCursor = createCursorCodec({
+      activeKey: {
+        keyId: PREVIOUS_CURSOR_KEY_ID,
+        secret: PREVIOUS_CURSOR_SECRET,
+      },
+      now: Date.now,
+    }).encode(
+      {
+        userId: testUser.id,
+        workspaceId: "workspace-1",
+        owner: "brand-kits",
+        filterHash: "all",
+        direction: "asc",
+      },
+      { id: "11111111-1111-4111-8111-111111111111", timestamp },
+    );
+    let appliedPreviousBoundary = false;
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (input) => {
         const url = String(input);
         if (url.includes("/rest/v1/brand_kits")) {
-          kitQueries += 1;
-          const rows =
-            kitQueries === 1
-              ? [
-                  kitRow("11111111-1111-4111-8111-111111111111", timestamp),
-                  kitRow(
-                    "22222222-2222-4222-8222-222222222222",
-                    "2026-08-22T12:01:00.000Z",
-                  ),
-                ]
-              : [
-                  kitRow(
-                    "22222222-2222-4222-8222-222222222222",
-                    "2026-08-22T12:01:00.000Z",
-                  ),
-                ];
-          return jsonResponse(rows);
+          appliedPreviousBoundary = new URL(url).searchParams.has("or");
+          return jsonResponse([
+            kitRow(
+              "22222222-2222-4222-8222-222222222222",
+              "2026-08-22T12:01:00.000Z",
+            ),
+            kitRow(
+              "33333333-3333-4333-8333-333333333333",
+              "2026-08-22T12:02:00.000Z",
+            ),
+          ]);
         }
         if (url.includes("/rest/v1/brand_kit_assets")) {
           return jsonResponse([]);
@@ -74,8 +98,8 @@ describe("application environment composition", () => {
       });
     const app = buildAppFromEnv(
       testApiEnv({
-        paginationCursorPreviousKeyId: "previous",
-        paginationCursorPreviousKey: "previous-test-secret-with-enough-entropy",
+        paginationCursorPreviousKeyId: PREVIOUS_CURSOR_KEY_ID,
+        paginationCursorPreviousKey: PREVIOUS_CURSOR_SECRET,
         supabaseAnonKey: "test-anon-key",
         supabaseUrl: "https://example.supabase.co",
       }),
@@ -88,21 +112,18 @@ describe("application environment composition", () => {
     );
 
     try {
-      const first = await app.inject({
+      const response = await app.inject({
         method: "GET",
-        url: "/api/v2/brand-kits?limit=1",
+        url: `/api/v2/brand-kits?limit=1&cursor=${encodeURIComponent(previousCursor)}`,
       });
-      const firstPage = first.json<{ nextCursor: string | null }>();
-      expect(first.statusCode).toBe(200);
-      expect(firstPage.nextCursor).toBeTypeOf("string");
-
-      const second = await app.inject({
-        method: "GET",
-        url: `/api/v2/brand-kits?limit=1&cursor=${encodeURIComponent(firstPage.nextCursor ?? "")}`,
-      });
-      expect(second.statusCode).toBe(200);
-      expect(second.json()).toMatchObject({ nextCursor: null });
-      expect(kitQueries).toBe(2);
+      const page = response.json<{
+        items: Array<{ id: string }>;
+        nextCursor: string | null;
+      }>();
+      expect(response.statusCode).toBe(200);
+      expect(appliedPreviousBoundary).toBe(true);
+      expect(page.items[0]?.id).toBe("22222222-2222-4222-8222-222222222222");
+      expect(readCursorKeyId(page.nextCursor)).toBe(ACTIVE_CURSOR_KEY_ID);
     } finally {
       await app.close();
       fetchSpy.mockRestore();
@@ -452,12 +473,22 @@ function createImageProvider(name: string, modelId: string) {
 function testApiEnv(overrides: Partial<ServerEnv> = {}): ServerEnv {
   return loadServerEnv(
     {
-      paginationCursorActiveKeyId: "active",
-      paginationCursorActiveKey: "active-test-secret-with-enough-entropy",
+      paginationCursorActiveKeyId: ACTIVE_CURSOR_KEY_ID,
+      paginationCursorActiveKey: ACTIVE_CURSOR_SECRET,
       ...overrides,
     },
     {},
   );
+}
+
+function readCursorKeyId(cursor: string | null): unknown {
+  if (!cursor) return null;
+  const [payloadSegment] = cursor.split(".", 1);
+  if (!payloadSegment) return null;
+  const payload = JSON.parse(
+    Buffer.from(payloadSegment, "base64url").toString("utf8"),
+  ) as Record<string, unknown>;
+  return payload.keyId;
 }
 
 function kitRow(id: string, timestamp: string) {
