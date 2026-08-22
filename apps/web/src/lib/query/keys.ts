@@ -37,6 +37,8 @@ export const queryKeys = {
     },
   },
   workspace: {
+    canvas: (userId: string, workspaceId: string, canvasId: string) =>
+      [...workspaceRoot(userId, workspaceId), "canvases", canvasId] as const,
     projects: (
       userId: string,
       workspaceId: string,

@@ -397,7 +397,8 @@
 - 影响：页面切换和多个组件消费同一资源时容易重复请求、显示陈旧数据或各自实现 loading/error；新增功能需要重复编写生命周期代码。
 - 建议方向：引入统一 server-state 层（如项目选定的成熟 query library或轻量内部封装），集中 auth-aware fetch、schema parse、query key、重试与失效；本地交互状态继续留在组件，避免建立无边界全局 store。
 - 阶段 6A 结果：TanStack Query provider、owner-scoped key factory、统一 query retry/mutation no-retry、V2 page clients 与 projects/brand kits/credits/chat/model hooks 已落地；AST 门禁禁止 factory 外 raw key arrays、identity-derived global keys、component-local V2 fetch 和非 allowlisted mutation retry。
-- 阶段 6A 收尾：`agent-section.tsx` 直接消费共享 model Query 状态；每个画布由 `agent-run-controller.ts` 唯一持有实时任务与一个 WebSocket 监听。侧栏关闭或重新挂载不会中断任务和保存补救，架构门禁、Web 223 项检查、Workspace 165 项检查及两端类型检查均通过。详见 `phase-6a-verification.md`。
+- 阶段 6A 收尾：`agent-section.tsx` 直接消费共享 model Query 状态；每个画布由 `agent-run-controller.ts` 唯一持有实时任务与一个 WebSocket 监听。收起侧栏会真实卸载界面，但不会中断任务、重连恢复和保存补救；重新打开会恢复同一回复及期间产生的费用/结束状态。架构门禁、连续两轮 Web 234 项检查、Workspace 165 项检查及两端类型检查均通过。详见 `phase-6a-verification.md`。
+- 后续清理：仅在服务器恢复结果违反 `runId` 与会话一一对应约束时，旧会话的本地助手占位消息可能暂时残留；后续事件已隔离到服务器会话，不影响运行、保存或恢复。待统一会话消息清理策略时移除该占位。
 
 ### 阶段 4 验收记录：画布领域模型
 

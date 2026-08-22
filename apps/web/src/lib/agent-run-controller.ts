@@ -34,13 +34,24 @@ type ControllerOptions = {
   ) => Promise<void> | void;
   onReplayGap?: (input: { canvasId: string; sessionId?: string }) => void;
   onRunEvent?: (event: StreamEvent) => void;
+  onDiagnostic?: (input: {
+    marker: string;
+    canvasId: string;
+    runId?: string;
+    sessionId?: string;
+    eventType?: StreamEvent["type"];
+    runCount?: number;
+  }) => void;
 };
 
 export function createAgentRunController(options: ControllerOptions) {
   const now = options.now ?? Date.now;
   const runs = new Map<string, ActiveRun>();
   const subscribers = new Set<() => void>();
-  const eventSubscribers = new Set<(event: StreamEvent) => void>();
+  const terminalWaiters = new Map<
+    string,
+    Set<(run: ActiveRun | undefined) => void>
+  >();
   const fallbackStarted = new Set<string>();
   let disposed = false;
 
@@ -65,7 +76,15 @@ export function createAgentRunController(options: ControllerOptions) {
   const handleEvent = (event: StreamEvent) => {
     if (disposed) return;
     if (event.type === "canvas.sync") {
-      if (event.canvasId === options.canvasId) options.onCanvasSync?.(event);
+      if (event.canvasId === options.canvasId) {
+        options.onCanvasSync?.(event);
+      } else {
+        options.onDiagnostic?.({
+          marker: "canvas_event_mismatch",
+          canvasId: options.canvasId,
+          eventType: event.type,
+        });
+      }
       return;
     }
     if (!("runId" in event) || typeof event.runId !== "string") return;
@@ -78,7 +97,42 @@ export function createAgentRunController(options: ControllerOptions) {
       ) {
         fallbackStarted.add(event.runId);
         void options.onRecoveredPersistenceFailure?.(event);
+      } else {
+        options.onDiagnostic?.({
+          marker: "unknown_run_event_ignored",
+          canvasId: options.canvasId,
+          runId: event.runId,
+          eventType: event.type,
+        });
       }
+      return;
+    }
+    if (
+      "sessionId" in event &&
+      typeof event.sessionId === "string" &&
+      event.sessionId !== run.sessionId
+    ) {
+      options.onDiagnostic?.({
+        marker: "run_event_session_mismatch",
+        canvasId: options.canvasId,
+        runId: run.runId,
+        sessionId: event.sessionId,
+        eventType: event.type,
+      });
+      return;
+    }
+    if (
+      "conversationId" in event &&
+      typeof event.conversationId === "string" &&
+      event.conversationId !== options.canvasId
+    ) {
+      options.onDiagnostic?.({
+        marker: "run_event_canvas_mismatch",
+        canvasId: options.canvasId,
+        runId: run.runId,
+        sessionId: run.sessionId,
+        eventType: event.type,
+      });
       return;
     }
     options.onRunEvent?.(event);
@@ -96,6 +150,9 @@ export function createAgentRunController(options: ControllerOptions) {
       next.status = event.type.slice(4) as RunStatus;
       next.terminalEvent = event;
       next.terminalAt = now();
+      const waiters = terminalWaiters.get(run.runId);
+      terminalWaiters.delete(run.runId);
+      for (const resolve of waiters ?? []) resolve(next);
     }
     runs.set(run.runId, next);
 
@@ -108,7 +165,6 @@ export function createAgentRunController(options: ControllerOptions) {
     }
     prune();
     notify();
-    for (const subscriber of eventSubscribers) subscriber(event);
   };
 
   const unsubscribeSocket = options.ws.onEvent(handleEvent);
@@ -144,14 +200,18 @@ export function createAgentRunController(options: ControllerOptions) {
         subscribers.delete(subscriber);
       };
     },
-    onEvent(subscriber: (event: StreamEvent) => void) {
-      eventSubscribers.add(subscriber);
-      return () => {
-        eventSubscribers.delete(subscriber);
-      };
+    waitForTerminal(runId: string): Promise<ActiveRun | undefined> {
+      const run = runs.get(runId);
+      if (!run || run.terminalAt !== undefined) return Promise.resolve(run);
+      return new Promise((resolve) => {
+        const waiters = terminalWaiters.get(runId) ?? new Set();
+        waiters.add(resolve);
+        terminalWaiters.set(runId, waiters);
+      });
     },
     requestResume() {
       options.ws.resumeCanvas?.(options.canvasId, (ack) => {
+        prune();
         if (!ack || typeof ack !== "object" || !("payload" in ack)) return;
         const payload = ack.payload;
         if (!payload || typeof payload !== "object") return;
@@ -165,7 +225,31 @@ export function createAgentRunController(options: ControllerOptions) {
           "activeRunId" in payload && typeof payload.activeRunId === "string"
             ? payload.activeRunId
             : undefined;
-        if (activeRunId && sessionId && !runs.has(activeRunId)) {
+        const localRun = activeRunId ? runs.get(activeRunId) : undefined;
+        const sessionMismatch = Boolean(
+          localRun && sessionId && localRun.sessionId !== sessionId,
+        );
+        if (sessionMismatch && localRun && sessionId) {
+          options.onDiagnostic?.({
+            marker: "resume_session_mismatch",
+            canvasId: options.canvasId,
+            runId: localRun.runId,
+            sessionId,
+          });
+          for (const resolve of terminalWaiters.get(localRun.runId) ?? [])
+            resolve(undefined);
+          terminalWaiters.delete(localRun.runId);
+          fallbackStarted.delete(localRun.runId);
+          runs.set(localRun.runId, {
+            runId: localRun.runId,
+            sessionId,
+            assistantId: `resumed_${localRun.runId}`,
+            status: "running",
+            contentBlocks: [],
+          });
+          options.onReplayGap?.({ canvasId: options.canvasId, sessionId });
+          notify();
+        } else if (activeRunId && sessionId && !localRun) {
           runs.set(activeRunId, {
             runId: activeRunId,
             sessionId,
@@ -175,7 +259,7 @@ export function createAgentRunController(options: ControllerOptions) {
           });
           notify();
         }
-        if (replayGap) {
+        if (replayGap && !sessionMismatch) {
           options.onReplayGap?.({
             canvasId: options.canvasId,
             ...(sessionId ? { sessionId } : {}),
@@ -187,18 +271,39 @@ export function createAgentRunController(options: ControllerOptions) {
       const run = runs.get(runId);
       if (run?.terminalAt !== undefined) {
         runs.delete(runId);
+        prune();
         notify();
       }
     },
     disposeRun(runId: string) {
-      if (runs.delete(runId)) notify();
+      const run = runs.get(runId);
+      for (const resolve of terminalWaiters.get(runId) ?? [])
+        resolve(undefined);
+      terminalWaiters.delete(runId);
+      if (run && runs.delete(runId)) {
+        options.onDiagnostic?.({
+          marker: "run_disposed",
+          canvasId: options.canvasId,
+          runId: run.runId,
+          sessionId: run.sessionId,
+        });
+        notify();
+      }
     },
     dispose() {
       if (disposed) return;
       disposed = true;
+      options.onDiagnostic?.({
+        marker: "controller_disposed",
+        canvasId: options.canvasId,
+        runCount: runs.size,
+      });
       unsubscribeSocket();
       subscribers.clear();
-      eventSubscribers.clear();
+      for (const waiters of terminalWaiters.values()) {
+        for (const resolve of waiters) resolve(undefined);
+      }
+      terminalWaiters.clear();
       runs.clear();
     },
   };

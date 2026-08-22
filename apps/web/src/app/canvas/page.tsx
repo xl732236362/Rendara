@@ -1,5 +1,7 @@
 "use client";
 
+import { useQueryClient } from "@tanstack/react-query";
+import { MessageCircle } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   Suspense,
@@ -38,6 +40,8 @@ import {
   createAuthExpiryHandler,
   registerApiAuthExpiryHandler,
 } from "../../lib/auth-expiry";
+import { queryKeys } from "../../lib/query/keys";
+import { useViewerQuery } from "../../lib/query/workspace-queries";
 import {
   ApiApplicationError,
   ApiAuthError,
@@ -128,6 +132,16 @@ function CanvasPageContent() {
     [handleAuthExpired],
   );
   const ws = useWebSocket(getToken, { onAuthExpired: handleAuthExpired });
+  const queryClient = useQueryClient();
+  const viewer = useViewerQuery(user?.id, getToken);
+  const chatOwnerRef = useRef({
+    userId: user?.id,
+    workspaceId: viewer.data?.workspace.id,
+  });
+  chatOwnerRef.current = {
+    userId: user?.id,
+    workspaceId: viewer.data?.workspace.id,
+  };
 
   const handleApiReady = useCallback((api: any) => {
     excalidrawApiRef.current = api;
@@ -299,10 +313,16 @@ function CanvasPageContent() {
     [checkForTimedOutJobs],
   );
 
-  const runController = useMemo<AgentRunController | null>(() => {
-    if (!canvasData?.id) return null;
-    return createAgentRunController({
-      canvasId: canvasData.id,
+  const [ownedRunController, setOwnedRunController] = useState<{
+    canvasId: string;
+    controller: AgentRunController;
+  } | null>(null);
+
+  useEffect(() => {
+    const ownedCanvasId = canvasData?.id;
+    if (!ownedCanvasId) return;
+    const controller = createAgentRunController({
+      canvasId: ownedCanvasId,
       ws: {
         onEvent: ws.onEvent,
         resumeCanvas: ws.resumeCanvas,
@@ -313,7 +333,7 @@ function CanvasPageContent() {
         const token = accessTokenRef.current;
         if (!token) {
           console.warn("[agent-run] fallback_persistence_skipped", {
-            canvasId: canvasData.id,
+            canvasId: ownedCanvasId,
             runId: run.runId,
             reason: "missing_access_token",
           });
@@ -330,7 +350,7 @@ function CanvasPageContent() {
           contentBlocks: run.contentBlocks,
         }).catch((error) => {
           console.warn("[agent-run] fallback_persistence_failed", {
-            canvasId: canvasData.id,
+            canvasId: ownedCanvasId,
             runId: run.runId,
             sessionId: run.sessionId,
             errorCode: "assistant_fallback_persistence_failed",
@@ -348,7 +368,7 @@ function CanvasPageContent() {
           contentBlocks: event.assistant.contentBlocks,
         }).catch((error) => {
           console.warn("[agent-run] recovered_persistence_failed", {
-            canvasId: canvasData.id,
+            canvasId: ownedCanvasId,
             runId: event.runId,
             sessionId: event.sessionId,
             error: error instanceof Error ? error.message : "unknown_error",
@@ -360,19 +380,59 @@ function CanvasPageContent() {
           canvasId: replayCanvasId,
           ...(sessionId ? { sessionId } : {}),
         });
+        const owner = chatOwnerRef.current;
+        if (!owner.userId || !owner.workspaceId) return;
+        const queryKey = sessionId
+          ? queryKeys.workspace.chatMessages(
+              owner.userId,
+              owner.workspaceId,
+              replayCanvasId,
+              sessionId,
+            )
+          : queryKeys.workspace.canvas(
+              owner.userId,
+              owner.workspaceId,
+              replayCanvasId,
+            );
+        void queryClient
+          .invalidateQueries({
+            queryKey,
+            refetchType: "all",
+          })
+          .catch((error) => {
+            console.warn("[agent-run] replay_gap_reload_failed", {
+              canvasId: replayCanvasId,
+              ...(sessionId ? { sessionId } : {}),
+              error: error instanceof Error ? error.message : "unknown_error",
+            });
+          });
+      },
+      onDiagnostic: (diagnostic) => {
+        console.info("[agent-run] controller", diagnostic);
       },
     });
+    setOwnedRunController({ canvasId: ownedCanvasId, controller });
+    return () => controller.dispose();
   }, [
     canvasData?.id,
     handleCanvasSync,
     handleStreamEvent,
+    queryClient,
     ws.onEvent,
     ws.resumeCanvas,
   ]);
 
+  const runController =
+    ownedRunController && ownedRunController.canvasId === canvasData?.id
+      ? ownedRunController.controller
+      : null;
+
+  // Resume belongs to the canvas owner so reconnect recovery continues even
+  // while the chat panel is not mounted.
   useEffect(() => {
-    return () => runController?.dispose();
-  }, [runController]);
+    if (!ws.connected || !runController) return;
+    runController.requestResume();
+  }, [runController, ws.connected]);
 
   if (!canvasId) {
     return (
@@ -395,6 +455,7 @@ function CanvasPageContent() {
   }
 
   if (!canvasData || !accessToken || !userId) return null;
+  if (!runController) return <LoadingScreen />;
 
   return (
     <div className="flex h-screen w-screen overflow-hidden">
@@ -460,22 +521,36 @@ function CanvasPageContent() {
           onClose={handleCloseFiles}
         />
       </div>
-      <ChatSidebar
-        accessToken={accessToken}
-        canvasId={canvasData.id}
-        open={chatOpen}
-        onToggle={handleToggleChat}
-        onCanvasSync={handleCanvasSync}
-        onStreamEvent={handleStreamEvent}
-        initialPrompt={initialPrompt}
-        initialSessionId={initialSessionId}
-        onSessionChange={handleSessionChange}
-        onRequestCanvasImages={handleRequestCanvasImages}
-        currentBrandKitId={brandKitId}
-        ws={ws}
-        runController={runController}
-        selectedCanvasElements={selectedCanvasElements}
-      />
+      {chatOpen ? (
+        <ChatSidebar
+          accessToken={accessToken}
+          canvasId={canvasData.id}
+          open
+          onToggle={handleToggleChat}
+          onCanvasSync={handleCanvasSync}
+          onStreamEvent={handleStreamEvent}
+          initialPrompt={initialPrompt}
+          initialSessionId={initialSessionId}
+          onSessionChange={handleSessionChange}
+          onRequestCanvasImages={handleRequestCanvasImages}
+          currentBrandKitId={brandKitId}
+          ws={ws}
+          runController={runController}
+          selectedCanvasElements={selectedCanvasElements}
+        />
+      ) : (
+        <div className="absolute right-3 top-3 z-20">
+          <button
+            aria-label="打开对话"
+            className="inline-flex size-9 items-center justify-center rounded-md border border-border bg-card/90 text-foreground/70 shadow-sm backdrop-blur-sm transition-colors hover:bg-card hover:text-foreground"
+            onClick={handleOpenChat}
+            title="打开对话"
+            type="button"
+          >
+            <MessageCircle aria-hidden="true" className="size-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -81,6 +81,18 @@ type ChatSidebarProps = {
   selectedCanvasElements?: CanvasSelectedElement[];
 };
 
+type PersistenceFailureRef = {
+  current: ((run: ActiveRun) => void) | null;
+};
+
+type RecoveredPersistenceFailureRef = {
+  current:
+    | ((
+        event: Extract<StreamEvent, { type: "assistant.persistence_failed" }>,
+      ) => void)
+    | null;
+};
+
 function acceptanceFailureText(
   code: string | undefined,
   requestId: string,
@@ -105,6 +117,71 @@ function acceptanceFailureText(
 }
 
 export function ChatSidebar({
+  runController: providedRunController,
+  ...props
+}: ChatSidebarProps) {
+  const persistenceFailureRef = useRef<((run: ActiveRun) => void) | null>(null);
+  const recoveredPersistenceFailureRef = useRef<
+    | ((
+        event: Extract<StreamEvent, { type: "assistant.persistence_failed" }>,
+      ) => void)
+    | null
+  >(null);
+  const [compatibilityRunController, setCompatibilityRunController] =
+    useState<AgentRunController | null>(null);
+  const compatibilityWasConnectedRef = useRef(false);
+
+  useEffect(() => {
+    if (providedRunController) return;
+    compatibilityWasConnectedRef.current = false;
+    const controller = createAgentRunController({
+      canvasId: props.canvasId,
+      ws: { onEvent: props.ws.onEvent, resumeCanvas: props.ws.resumeCanvas },
+      onCanvasSync: (event) => props.onCanvasSync?.(event),
+      onRunEvent: (event) => props.onStreamEvent?.(event),
+      onPersistenceFailure: (run) => persistenceFailureRef.current?.(run),
+      onRecoveredPersistenceFailure: (event) =>
+        recoveredPersistenceFailureRef.current?.(event),
+    });
+    setCompatibilityRunController(controller);
+    return () => {
+      controller.dispose();
+      setCompatibilityRunController(null);
+    };
+  }, [
+    props.canvasId,
+    props.onCanvasSync,
+    props.onStreamEvent,
+    props.ws.onEvent,
+    props.ws.resumeCanvas,
+    providedRunController,
+  ]);
+
+  useEffect(() => {
+    if (providedRunController) return;
+    if (!props.ws.connected) {
+      compatibilityWasConnectedRef.current = false;
+      return;
+    }
+    if (!compatibilityWasConnectedRef.current && compatibilityRunController) {
+      compatibilityRunController.requestResume();
+      compatibilityWasConnectedRef.current = true;
+    }
+  }, [compatibilityRunController, props.ws.connected, providedRunController]);
+
+  const runController = providedRunController ?? compatibilityRunController;
+  if (!runController) return null;
+  return (
+    <ChatSidebarContent
+      {...props}
+      persistenceFailureRef={persistenceFailureRef}
+      recoveredPersistenceFailureRef={recoveredPersistenceFailureRef}
+      runController={runController}
+    />
+  );
+}
+
+function ChatSidebarContent({
   accessToken,
   canvasId,
   open,
@@ -117,36 +194,18 @@ export function ChatSidebar({
   onRequestCanvasImages,
   currentBrandKitId,
   ws,
-  runController: providedRunController,
+  runController,
+  persistenceFailureRef,
+  recoveredPersistenceFailureRef,
   selectedCanvasElements,
-}: ChatSidebarProps) {
+}: Omit<ChatSidebarProps, "runController"> & {
+  runController: AgentRunController;
+  persistenceFailureRef: PersistenceFailureRef;
+  recoveredPersistenceFailureRef: RecoveredPersistenceFailureRef;
+}) {
   const breakpoint = useBreakpoint();
   const isOverlay = breakpoint !== "desktop";
   const { user } = useAuth();
-  const persistenceFailureRef = useRef<((run: ActiveRun) => void) | null>(null);
-  const recoveredPersistenceFailureRef = useRef<
-    | ((
-        event: Extract<StreamEvent, { type: "assistant.persistence_failed" }>,
-      ) => void)
-    | null
-  >(null);
-  const compatibilityRunController = useMemo(
-    () =>
-      providedRunController ??
-      createAgentRunController({
-        canvasId,
-        ws: { onEvent: ws.onEvent, resumeCanvas: ws.resumeCanvas },
-        onPersistenceFailure: (run) => persistenceFailureRef.current?.(run),
-        onRecoveredPersistenceFailure: (event) =>
-          recoveredPersistenceFailureRef.current?.(event),
-      }),
-    [canvasId, providedRunController, ws.onEvent, ws.resumeCanvas],
-  );
-  const runController = providedRunController ?? compatibilityRunController;
-  useEffect(() => {
-    if (providedRunController) return;
-    return () => compatibilityRunController.dispose();
-  }, [compatibilityRunController, providedRunController]);
   const catalogTokenRef = useRef(accessToken);
   catalogTokenRef.current = accessToken;
   const getCatalogToken = useCallback(() => catalogTokenRef.current, []);
@@ -223,13 +282,6 @@ export function ChatSidebar({
               : message,
           );
         });
-        if (
-          run.status === "completed" ||
-          run.status === "failed" ||
-          run.status === "canceled"
-        ) {
-          runController.acknowledgeTerminal(run.runId);
-        }
       }
     });
   }, [runController, updateSessionMessages]);
@@ -271,13 +323,14 @@ export function ChatSidebar({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesViewportRef = useRef<HTMLDivElement>(null);
   const preservingOlderAnchorRef = useRef(false);
-  const abortRef = useRef(false);
   const messageMentionsRef = useRef(messageMentions);
   messageMentionsRef.current = messageMentions;
   const selectedCanvasElementsRef = useRef(selectedCanvasElements);
   selectedCanvasElementsRef.current = selectedCanvasElements;
   const prevConnectedRef = useRef(false);
   const fallbackPersistedRunIdsRef = useRef(new Set<string>());
+  const observedBillingRunIdsRef = useRef(new Set<string>());
+  const observedTerminalRunIdsRef = useRef(new Set<string>());
 
   const {
     attachments: imageAttachments,
@@ -522,6 +575,50 @@ export function ChatSidebar({
       syncAttachedStatuses,
     ],
   );
+
+  useEffect(() => {
+    return runController.subscribe(() => {
+      for (const run of runController.getRuns().values()) {
+        if (
+          run.latestBillingError &&
+          !observedBillingRunIdsRef.current.has(run.runId)
+        ) {
+          observedBillingRunIdsRef.current.add(run.runId);
+          const event = run.latestBillingError;
+          if (event.code === "insufficient_credits") {
+            setCreditDialog({
+              open: true,
+              currentBalance: event.currentBalance ?? 0,
+              requiredAmount: event.requiredAmount ?? 0,
+              plan: event.plan ?? "free",
+              dailyClaimed: event.dailyClaimed ?? false,
+            });
+          } else {
+            showTierLimit({ code: event.code, message: event.message });
+          }
+        }
+
+        if (
+          run.terminalEvent &&
+          !observedTerminalRunIdsRef.current.has(run.runId)
+        ) {
+          observedTerminalRunIdsRef.current.add(run.runId);
+          if (
+            run.terminalEvent.type === "run.failed" &&
+            (agentModelRef.current ?? "").includes("preview")
+          ) {
+            showToast(
+              "当前 Preview 模型请求不稳定，建议切换模型后重试",
+              "error",
+            );
+          }
+          void refreshAttachmentRecovery(run.sessionId).finally(() => {
+            runController.acknowledgeTerminal(run.runId);
+          });
+        }
+      }
+    });
+  }, [refreshAttachmentRecovery, runController, showTierLimit, showToast]);
 
   const handleRetryAttachment = useCallback(
     async (block: ToolBlock) => {
@@ -837,7 +934,6 @@ export function ChatSidebar({
         { id: assistantId, role: "assistant" as const, contentBlocks: [] },
       ]);
       setStreaming(true);
-      abortRef.current = false;
 
       const normalizedRequest = {
         sessionId: currentSessionId,
@@ -862,84 +958,11 @@ export function ChatSidebar({
         const perf = {
           t0Send: performance.now(),
           tAck: 0,
-          tFirstToken: 0,
-          gotFirstToken: false,
         };
-
-        let resolveStream: () => void;
-        const streamDone = new Promise<void>((r) => {
-          resolveStream = r;
-        });
-        const runIdRef = { current: "" };
-
-        const cleanupRunListener = runController.onEvent(
-          (event: StreamEvent) => {
-            if (event.type === "canvas.sync") {
-              if (event.canvasId === canvasId) onCanvasSync?.(event);
-              return;
-            }
-            if (!runIdRef.current || event.runId !== runIdRef.current) return;
-            if (abortRef.current) {
-              resolveStream();
-              return;
-            }
-
-            // Track first token timing
-            if (!perf.gotFirstToken && event.type === "message.delta") {
-              perf.tFirstToken = performance.now();
-              perf.gotFirstToken = true;
-              console.log(
-                `[perf] send → first token: ${(perf.tFirstToken - perf.t0Send).toFixed(0)}ms` +
-                  ` (ack→token: ${(perf.tFirstToken - perf.tAck).toFixed(0)}ms)`,
-              );
-            }
-
-            // Billing error: route to appropriate UI, run.canceled will follow
-            if (event.type === "billing.error") {
-              if (event.code === "insufficient_credits") {
-                setCreditDialog({
-                  open: true,
-                  currentBalance: event.currentBalance ?? 0,
-                  requiredAmount: event.requiredAmount ?? 0,
-                  plan: event.plan ?? "free",
-                  dailyClaimed: event.dailyClaimed ?? false,
-                });
-              } else {
-                // model_not_accessible, resolution_not_allowed, concurrency_limit
-                showTierLimit({ code: event.code, message: event.message });
-              }
-            }
-
-            // Apply event to messages (single source of truth — shared with reconnect)
-            // Forward event to parent for fallback job polling (timed-out generation recovery)
-            onStreamEvent?.(event);
-
-            // Preview model hint: suggest switching when run fails
-            if (event.type === "run.failed") {
-              const currentModel = agentModelRef.current ?? "";
-              if (currentModel.includes("preview")) {
-                showToast(
-                  "当前 Preview 模型请求不稳定，建议切换模型后重试",
-                  "error",
-                );
-              }
-            }
-
-            if (
-              event.type === "run.completed" ||
-              event.type === "run.failed" ||
-              event.type === "run.canceled"
-            ) {
-              void refreshAttachmentRecovery(currentSessionId);
-              resolveStream();
-            }
-          },
-        );
 
         // Start run via WebSocket
         const runId = await new Promise<string>((resolve, reject) => {
           const timeout = setTimeout(() => {
-            cleanupRunListener();
             reject(new Error("WebSocket ack timeout — connection may be down"));
           }, 15_000);
 
@@ -957,7 +980,6 @@ export function ChatSidebar({
                 `[perf] send → ack: ${(perf.tAck - perf.t0Send).toFixed(0)}ms`,
               );
               const id = ack.payload.runId as string;
-              runIdRef.current = id;
               runController.startRun({
                 runId: id,
                 sessionId: currentSessionId,
@@ -1005,18 +1027,13 @@ export function ChatSidebar({
               setStreaming(false);
               return;
             }
-            void streamDone.finally(() => {
-              cleanupRunListener();
-              setStreaming(false);
-            });
           };
           ws.startRun(transportRequest, callbacks);
         });
         clearAttachments();
         setMessageMentions([]);
 
-        await streamDone;
-        cleanupRunListener();
+        await runController.waitForTerminal(runId);
       } catch (error) {
         const wsError = (error as { wsError?: { error?: { code?: string } } })
           .wsError;
@@ -1039,23 +1056,23 @@ export function ChatSidebar({
           }),
         );
       } finally {
-        setActiveRunId(null);
-        setStreaming(false);
+        const activeRun = [...runController.getRuns().values()].find(
+          (run) => run.status === "running" || run.status === "stopping",
+        );
+        setActiveRunId(activeRun?.runId ?? null);
+        setStreaming(Boolean(activeRun));
       }
     },
     [
       streaming,
       canvasId,
       updateSessionMessages,
-      onCanvasSync,
-      onStreamEvent,
       readyAttachments,
       clearAttachments,
       ws,
       autoTitleSession,
       accessTokenRef,
       activeSessionIdRef,
-      refreshAttachmentRecovery,
       runController,
     ],
   );
@@ -1186,8 +1203,8 @@ export function ChatSidebar({
     activeSessionIdRef,
   ]);
 
-  // Reconnect through the canvas-owned controller. Reload durable messages
-  // first so replayed live state overlays the latest server snapshot.
+  // Refresh durable messages on reconnect. The canvas page independently owns
+  // the resume request so recovery also works while this panel is unmounted.
   useEffect(() => {
     if (!ws.connected || sessionsLoading) {
       if (!ws.connected) prevConnectedRef.current = false;
@@ -1207,7 +1224,9 @@ export function ChatSidebar({
       new Set(
         [...runController.getRuns().values()].map((run) => run.assistantId),
       ),
-    ).then(() => runController.requestResume());
+    ).then(() => {
+      // Direct component tests and legacy embedders do not have a canvas page
+    });
   }, [
     ws.connected,
     sessionsLoading,
@@ -1398,9 +1417,15 @@ export function ChatSidebar({
                   console.info("[chat] canceling active Agent run", {
                     runId: activeRunId,
                   });
-                  abortRef.current = true;
-                  runController.markStopping(activeRunId);
-                  ws.cancelRun(activeRunId);
+                  const sent = ws.cancelRun(activeRunId);
+                  if (sent) {
+                    runController.markStopping(activeRunId);
+                  } else {
+                    console.warn("[chat] Agent cancel send failed", {
+                      runId: activeRunId,
+                      errorCode: "agent_cancel_unavailable",
+                    });
+                  }
                 },
               }
             : {})}

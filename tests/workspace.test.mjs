@@ -2101,13 +2101,26 @@ test("Agent run listener ownership remains canvas-scoped", async () => {
   ]);
 
   assert.match(canvasPage, /createAgentRunController\s*\(/);
+  assert.doesNotMatch(
+    canvasPage,
+    /useMemo\s*\([\s\S]{0,300}createAgentRunController\s*\(/,
+  );
   assert.match(canvasPage, /runController=\{runController\}/);
+  assert.match(canvasPage, /chatOpen\s*\?\s*\([\s\S]*<ChatSidebar/);
   assert.match(canvasPage, /onPersistenceFailure:/);
   assert.match(canvasPage, /onRecoveredPersistenceFailure:/);
+  assert.match(canvasPage, /runController\.requestResume\s*\(\s*\)/);
+  assert.match(canvasPage, /onReplayGap:[\s\S]*invalidateQueries\s*\(/);
   assert.doesNotMatch(chatSidebar, /runListenerByRunIdRef/);
   assert.doesNotMatch(chatSidebar, /assistantIdByRunIdRef/);
   assert.doesNotMatch(chatSidebar, /ws\.onEvent\s*\(/);
   assert.doesNotMatch(chatSidebar, /ws\.resumeCanvas\s*\(/);
+  assert.doesNotMatch(
+    chatSidebar,
+    /useMemo\s*\([\s\S]{0,300}createAgentRunController\s*\(/,
+  );
+  assert.doesNotMatch(chatSidebar, /runController\.requestResume\s*\(/);
+  assert.doesNotMatch(chatSidebar, /runController\.onEvent\s*\(/);
   assert.doesNotMatch(chatSidebar, /setPersistenceHandlers/);
   assert.equal(
     controller.match(/options\.ws\.onEvent\s*\(/g)?.length,

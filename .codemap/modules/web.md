@@ -18,7 +18,7 @@ Single server-state ownership boundary. `keys.ts` creates identity-scoped, norma
 
 Settings Agent model selection consumes `useAgentModelsQuery` state directly; catalog loading, failure, and retry remain Query-owned rather than component-local.
 
-Canvas pages own one `agent-run-controller.ts` instance per canvas. It is the sole live Agent run and WebSocket-listener owner, retains bounded terminal snapshots, and keeps replay and fallback persistence alive independently of ChatSidebar mounting.
+Canvas pages create one `agent-run-controller.ts` instance after commit for each canvas. It is the sole live Agent run and WebSocket-listener owner, owns reconnect/replay-gap recovery, retains bounded terminal snapshots, and keeps fallback persistence alive while ChatSidebar is genuinely unmounted.
 
 ### `apps/web/src/lib/api/`
 

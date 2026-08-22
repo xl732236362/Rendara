@@ -19,7 +19,7 @@ type RPCHandler = (
 export type WebSocketHandle = {
   connected: boolean;
   startRun: (payload: RunCreateRequest, callbacks?: RunCallbacks) => boolean;
-  cancelRun: (runId: string) => void;
+  cancelRun: (runId: string) => boolean;
   onEvent: (cb: EventCallback) => () => void;
   registerRPC: (method: string, handler: RPCHandler) => () => void;
   resumeCanvas: (canvasId: string, onAck?: (ack: WsCommandAck) => void) => void;
@@ -365,9 +365,7 @@ export function useWebSocket(
   );
 
   const cancelRun = useCallback(
-    (runId: string) => {
-      sendCommand("agent.cancel", { runId });
-    },
+    (runId: string) => sendCommand("agent.cancel", { runId }),
     [sendCommand],
   );
 

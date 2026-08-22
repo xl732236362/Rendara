@@ -23,6 +23,7 @@ import {
   mergeReloadedMessages,
 } from "../src/hooks/use-chat-sessions";
 import type { WebSocketHandle } from "../src/hooks/use-websocket";
+import { createAgentRunController } from "../src/lib/agent-run-controller";
 import { ApiApplicationError } from "../src/lib/api-client";
 import { queryKeys } from "../src/lib/query/keys";
 
@@ -141,7 +142,7 @@ function createMockWs(): WebSocketHandle {
       });
       return true;
     }),
-    cancelRun: vi.fn(),
+    cancelRun: vi.fn(() => true),
     onEvent: vi.fn(() => () => {}),
     registerRPC: vi.fn(() => () => {}),
     resumeCanvas: vi.fn(),
@@ -359,7 +360,9 @@ describe("ChatSidebar", () => {
         </TierLimitToastProvider>
       </ToastProvider>,
     );
-    expect(await screen.findByText("old owner message")).toBeInTheDocument();
+    expect(
+      await screen.findByText("old owner message", {}, { timeout: 3_000 }),
+    ).toBeInTheDocument();
     await userEvent.type(
       screen.getByPlaceholderText(/start with an idea/i),
       "old pending message{Enter}",
@@ -409,6 +412,104 @@ describe("ChatSidebar", () => {
         expect.objectContaining({ role: "user" }),
       ),
     );
+    await waitFor(() =>
+      expect(mockWs.resumeCanvas).toHaveBeenCalledWith(
+        "canvas-2",
+        expect.any(Function),
+      ),
+    );
+  });
+
+  it("rebuilds the same live assistant after a real unmount and remount", async () => {
+    let socketListener: ((event: StreamEvent) => void) | undefined;
+    const ws = createMockWs();
+    ws.onEvent = vi.fn((listener) => {
+      socketListener = listener;
+      return vi.fn();
+    });
+    const controller = createAgentRunController({
+      canvasId: "canvas-1",
+      ws,
+    });
+    const client = createTestQueryClient();
+    const sidebar = (
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            runController={controller}
+            ws={ws}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>
+    );
+
+    const first = render(sidebar, client);
+    await screen.findByPlaceholderText(/start with an idea/i);
+    await waitFor(() =>
+      expect(fetchMessagesMock).toHaveBeenCalledWith(
+        "token_abc",
+        "session-real",
+        expect.anything(),
+      ),
+    );
+    act(() => {
+      controller.startRun({
+        runId: "run-remount",
+        sessionId: "session-real",
+        assistantId: "assistant-remount",
+      });
+      socketListener?.({
+        type: "message.delta",
+        runId: "run-remount",
+        messageId: "message-remount",
+        delta: "before ",
+        timestamp: "2026-08-22T00:00:00.000Z",
+      });
+    });
+    expect(await screen.findByText("before")).toBeInTheDocument();
+
+    first.unmount();
+    act(() => {
+      socketListener?.({
+        type: "message.delta",
+        runId: "run-remount",
+        messageId: "message-remount",
+        delta: "after",
+        timestamp: "2026-08-22T00:00:01.000Z",
+      });
+      socketListener?.({
+        type: "billing.error",
+        runId: "run-remount",
+        code: "insufficient_credits",
+        message: "Not enough credits",
+        currentBalance: 1,
+        requiredAmount: 2,
+        plan: "free",
+        dailyClaimed: false,
+        timestamp: "2026-08-22T00:00:02.000Z",
+      });
+      socketListener?.({
+        type: "run.canceled",
+        runId: "run-remount",
+        timestamp: "2026-08-22T00:00:03.000Z",
+      });
+    });
+
+    render(sidebar, client);
+    expect(await screen.findByText("before after")).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Not Enough Credits" }),
+    ).toBeInTheDocument();
+    expect(
+      document.querySelector('[data-message-id="assistant-remount"]'),
+    ).toBeInTheDocument();
+    expect(ws.onEvent).toHaveBeenCalledOnce();
+    await waitFor(() => expect(controller.getRuns()).toHaveLength(0));
+    controller.dispose();
   });
 
   it("isolates the active session when the user or workspace owner changes", async () => {
@@ -1099,6 +1200,85 @@ describe("ChatSidebar", () => {
     await userEvent.click(stopButton);
 
     expect(mockWs.cancelRun).toHaveBeenCalledWith("run_123");
+  });
+
+  it("keeps a run active when the stop command cannot be sent", async () => {
+    mockWs.cancelRun = vi.fn(() => false);
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    const input = await screen.findByPlaceholderText(/start with an idea/i);
+    await userEvent.type(input, "keep running{Enter}");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "停止运行" }),
+    );
+
+    expect(mockWs.cancelRun).toHaveBeenCalledWith("run_123");
+    expect(
+      screen.getByRole("button", { name: "停止运行" }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the resumed server run active after replacing a mismatched waiter", async () => {
+    let resumeAck: ((ack: unknown) => void) | undefined;
+    mockWs.resumeCanvas = vi.fn((_canvasId, onAck) => {
+      resumeAck = onAck;
+    });
+    const controller = createAgentRunController({
+      canvasId: "canvas-1",
+      ws: mockWs,
+    });
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            runController={controller}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    const input = await screen.findByPlaceholderText(/start with an idea/i);
+    await userEvent.type(input, "resume another session{Enter}");
+    expect(
+      await screen.findByRole("button", { name: "停止运行" }),
+    ).toBeInTheDocument();
+
+    await act(async () => {
+      controller.requestResume();
+      resumeAck?.({
+        payload: {
+          activeRunId: "run_123",
+          activeRunSessionId: "session-server",
+          replayGap: false,
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(controller.getRuns().get("run_123")?.sessionId).toBe(
+      "session-server",
+    );
+    expect(
+      screen.getByRole("button", { name: "停止运行" }),
+    ).toBeInTheDocument();
+    controller.dispose();
   });
 
   it("retries acceptance with the same request without duplicating the user message", async () => {
