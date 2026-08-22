@@ -11,6 +11,9 @@ interface BrandKitSidebarProps {
   onSelectKit: (kitId: string) => void;
   onCreateKit: () => void;
   onDeleteKit: (kitId: string) => void;
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }
 
 export function BrandKitSidebar({
@@ -19,6 +22,9 @@ export function BrandKitSidebar({
   onSelectKit,
   onCreateKit,
   onDeleteKit,
+  hasMore,
+  loadingMore,
+  onLoadMore,
 }: BrandKitSidebarProps) {
   return (
     <aside className="flex w-full shrink-0 flex-col border-b bg-secondary md:w-[260px] md:border-b-0 md:border-r">
@@ -98,6 +104,16 @@ export function BrandKitSidebar({
             </div>
           );
         })}
+        {hasMore && (
+          <button
+            type="button"
+            disabled={loadingMore}
+            onClick={onLoadMore}
+            className="min-h-9 rounded-lg border px-3 text-xs text-muted-foreground disabled:opacity-50"
+          >
+            {loadingMore ? "Loading..." : "Load More"}
+          </button>
+        )}
       </div>
     </aside>
   );

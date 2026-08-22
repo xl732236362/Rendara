@@ -1,12 +1,14 @@
 // @credits-system — Usage history table showing credit transactions
 "use client";
 
-import type { CreditTransaction } from "@loomic/shared";
 import { Loader2, Zap } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { useAuth } from "@/lib/auth-context";
-import { fetchCreditTransactions } from "@/lib/credits-api";
+import {
+  useCreditTransactionsInfiniteQuery,
+  useViewerQuery,
+} from "@/lib/query/workspace-queries";
 
 // ── Transaction type labels ──────────────────────────────────
 
@@ -58,40 +60,26 @@ function formatDate(iso: string): string {
 // ── Main component ───────────────────────────────────────────
 
 export function CreditUsageHistory() {
-  const { session } = useAuth();
+  const { user, session } = useAuth();
   const accessTokenRef = useRef(session?.access_token);
   accessTokenRef.current = session?.access_token;
-
-  const [transactions, setTransactions] = useState<CreditTransaction[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const getToken = useCallback(() => accessTokenRef.current ?? null, []);
+  const viewer = useViewerQuery(user?.id, getToken);
+  const transactionsQuery = useCreditTransactionsInfiniteQuery({
+    userId: user?.id ?? "disabled",
+    workspaceId: viewer.data?.workspace.id,
+    getAccessToken: getToken,
+    limit: PAGE_SIZE,
+  });
   const [filter, setFilter] = useState<FilterMode>("all");
-  const [hasMore, setHasMore] = useState(true);
-
-  const loadTransactions = useCallback(async (limit: number) => {
-    const token = accessTokenRef.current;
-    if (!token) return;
-    try {
-      const result = await fetchCreditTransactions(token, limit);
-      setTransactions(result.transactions);
-      setHasMore(result.transactions.length >= limit);
-    } catch {
-      // Silently fail — user will see empty state
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    loadTransactions(PAGE_SIZE);
-  }, [loadTransactions]);
-
-  const handleLoadMore = async () => {
-    setLoadingMore(true);
-    const nextLimit = transactions.length + PAGE_SIZE;
-    await loadTransactions(nextLimit);
-    setLoadingMore(false);
-  };
+  const seen = new Set<string>();
+  const transactions = (transactionsQuery.data?.pages ?? []).flatMap((page) =>
+    page.items.filter((transaction) => {
+      if (seen.has(transaction.id)) return false;
+      seen.add(transaction.id);
+      return true;
+    }),
+  );
 
   // Filter transactions
   const filtered = transactions.filter((t) => {
@@ -100,7 +88,7 @@ export function CreditUsageHistory() {
     return true;
   });
 
-  if (loading) {
+  if (viewer.isPending || transactionsQuery.isPending) {
     return (
       <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
@@ -197,16 +185,18 @@ export function CreditUsageHistory() {
       )}
 
       {/* Load more */}
-      {hasMore && filtered.length > 0 && (
+      {transactionsQuery.hasNextPage && filtered.length > 0 && (
         <div className="flex justify-center pt-2">
           <button
             type="button"
-            onClick={handleLoadMore}
-            disabled={loadingMore}
+            onClick={() => void transactionsQuery.fetchNextPage()}
+            disabled={transactionsQuery.isFetchingNextPage}
             className="flex items-center gap-2 rounded-lg border px-4 py-2 text-sm text-muted-foreground transition-colors hover:bg-secondary disabled:opacity-50"
           >
-            {loadingMore && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            {loadingMore ? "Loading..." : "Load More"}
+            {transactionsQuery.isFetchingNextPage && (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            )}
+            {transactionsQuery.isFetchingNextPage ? "Loading..." : "Load More"}
           </button>
         </div>
       )}

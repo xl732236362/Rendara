@@ -10,9 +10,11 @@ import { ProfileSection } from "@/components/profile-section";
 import { SettingsSkeleton } from "@/components/skeletons/settings-skeleton";
 import { useAuth } from "@/lib/auth-context";
 import {
+  useAgentModelsQuery,
+  useViewerQuery,
+} from "@/lib/query/workspace-queries";
+import {
   ApiAuthError,
-  fetchModels,
-  fetchViewer,
   fetchWorkspaceSettings,
   updateProfile,
   updateWorkspaceSettings,
@@ -28,7 +30,7 @@ const tabs: Array<{ id: SettingsTab; label: string }> = [
 ];
 
 export default function SettingsPage() {
-  const { session } = useAuth();
+  const { user, session } = useAuth();
   const searchParams = useSearchParams();
 
   const initialTab = (searchParams.get("tab") as SettingsTab) ?? "profile";
@@ -48,6 +50,8 @@ export default function SettingsPage() {
   const hasInitialized = useRef(false);
 
   const getToken = useCallback(() => accessTokenRef.current, []);
+  const viewer = useViewerQuery(user?.id, () => getToken() ?? null);
+  const modelsQuery = useAgentModelsQuery();
 
   const loadData = useCallback(async () => {
     const token = getToken();
@@ -55,14 +59,12 @@ export default function SettingsPage() {
     setPageLoading(true);
 
     try {
-      const [viewer, settings] = await Promise.all([
-        fetchViewer(token),
-        fetchWorkspaceSettings(token),
-      ]);
-
+      const settings = await fetchWorkspaceSettings(token);
+      const viewerData = viewer.data;
+      if (!viewerData) return;
       setProfile({
-        displayName: viewer.profile.displayName,
-        email: viewer.profile.email,
+        displayName: viewerData.profile.displayName,
+        email: viewerData.profile.email,
       });
       setDefaultModel(settings.settings.defaultModel);
     } catch (err) {
@@ -73,14 +75,14 @@ export default function SettingsPage() {
     } finally {
       setPageLoading(false);
     }
-  }, [getToken]);
+  }, [getToken, viewer.data]);
 
   useEffect(() => {
     if (hasInitialized.current) return;
-    if (!session?.access_token) return;
+    if (!session?.access_token || !viewer.data?.workspace.id) return;
     hasInitialized.current = true;
     loadData();
-  }, [session?.access_token, loadData]);
+  }, [session?.access_token, viewer.data?.workspace.id, loadData]);
 
   const handleProfileSave = useCallback(
     async (displayName: string) => {
@@ -107,7 +109,10 @@ export default function SettingsPage() {
     [getToken],
   );
 
-  const stableFetchModels = useCallback(() => fetchModels(), []);
+  const stableFetchModels = useCallback(
+    () => Promise.resolve({ models: modelsQuery.data?.models ?? [] }),
+    [modelsQuery.data?.models],
+  );
 
   if (pageLoading) {
     return <SettingsSkeleton />;

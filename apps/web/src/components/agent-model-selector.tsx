@@ -1,7 +1,7 @@
 "use client";
 
 import { useAgentModel } from "@/hooks/use-agent-model";
-import { fetchModels } from "@/lib/server-api";
+import { useAgentModelsQuery } from "@/lib/query/workspace-queries";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
@@ -43,16 +43,10 @@ function ProviderLogo({ provider }: { provider: string }) {
 export function AgentModelSelector({ compact }: { compact?: boolean } = {}) {
   const { model, setModel } = useAgentModel();
   const [open, setOpen] = useState(false);
-  const [models, setModels] = useState<ModelOption[]>([]);
+  const modelsQuery = useAgentModelsQuery();
+  const models: ModelOption[] = modelsQuery.data?.models ?? [];
   const btnRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
-
-  // Fetch available models
-  useEffect(() => {
-    fetchModels()
-      .then((data) => setModels(data.models))
-      .catch(() => {});
-  }, []);
 
   // Close on outside click
   useEffect(() => {

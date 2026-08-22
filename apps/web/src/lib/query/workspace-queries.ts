@@ -168,13 +168,16 @@ export function useAgentModelsQuery() {
 export function useImageModelsQuery(options?: WorkspaceQueryOptions) {
   const authenticated = isAuthenticatedWorkspace(options);
   return useQuery({
-    queryKey: authenticated
-      ? queryKeys.workspace.models.image(
-          options.userId,
-          options.workspaceId,
-          {},
-        )
+    queryKey: options
+      ? authenticated
+        ? queryKeys.workspace.models.image(
+            options.userId,
+            options.workspaceId,
+            {},
+          )
+        : queryKeys.disabled("image-models")
       : queryKeys.public.models.image({}),
+    enabled: !options || authenticated,
     queryFn: ({ signal }) =>
       fetchImageModels({
         ...(authenticated
@@ -188,13 +191,16 @@ export function useImageModelsQuery(options?: WorkspaceQueryOptions) {
 export function useVideoModelsQuery(options?: WorkspaceQueryOptions) {
   const authenticated = isAuthenticatedWorkspace(options);
   return useQuery({
-    queryKey: authenticated
-      ? queryKeys.workspace.models.video(
-          options.userId,
-          options.workspaceId,
-          {},
-        )
+    queryKey: options
+      ? authenticated
+        ? queryKeys.workspace.models.video(
+            options.userId,
+            options.workspaceId,
+            {},
+          )
+        : queryKeys.disabled("video-models")
       : queryKeys.public.models.video({}),
+    enabled: !options || authenticated,
     queryFn: ({ signal }) =>
       fetchVideoModels({
         ...(authenticated

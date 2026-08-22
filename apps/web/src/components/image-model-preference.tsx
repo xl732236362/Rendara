@@ -1,14 +1,25 @@
 "use client";
 
 import { Lock, Zap } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 
 import { useImageModelPreference } from "../hooks/use-image-model-preference";
 import { useVideoModelPreference } from "../hooks/use-video-model-preference";
+import { useAuth } from "../lib/auth-context";
+import {
+  useImageModelsQuery,
+  useVideoModelsQuery,
+  useViewerQuery,
+} from "../lib/query/workspace-queries";
 import type { ImageModelInfo } from "../lib/server-api";
 import type { VideoModelInfo } from "../lib/server-api";
-import { fetchImageModels, fetchVideoModels } from "../lib/server-api";
 
 export function ImageModelPreferencePopover({
   open,
@@ -20,26 +31,30 @@ export function ImageModelPreferencePopover({
   anchorRef: React.RefObject<HTMLElement | null>;
 }) {
   const { preference, setMode, toggleModel } = useImageModelPreference();
-  const [models, setModels] = useState<ImageModelInfo[]>([]);
+  const { user, session } = useAuth();
+  const accessTokenRef = useRef(session?.access_token);
+  accessTokenRef.current = session?.access_token;
+  const getToken = useCallback(() => accessTokenRef.current ?? null, []);
+  const viewer = useViewerQuery(user?.id, getToken);
+  const catalogOptions = user
+    ? {
+        userId: user.id,
+        workspaceId: viewer.data?.workspace.id,
+        getAccessToken: getToken,
+      }
+    : undefined;
+  const imageModelsQuery = useImageModelsQuery(catalogOptions);
+  const videoModelsQuery = useVideoModelsQuery(catalogOptions);
+  const models: ImageModelInfo[] = imageModelsQuery.data?.models ?? [];
   const [activeTab, setActiveTab] = useState<"image" | "video">("image");
   const videoPreference = useVideoModelPreference();
-  const [videoModels, setVideoModels] = useState<VideoModelInfo[]>([]);
+  const videoModels: VideoModelInfo[] = videoModelsQuery.data?.models ?? [];
   const popoverRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{
     top: number;
     left: number;
     above: boolean;
   } | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    fetchImageModels()
-      .then((data) => setModels(data.models))
-      .catch(() => {});
-    fetchVideoModels()
-      .then((data) => setVideoModels(data.models))
-      .catch(() => {});
-  }, [open]);
 
   // Calculate position — auto-detect direction based on available space
   useLayoutEffect(() => {

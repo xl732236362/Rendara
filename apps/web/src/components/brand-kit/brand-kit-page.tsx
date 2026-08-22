@@ -1,10 +1,7 @@
 "use client";
 
-import type {
-  BrandKitAssetType,
-  BrandKitDetail,
-  BrandKitSummary,
-} from "@loomic/shared";
+import type { BrandKitAssetType, BrandKitDetail } from "@loomic/shared";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useAuth } from "../../lib/auth-context";
@@ -15,11 +12,15 @@ import {
   deleteBrandKitAsset,
   duplicateBrandKit,
   fetchBrandKit,
-  fetchBrandKits,
   updateBrandKit,
   updateBrandKitAsset,
   uploadBrandKitAsset,
 } from "../../lib/brand-kit-api";
+import { queryKeys } from "../../lib/query/keys";
+import {
+  useBrandKitsInfiniteQuery,
+  useViewerQuery,
+} from "../../lib/query/workspace-queries";
 import { ApiAuthError } from "../../lib/server-api";
 import { BrandKitSkeleton } from "../skeletons/brand-kit-skeleton";
 import { BrandKitEditor } from "./brand-kit-editor";
@@ -27,11 +28,10 @@ import { BrandKitSidebar } from "./brand-kit-sidebar";
 import { EmptyState } from "./empty-state";
 
 export function BrandKitPage() {
-  const { session, signOut } = useAuth();
+  const { user, session, signOut } = useAuth();
+  const queryClient = useQueryClient();
 
-  const [kits, setKits] = useState<BrandKitSummary[]>([]);
   const [selectedKit, setSelectedKit] = useState<BrandKitDetail | null>(null);
-  const [loading, setLoading] = useState(true);
 
   // Use refs for values that change on token refresh but shouldn't
   // trigger callback/effect cascades (root cause of tab-switch reloads).
@@ -55,6 +55,31 @@ export function BrandKitPage() {
     if (!token) throw new ApiAuthError();
     return token;
   }, []);
+  const getOptionalToken = useCallback(
+    () => accessTokenRef.current ?? null,
+    [],
+  );
+  const viewer = useViewerQuery(user?.id, getOptionalToken);
+  const workspaceId = viewer.data?.workspace.id;
+  const kitsQuery = useBrandKitsInfiniteQuery({
+    userId: user?.id ?? "disabled",
+    workspaceId,
+    getAccessToken: getOptionalToken,
+    limit: 20,
+  });
+  const kitKey =
+    user && workspaceId
+      ? queryKeys.workspace.brandKits(user.id, workspaceId, { limit: 20 })
+      : null;
+  const seenKitIds = new Set<string>();
+  const kits = (kitsQuery.data?.pages ?? []).flatMap((page) =>
+    page.items.filter((kit) => {
+      if (seenKitIds.has(kit.id)) return false;
+      seenKitIds.add(kit.id);
+      return true;
+    }),
+  );
+  const firstKitId = kits[0]?.id;
 
   // --- Data loading (ref-based, no dependency cascades) ---
 
@@ -73,40 +98,29 @@ export function BrandKitPage() {
 
   const refreshList = useCallback(async () => {
     try {
-      const data = await fetchBrandKits(getToken());
-      setKits(data.brandKits);
-      return data.brandKits;
+      if (!kitKey) return [];
+      await queryClient.resetQueries({ queryKey: kitKey, exact: true });
+      const result = await kitsQuery.refetch();
+      const seen = new Set<string>();
+      return (result.data?.pages ?? []).flatMap((page) =>
+        page.items.filter((kit) => {
+          if (seen.has(kit.id)) return false;
+          seen.add(kit.id);
+          return true;
+        }),
+      );
     } catch (err) {
       if (await handleAuthError(err)) return [];
       console.error("Failed to load brand kits:", err);
       return [];
     }
-  }, [getToken, handleAuthError]);
+  }, [handleAuthError, kitKey, kitsQuery.refetch, queryClient]);
 
   // Initial load — runs exactly once (workspace layout guarantees auth).
-  const hasInitialized = useRef(false);
   useEffect(() => {
-    if (hasInitialized.current) return;
-    hasInitialized.current = true;
-
-    (async () => {
-      setLoading(true);
-      try {
-        const data = await fetchBrandKits(getToken());
-        setKits(data.brandKits);
-        const firstKit = data.brandKits[0];
-        if (firstKit) {
-          const detail = await fetchBrandKit(getToken(), firstKit.id);
-          setSelectedKit(detail);
-        }
-      } catch (err) {
-        if (await handleAuthError(err)) return;
-        console.error("Failed to load brand kits:", err);
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [getToken, handleAuthError]);
+    if (!firstKitId || selectedKitRef.current) return;
+    void loadKitDetail(firstKitId);
+  }, [firstKitId, loadKitDetail]);
 
   // --- Kit handlers ---
 
@@ -279,7 +293,7 @@ export function BrandKitPage() {
 
   // --- Render ---
 
-  if (loading) {
+  if (viewer.isPending || kitsQuery.isPending) {
     return <BrandKitSkeleton />;
   }
 
@@ -292,6 +306,9 @@ export function BrandKitPage() {
         onSelectKit={handleSelectKit}
         onCreateKit={handleCreateKit}
         onDeleteKit={handleDeleteKitFromSidebar}
+        hasMore={kitsQuery.hasNextPage}
+        loadingMore={kitsQuery.isFetchingNextPage}
+        onLoadMore={() => void kitsQuery.fetchNextPage()}
       />
 
       {selectedKit ? (
