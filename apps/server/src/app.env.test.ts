@@ -5,17 +5,108 @@ import {
   getAppUseCases,
 } from "./app.js";
 import { loadServerEnv } from "./config/env.js";
+import type { ServerEnv } from "./config/env.js";
 import { TierGuardError } from "./features/credits/tier-guard.js";
 import { ProviderRegistry } from "./generation/providers/registry.js";
 
 describe("application environment composition", () => {
+  it("fails fast when the parsed environment lacks pagination cursor keys", () => {
+    const secretSentinel = "must-not-appear-in-errors";
+    const env = loadServerEnv({}, {});
+
+    expect(() => buildAppFromEnv(env)).toThrow(
+      "Pagination cursor active key ID and secret are required.",
+    );
+    const buildWithIncompletePreviousPair = () =>
+      buildAppFromEnv({
+        ...testApiEnv(),
+        paginationCursorPreviousKey: secretSentinel,
+      });
+    expect(buildWithIncompletePreviousPair).toThrow(
+      "Pagination cursor previous key ID and secret must be configured together.",
+    );
+    try {
+      buildWithIncompletePreviousPair();
+    } catch (error) {
+      expect(String(error)).not.toContain(secretSentinel);
+    }
+  });
+
   it("accepts an already parsed production environment without parsing it again", async () => {
-    const env = loadServerEnv({ version: "parse-once-test" }, {});
+    const env = testApiEnv({ version: "parse-once-test" });
     const app = buildAppFromEnv(env);
 
     expect(env.version).toBe("parse-once-test");
     expect((await app.inject({ url: "/api/health" })).statusCode).toBe(200);
     await app.close();
+  });
+
+  it("wires active and previous keys into a default paged service", async () => {
+    const timestamp = "2026-08-22T12:00:00.000Z";
+    let kitQueries = 0;
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/rest/v1/brand_kits")) {
+          kitQueries += 1;
+          const rows =
+            kitQueries === 1
+              ? [
+                  kitRow("11111111-1111-4111-8111-111111111111", timestamp),
+                  kitRow(
+                    "22222222-2222-4222-8222-222222222222",
+                    "2026-08-22T12:01:00.000Z",
+                  ),
+                ]
+              : [
+                  kitRow(
+                    "22222222-2222-4222-8222-222222222222",
+                    "2026-08-22T12:01:00.000Z",
+                  ),
+                ];
+          return jsonResponse(rows);
+        }
+        if (url.includes("/rest/v1/brand_kit_assets")) {
+          return jsonResponse([]);
+        }
+        throw new Error(`Unexpected test request: ${new URL(url).pathname}`);
+      });
+    const app = buildAppFromEnv(
+      testApiEnv({
+        paginationCursorPreviousKeyId: "previous",
+        paginationCursorPreviousKey: "previous-test-secret-with-enough-entropy",
+        supabaseAnonKey: "test-anon-key",
+        supabaseUrl: "https://example.supabase.co",
+      }),
+      {
+        auth: { authenticate: async () => testUser },
+        viewerService: {
+          ensureViewer: async () => ({ workspace: { id: "workspace-1" } }),
+        } as never,
+      },
+    );
+
+    try {
+      const first = await app.inject({
+        method: "GET",
+        url: "/api/v2/brand-kits?limit=1",
+      });
+      const firstPage = first.json<{ nextCursor: string | null }>();
+      expect(first.statusCode).toBe(200);
+      expect(firstPage.nextCursor).toBeTypeOf("string");
+
+      const second = await app.inject({
+        method: "GET",
+        url: `/api/v2/brand-kits?limit=1&cursor=${encodeURIComponent(firstPage.nextCursor ?? "")}`,
+      });
+      expect(second.statusCode).toBe(200);
+      expect(second.json()).toMatchObject({ nextCursor: null });
+      expect(kitQueries).toBe(2);
+    } finally {
+      await app.close();
+      fetchSpy.mockRestore();
+    }
   });
 
   it("keeps partial test overrides behind validation", () => {
@@ -38,7 +129,7 @@ describe("application environment composition", () => {
           }),
         })
         .seal();
-    const env = loadServerEnv({}, {});
+    const env = testApiEnv();
     const first = buildAppFromEnv(env, {
       providerRegistry: createRegistry("first", "first/model"),
     });
@@ -68,7 +159,7 @@ describe("application environment composition", () => {
       .registerImageProvider(createImageProvider("second", "duplicate/model"));
 
     expect(() =>
-      buildAppFromEnv(loadServerEnv({}, {}), { providerRegistry: registry }),
+      buildAppFromEnv(testApiEnv(), { providerRegistry: registry }),
     ).toThrow('Duplicate image model ID: "duplicate/model"');
   });
 
@@ -77,7 +168,7 @@ describe("application environment composition", () => {
       createImageProvider("first", "first/model"),
     );
 
-    const app = buildAppFromEnv(loadServerEnv({}, {}), {
+    const app = buildAppFromEnv(testApiEnv(), {
       providerRegistry: registry,
     });
 
@@ -88,7 +179,7 @@ describe("application environment composition", () => {
   });
 
   it("fails startup when the built-in Skill catalog is invalid", async () => {
-    const app = buildAppFromEnv(loadServerEnv({}, {}), {
+    const app = buildAppFromEnv(testApiEnv(), {
       builtinSkillCatalogLoader: async () => {
         throw new Error("skill_catalog_invalid");
       },
@@ -100,7 +191,7 @@ describe("application environment composition", () => {
 
   it("keeps canvas capabilities when queued generation is unavailable", async () => {
     let factoryOptions: Record<string, unknown> | undefined;
-    const app = buildAppFromEnv(loadServerEnv({}, {}), {
+    const app = buildAppFromEnv(testApiEnv(), {
       agentFactory: ((options: Record<string, unknown>) => {
         factoryOptions = options;
         return { async *streamEvents() {}, async *stream() {} };
@@ -146,10 +237,10 @@ describe("application environment composition", () => {
 
     const firstDispose = vi.fn();
     const secondDispose = vi.fn();
-    const first = buildAppFromEnv(loadServerEnv({}, {}), {
+    const first = buildAppFromEnv(testApiEnv(), {
       connectionManager: { dispose: firstDispose } as never,
     });
-    const second = buildAppFromEnv(loadServerEnv({}, {}), {
+    const second = buildAppFromEnv(testApiEnv(), {
       connectionManager: { dispose: secondDispose } as never,
     });
     await Promise.all([first.close(), second.close()]);
@@ -168,7 +259,7 @@ describe("application environment composition", () => {
 
   it("rejects malformed injected use-case groups at build time", () => {
     expect(() =>
-      buildAppFromEnv(loadServerEnv({}, {}), {
+      buildAppFromEnv(testApiEnv(), {
         useCases: { canvas: {} } as never,
       }),
     ).toThrow(/Invalid injected useCases/);
@@ -182,7 +273,7 @@ describe("application environment composition", () => {
         attachGeneratedAsset: vi.fn(),
       },
     };
-    const app = buildAppFromEnv(loadServerEnv({}, {}), {
+    const app = buildAppFromEnv(testApiEnv(), {
       auth: {
         authenticate: async () => ({
           accessToken: "token",
@@ -208,7 +299,7 @@ describe("application environment composition", () => {
       (_model: string, _type: string, params?: { quality?: string }) =>
         ({ standard: 8, hd: 12, ultra: 20 })[params?.quality ?? "hd"] ?? 12,
     );
-    const app = buildAppFromEnv(loadServerEnv({}, {}), {
+    const app = buildAppFromEnv(testApiEnv(), {
       creditService: {
         getSubscription: async () => ({ plan: "ultra" }),
         deductCredits: async () => "transaction-1",
@@ -286,7 +377,7 @@ describe("application environment composition", () => {
         );
       }
     });
-    const app = buildAppFromEnv(loadServerEnv({}, {}), {
+    const app = buildAppFromEnv(testApiEnv(), {
       creditService: {
         getSubscription: async () => ({ plan: "pro" }),
       } as never,
@@ -357,3 +448,39 @@ function createImageProvider(name: string, modelId: string) {
     }),
   };
 }
+
+function testApiEnv(overrides: Partial<ServerEnv> = {}): ServerEnv {
+  return loadServerEnv(
+    {
+      paginationCursorActiveKeyId: "active",
+      paginationCursorActiveKey: "active-test-secret-with-enough-entropy",
+      ...overrides,
+    },
+    {},
+  );
+}
+
+function kitRow(id: string, timestamp: string) {
+  return {
+    id,
+    name: id,
+    is_default: false,
+    cover_url: null,
+    created_at: timestamp,
+    updated_at: timestamp,
+  };
+}
+
+function jsonResponse(value: unknown) {
+  return new Response(JSON.stringify(value), {
+    headers: { "content-type": "application/json" },
+    status: 200,
+  });
+}
+
+const testUser = {
+  accessToken: "token",
+  email: "user@example.com",
+  id: "user-1",
+  userMetadata: {},
+};

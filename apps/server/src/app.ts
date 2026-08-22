@@ -135,7 +135,10 @@ import { registerUploadRoutes } from "./http/uploads.js";
 import { registerVideoModelRoutes } from "./http/video-models.js";
 import { registerViewerRoutes } from "./http/viewer.js";
 import { sanitizeRequestUrl } from "./logging/sanitize-log-data.js";
-import { createCursorCodec } from "./pagination/cursor-codec.js";
+import {
+  type CursorCodecOptions,
+  createCursorCodec,
+} from "./pagination/cursor-codec.js";
 import { createPgmqClient } from "./queue/pgmq-client.js";
 import { registerRateLimiting } from "./security/rate-limit.js";
 import {
@@ -245,6 +248,9 @@ export function buildAppFromEnv(
   const injectedUseCases = options.useCases
     ? snapshotUseCases(options.useCases)
     : undefined;
+  const cursorCodec = createCursorCodec(
+    paginationCursorCodecOptionsFromEnv(env),
+  );
   // Register generation providers (shared with worker.ts)
   const providerRegistry = (
     options.providerRegistry ?? registerAllProviders(env)
@@ -384,21 +390,6 @@ export function buildAppFromEnv(
     });
   const viewerService =
     options.viewerService ?? createViewerService({ getAdminClient });
-  const cursorCodec = createCursorCodec({
-    activeKey: {
-      keyId: env.paginationCursorActiveKeyId as string,
-      secret: env.paginationCursorActiveKey as string,
-    },
-    ...(env.paginationCursorPreviousKeyId && env.paginationCursorPreviousKey
-      ? {
-          previousKey: {
-            keyId: env.paginationCursorPreviousKeyId,
-            secret: env.paginationCursorPreviousKey,
-          },
-        }
-      : {}),
-    now: Date.now,
-  });
   const projectService =
     options.projectService ??
     createProjectService({ createUserClient, cursorCodec, viewerService });
@@ -1024,6 +1015,47 @@ export function buildAppWithOverrides(
 
 /** @deprecated Production composition must parse once and use buildAppFromEnv. */
 export const buildApp = buildAppWithOverrides;
+
+function paginationCursorCodecOptionsFromEnv(
+  env: Pick<
+    ServerEnv,
+    | "paginationCursorActiveKey"
+    | "paginationCursorActiveKeyId"
+    | "paginationCursorPreviousKey"
+    | "paginationCursorPreviousKeyId"
+  >,
+): CursorCodecOptions {
+  const activeKeyId = nonEmptyString(env.paginationCursorActiveKeyId);
+  const activeSecret = nonEmptyString(env.paginationCursorActiveKey);
+  if (!activeKeyId || !activeSecret) {
+    throw new Error("Pagination cursor active key ID and secret are required.");
+  }
+
+  const previousKeyId = nonEmptyString(env.paginationCursorPreviousKeyId);
+  const previousSecret = nonEmptyString(env.paginationCursorPreviousKey);
+  if (Boolean(previousKeyId) !== Boolean(previousSecret)) {
+    throw new Error(
+      "Pagination cursor previous key ID and secret must be configured together.",
+    );
+  }
+  if (previousKeyId === activeKeyId) {
+    throw new Error(
+      "Pagination cursor active and previous key IDs must differ.",
+    );
+  }
+
+  return {
+    activeKey: { keyId: activeKeyId, secret: activeSecret },
+    ...(previousKeyId && previousSecret
+      ? { previousKey: { keyId: previousKeyId, secret: previousSecret } }
+      : {}),
+    now: Date.now,
+  };
+}
+
+function nonEmptyString(value: string | undefined): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
 
 type CorsResult = {
   allowed: boolean;
