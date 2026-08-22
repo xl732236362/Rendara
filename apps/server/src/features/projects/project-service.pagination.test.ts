@@ -48,6 +48,42 @@ describe("project service cursor pagination", () => {
     expect(db.tables[0]).toBe("workspaces");
     expect(db.tables).not.toContain("projects");
   });
+
+  it("applies the decoded tie-break boundary and enriches only the trimmed second page", async () => {
+    const secondPageRows = [rows[1]!, rows[2]!].map((row) => ({
+      ...row,
+      thumbnail_path: `workspace/${row.id}/thumbnail.webp`,
+    }));
+    const db = database({
+      projects: secondPageRows,
+      canvases: [{ id: `canvas-${rows[1]!.id}`, name: "Main", is_primary: true, project_id: rows[1]!.id }],
+    });
+    const cursor = codec().encode(
+      { userId: user.id, workspaceId: workspace.id, owner: "projects", filterHash: "active", direction: "desc" },
+      { timestamp: rows[0]!.updated_at, id: rows[0]!.id },
+    );
+    const service = createProjectService({
+      createUserClient: () => db.client,
+      viewerService: { ensureViewer: vi.fn(async () => ({} as never)) },
+      cursorCodec: codec(),
+    });
+
+    const result = await service.listProjectsPage(user, { cursor, limit: 1 });
+
+    expect(result.items.map((item) => item.id)).toEqual([rows[1]!.id]);
+    expect(db.calls).toContainEqual([
+      "projects",
+      "or",
+      `updated_at.lt.${rows[0]!.updated_at},and(updated_at.eq.${rows[0]!.updated_at},id.lt.${rows[0]!.id})`,
+    ]);
+    expect(db.calls).toContainEqual(["projects", "order", "updated_at", { ascending: false }]);
+    expect(db.calls).toContainEqual(["projects", "order", "id", { ascending: false }]);
+    expect(db.calls).toContainEqual(["projects", "limit", 2]);
+    expect(db.calls).toContainEqual(["canvases", "in", "project_id", [rows[1]!.id]]);
+    expect(db.publicUrlPaths).toEqual([
+      `workspace/${rows[1]!.id}/thumbnail.webp`,
+    ]);
+  });
 });
 
 function project(id: string, updated_at: string) {
@@ -61,6 +97,7 @@ function codec() {
 function database(data: Record<string, unknown[]>) {
   const calls: unknown[][] = [];
   const tables: string[] = [];
+  const publicUrlPaths: string[] = [];
   const client = {
     from(table: string) {
       tables.push(table);
@@ -72,7 +109,7 @@ function database(data: Record<string, unknown[]>) {
       query.then = (resolve: (value: unknown) => unknown) => resolve({ data: data[table] ?? [], error: null });
       return query;
     },
-    storage: { from: () => ({ getPublicUrl: (path: string) => ({ data: { publicUrl: `https://assets/${path}` } }) }) },
+    storage: { from: () => ({ getPublicUrl: (path: string) => { publicUrlPaths.push(path); return { data: { publicUrl: `https://assets/${path}` } }; } }) },
   } as unknown as UserSupabaseClient;
-  return { calls, client, tables };
+  return { calls, client, publicUrlPaths, tables };
 }

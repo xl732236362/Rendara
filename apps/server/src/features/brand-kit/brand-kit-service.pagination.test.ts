@@ -41,6 +41,27 @@ describe("brand kit service cursor pagination", () => {
     await expect(service.listKitsPage(user, workspaceId, { cursor, limit: 2 })).rejects.toMatchObject({ code: "invalid_cursor" });
     expect(db.tables).not.toContain("brand_kits");
   });
+
+  it("applies the decoded ascending tie-break boundary on the next page", async () => {
+    const db = database({ brand_kits: kits.slice(1), brand_kit_assets: [] });
+    const cursor = codec().encode(
+      { userId: user.id, workspaceId, owner: "brand-kits", filterHash: "all", direction: "asc" },
+      { timestamp: kits[0]!.created_at, id: kits[0]!.id },
+    );
+    const service = createBrandKitService({ createUserClient: () => db.client, cursorCodec: codec() });
+
+    const result = await service.listKitsPage(user, workspaceId, { cursor, limit: 1 });
+
+    expect(result.items.map((item) => item.id)).toEqual([kits[1]!.id]);
+    expect(db.calls).toContainEqual([
+      "brand_kits",
+      "or",
+      `created_at.gt.${kits[0]!.created_at},and(created_at.eq.${kits[0]!.created_at},id.gt.${kits[0]!.id})`,
+    ]);
+    expect(db.calls).toContainEqual(["brand_kits", "order", "created_at", { ascending: true }]);
+    expect(db.calls).toContainEqual(["brand_kits", "order", "id", { ascending: true }]);
+    expect(db.calls).toContainEqual(["brand_kits", "limit", 2]);
+  });
 });
 
 function kit(id: string, created_at: string) { return { id, name: id, is_default: false, cover_url: null, created_at, updated_at: created_at }; }

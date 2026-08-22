@@ -45,6 +45,27 @@ describe("credit service cursor pagination", () => {
     await expect(service.listTransactionsPage(workspaceId, userId, { cursor, limit: 2 })).rejects.toMatchObject({ code: "invalid_cursor" });
     expect(db.tables).not.toContain("credit_transactions");
   });
+
+  it("applies the decoded descending tie-break boundary on the next page", async () => {
+    const db = database({ credit_transactions: transactions.slice(1) });
+    const cursor = codec().encode(
+      { userId, workspaceId, owner: "credit-transactions", filterHash: "all", direction: "desc" },
+      { timestamp: transactions[0]!.created_at, id: transactions[0]!.id },
+    );
+    const service = createCreditService({ getAdminClient: () => db.client, cursorCodec: codec() });
+
+    const result = await service.listTransactionsPage(workspaceId, userId, { cursor, limit: 1 });
+
+    expect(result.items.map((item) => item.id)).toEqual([transactions[1]!.id]);
+    expect(db.calls).toContainEqual([
+      "credit_transactions",
+      "or",
+      `created_at.lt.${transactions[0]!.created_at},and(created_at.eq.${transactions[0]!.created_at},id.lt.${transactions[0]!.id})`,
+    ]);
+    expect(db.calls).toContainEqual(["credit_transactions", "order", "created_at", { ascending: false }]);
+    expect(db.calls).toContainEqual(["credit_transactions", "order", "id", { ascending: false }]);
+    expect(db.calls).toContainEqual(["credit_transactions", "limit", 2]);
+  });
 });
 
 function transaction(id: string, created_at: string) { return { id, transaction_type: "generation" as const, amount: -1, balance_after: 10, job_id: null, description: null, created_at }; }
