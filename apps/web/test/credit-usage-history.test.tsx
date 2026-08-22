@@ -100,4 +100,44 @@ describe("CreditUsageHistory", () => {
     expect(await screen.findByText("Second")).toBeInTheDocument();
     expect(screen.getAllByText("First")).toHaveLength(1);
   });
+
+  it("shows a safe error and retries only usage history", async () => {
+    let usageAttempts = 0;
+    fetchMock.mockImplementation((url: string) => {
+      if (url.includes("/api/viewer")) {
+        return Promise.resolve(new Response(JSON.stringify(viewer)));
+      }
+      usageAttempts += 1;
+      if (usageAttempts === 1) {
+        return Promise.resolve(new Response("failed", { status: 500 }));
+      }
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: [
+              transaction("11111111-1111-4111-8111-111111111111", "Recovered"),
+            ],
+            nextCursor: null,
+          }),
+        ),
+      );
+    });
+    render(
+      <QueryClientProvider
+        client={
+          new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        }
+      >
+        <CreditUsageHistory />
+      </QueryClientProvider>,
+    );
+    expect(
+      await screen.findByText("Unable to load usage history."),
+    ).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Retry usage history" }),
+    );
+    expect(await screen.findByText("Recovered")).toBeInTheDocument();
+    expect(usageAttempts).toBe(2);
+  });
 });

@@ -97,6 +97,23 @@ export function CreditUsageHistory() {
     );
   }
 
+  if (viewer.error || transactionsQuery.error) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-8 text-sm text-muted-foreground">
+        <p>Unable to load usage history.</p>
+        <button
+          type="button"
+          className="rounded-md border px-3 py-1.5 text-foreground hover:bg-secondary"
+          onClick={() =>
+            void (viewer.error ? viewer.refetch() : transactionsQuery.refetch())
+          }
+        >
+          Retry usage history
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div>

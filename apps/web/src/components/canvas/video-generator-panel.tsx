@@ -5,13 +5,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { useGenerationErrorHandler } from "../../hooks/use-generation-error-handler";
+import { useAuth } from "../../lib/auth-context";
 import {
   type VideoGeneratorData,
   resizeVideoGeneratorElement,
   updateVideoGeneratorElement,
 } from "../../lib/canvas-video-generator";
-import type { VideoModelInfo } from "../../lib/server-api";
-import { fetchVideoModels, generateVideoDirect } from "../../lib/server-api";
+import {
+  useVideoModelsQuery,
+  useViewerQuery,
+} from "../../lib/query/workspace-queries";
+import { generateVideoDirect } from "../../lib/server-api";
 // No longer needs poster frame extraction -- videos use embeddable elements
 
 type VideoGeneratorPanelProps = {
@@ -36,6 +40,7 @@ export function VideoGeneratorPanel({
   canvasScrollZoom,
   onClose,
 }: VideoGeneratorPanelProps) {
+  const { user } = useAuth();
   const [prompt, setPrompt] = useState(data.prompt);
   const [model, setModel] = useState(data.model);
   const [aspectRatio, setAspectRatio] = useState(data.aspectRatio);
@@ -43,7 +48,6 @@ export function VideoGeneratorPanel({
   const [resolution, setResolution] = useState(data.resolution);
   const [loading, setLoading] = useState(data.status === "generating");
   const [error, setError] = useState<string | null>(data.errorMessage ?? null);
-  const [models, setModels] = useState<VideoModelInfo[]>([]);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [showParamsPopover, setShowParamsPopover] = useState(false);
   const [firstFrame, setFirstFrame] = useState<{
@@ -61,24 +65,17 @@ export function VideoGeneratorPanel({
   const lastFrameInputRef = useRef<HTMLInputElement>(null);
   const accessTokenRef = useRef(accessToken);
   accessTokenRef.current = accessToken;
+  const getAccessToken = useCallback(() => accessTokenRef.current, []);
+  const viewer = useViewerQuery(user?.id, getAccessToken);
+  const modelsQuery = useVideoModelsQuery({
+    userId: user?.id ?? "disabled",
+    workspaceId: viewer.data?.workspace.id,
+    getAccessToken,
+  });
+  const models = modelsQuery.data?.models ?? [];
   const { handleGenerationError } = useGenerationErrorHandler();
   // AbortController for in-flight generation requests so we can cancel on unmount
   const abortRef = useRef<AbortController | null>(null);
-
-  // Fetch available models with error logging
-  useEffect(() => {
-    let cancelled = false;
-    fetchVideoModels()
-      .then((r) => {
-        if (!cancelled) setModels(r.models);
-      })
-      .catch((err) => {
-        console.warn("[video-gen] Failed to fetch models:", err);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   // Close dropdowns when clicking outside the panel
   useEffect(() => {

@@ -24,6 +24,7 @@ import {
 } from "../src/hooks/use-chat-sessions";
 import type { WebSocketHandle } from "../src/hooks/use-websocket";
 import { ApiApplicationError } from "../src/lib/api-client";
+import { queryKeys } from "../src/lib/query/keys";
 
 const {
   createSessionMock,
@@ -37,6 +38,7 @@ const {
   retryGeneratedAssetAttachmentMock,
   saveMessageMock,
   updateSessionTitleMock,
+  ownerContext,
 } = vi.hoisted(() => ({
   createSessionMock: vi.fn(),
   deleteSessionMock: vi.fn(),
@@ -49,6 +51,7 @@ const {
   retryGeneratedAssetAttachmentMock: vi.fn(),
   saveMessageMock: vi.fn(),
   updateSessionTitleMock: vi.fn(),
+  ownerContext: { userId: "user-1", workspaceId: "workspace-1" },
 }));
 
 vi.mock("../src/lib/server-api", () => ({
@@ -67,27 +70,27 @@ vi.mock("../src/lib/server-api", () => ({
 }));
 vi.mock("../src/lib/auth-context", () => ({
   useAuth: () => ({
-    user: { id: "user-1" },
+    user: { id: ownerContext.userId },
     session: { access_token: "token_abc" },
   }),
 }));
 vi.mock("../src/lib/api/viewer", () => ({
   fetchViewer: vi.fn(async () => ({
     profile: {
-      id: "user-1",
+      id: ownerContext.userId,
       email: "u@example.com",
       displayName: "U",
       avatarUrl: null,
     },
     workspace: {
-      id: "workspace-1",
+      id: ownerContext.workspaceId,
       name: "W",
       type: "personal",
-      ownerUserId: "user-1",
+      ownerUserId: ownerContext.userId,
     },
     membership: {
-      workspaceId: "workspace-1",
-      userId: "user-1",
+      workspaceId: ownerContext.workspaceId,
+      userId: ownerContext.userId,
       role: "owner",
     },
   })),
@@ -260,6 +263,8 @@ describe("ChatSidebar", () => {
   let mockWs: WebSocketHandle;
 
   beforeEach(() => {
+    ownerContext.userId = "user-1";
+    ownerContext.workspaceId = "workspace-1";
     Object.defineProperty(window, "matchMedia", {
       configurable: true,
       value: vi.fn().mockImplementation((query: string) => ({
@@ -322,6 +327,243 @@ describe("ChatSidebar", () => {
     cleanup();
     vi.clearAllMocks();
     vi.restoreAllMocks();
+  });
+
+  it("isolates chat controller state before a canvas owner changes", async () => {
+    fetchSessionsMock.mockImplementation(async (_token, canvasId) => ({
+      sessions: [
+        {
+          id: canvasId === "canvas-1" ? "session-old" : "session-new",
+          title: canvasId === "canvas-1" ? "Old Chat" : "New Chat",
+          updatedAt: "2026-03-24T00:00:00.000Z",
+        },
+      ],
+    }));
+    fetchMessagesMock.mockImplementation(async (_token, sessionId) => ({
+      messages:
+        sessionId === "session-old"
+          ? [serverMessage("old-message", "old owner message")]
+          : [],
+    }));
+
+    const view = render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+    expect(await screen.findByText("old owner message")).toBeInTheDocument();
+    await userEvent.type(
+      screen.getByPlaceholderText(/start with an idea/i),
+      "old pending message{Enter}",
+    );
+    expect(await screen.findByText("old pending message")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "停止运行" }),
+    ).toBeInTheDocument();
+    const callsBeforeNavigation = fetchMessagesMock.mock.calls.length;
+
+    view.rerender(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-2"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    expect(screen.queryByText("old owner message")).toBeNull();
+    expect(screen.queryByText("old pending message")).toBeNull();
+    expect(screen.queryByRole("button", { name: "停止运行" })).toBeNull();
+    await waitFor(() =>
+      expect(fetchMessagesMock).toHaveBeenCalledWith(
+        "token_abc",
+        "session-new",
+        { cursor: undefined, limit: 30 },
+      ),
+    );
+    expect(
+      fetchMessagesMock.mock.calls
+        .slice(callsBeforeNavigation)
+        .some(([, sessionId]) => sessionId === "session-old"),
+    ).toBe(false);
+
+    const input = screen.getByPlaceholderText(/start with an idea/i);
+    await userEvent.type(input, "new owner message{Enter}");
+    await waitFor(() =>
+      expect(saveMessageMock).toHaveBeenCalledWith(
+        "token_abc",
+        "session-new",
+        expect.objectContaining({ role: "user" }),
+      ),
+    );
+  });
+
+  it("isolates the active session when the user or workspace owner changes", async () => {
+    const client = createTestQueryClient();
+    fetchSessionsMock.mockImplementation(async () => ({
+      sessions: [
+        {
+          id: `session-${ownerContext.userId}-${ownerContext.workspaceId}`,
+          title: "Owned Chat",
+          updatedAt: "2026-03-24T00:00:00.000Z",
+        },
+      ],
+    }));
+    const sidebar = () => (
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="shared-canvas"
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>
+    );
+    const view = render(sidebar(), client);
+    await waitFor(() =>
+      expect(fetchMessagesMock).toHaveBeenCalledWith(
+        "token_abc",
+        "session-user-1-workspace-1",
+        { cursor: undefined, limit: 30 },
+      ),
+    );
+
+    ownerContext.userId = "user-2";
+    ownerContext.workspaceId = "workspace-2";
+    const callsBeforeUserChange = fetchMessagesMock.mock.calls.length;
+    view.rerender(sidebar());
+    await waitFor(() =>
+      expect(fetchMessagesMock).toHaveBeenCalledWith(
+        "token_abc",
+        "session-user-2-workspace-2",
+        { cursor: undefined, limit: 30 },
+      ),
+    );
+    expect(
+      fetchMessagesMock.mock.calls
+        .slice(callsBeforeUserChange)
+        .some(([, id]) => id === "session-user-1-workspace-1"),
+    ).toBe(false);
+
+    ownerContext.workspaceId = "workspace-3";
+    client.setQueryData(queryKeys.viewer("user-2"), {
+      profile: {
+        id: "user-2",
+        email: "u@example.com",
+        displayName: "U",
+        avatarUrl: null,
+      },
+      workspace: {
+        id: "workspace-3",
+        name: "W",
+        type: "personal",
+        ownerUserId: "user-2",
+      },
+      membership: {
+        workspaceId: "workspace-3",
+        userId: "user-2",
+        role: "owner",
+      },
+    });
+    const callsBeforeWorkspaceChange = fetchMessagesMock.mock.calls.length;
+    await waitFor(() =>
+      expect(fetchMessagesMock).toHaveBeenCalledWith(
+        "token_abc",
+        "session-user-2-workspace-3",
+        { cursor: undefined, limit: 30 },
+      ),
+    );
+    expect(
+      fetchMessagesMock.mock.calls
+        .slice(callsBeforeWorkspaceChange)
+        .some(([, id]) => id === "session-user-2-workspace-2"),
+    ).toBe(false);
+  });
+
+  it("discards an initial session created for a previous canvas owner", async () => {
+    let resolveOldSession!: (value: {
+      session: { id: string; title: string; updatedAt: string };
+    }) => void;
+    createSessionMock.mockImplementation((_token: string, canvasId: string) =>
+      canvasId === "canvas-old"
+        ? new Promise((resolve) => {
+            resolveOldSession = resolve;
+          })
+        : Promise.resolve({
+            session: {
+              id: "session-created-new",
+              title: "New",
+              updatedAt: "2026-03-24T00:00:00.000Z",
+            },
+          }),
+    );
+    fetchSessionsMock.mockImplementation(async (_token, canvasId) => ({
+      sessions:
+        canvasId === "canvas-old"
+          ? []
+          : [
+              {
+                id: "session-new",
+                title: "New Chat",
+                updatedAt: "2026-03-24T00:00:00.000Z",
+              },
+            ],
+    }));
+    const sidebar = (canvasId: string) => (
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId={canvasId}
+            open
+            onToggle={() => {}}
+            ws={mockWs}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>
+    );
+    const view = render(sidebar("canvas-old"));
+    await waitFor(() =>
+      expect(createSessionMock).toHaveBeenCalledWith("token_abc", "canvas-old"),
+    );
+    view.rerender(sidebar("canvas-new"));
+    await waitFor(() =>
+      expect(fetchMessagesMock).toHaveBeenCalledWith(
+        "token_abc",
+        "session-new",
+        { cursor: undefined, limit: 30 },
+      ),
+    );
+    await act(async () => {
+      resolveOldSession({
+        session: {
+          id: "session-old-created",
+          title: "Old",
+          updatedAt: "2026-03-24T00:00:00.000Z",
+        },
+      });
+    });
+    expect(
+      fetchMessagesMock.mock.calls.some(
+        ([, id]) => id === "session-old-created",
+      ),
+    ).toBe(false);
   });
 
   it("loads older chat sessions from the next durable page", async () => {

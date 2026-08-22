@@ -1,8 +1,18 @@
 "use client";
 
-import type { BrandKitAssetType, BrandKitDetail } from "@loomic/shared";
+import type {
+  BrandKitAssetType,
+  BrandKitDetail,
+  BrandKitSummary,
+} from "@loomic/shared";
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { useAuth } from "../../lib/auth-context";
 import {
@@ -30,7 +40,6 @@ import { EmptyState } from "./empty-state";
 export function BrandKitPage() {
   const { user, session, signOut } = useAuth();
   const queryClient = useQueryClient();
-
   const [selectedKit, setSelectedKit] = useState<BrandKitDetail | null>(null);
 
   // Use refs for values that change on token refresh but shouldn't
@@ -39,6 +48,7 @@ export function BrandKitPage() {
   accessTokenRef.current = session?.access_token;
   const selectedKitRef = useRef(selectedKit);
   selectedKitRef.current = selectedKit;
+  const detailRequestRef = useRef(0);
   const signOutRef = useRef(signOut);
   signOutRef.current = signOut;
 
@@ -61,6 +71,10 @@ export function BrandKitPage() {
   );
   const viewer = useViewerQuery(user?.id, getOptionalToken);
   const workspaceId = viewer.data?.workspace.id;
+  const catalogOwnerKey =
+    user && workspaceId ? `${user.id}:${workspaceId}` : null;
+  const catalogOwnerRef = useRef(catalogOwnerKey);
+  catalogOwnerRef.current = catalogOwnerKey;
   const kitsQuery = useBrandKitsInfiniteQuery({
     userId: user?.id ?? "disabled",
     workspaceId,
@@ -81,14 +95,27 @@ export function BrandKitPage() {
   );
   const firstKitId = kits[0]?.id;
 
+  useLayoutEffect(() => {
+    detailRequestRef.current += 1;
+    setSelectedKit(null);
+  }, [catalogOwnerKey]);
+
   // --- Data loading (ref-based, no dependency cascades) ---
 
   const loadKitDetail = useCallback(
     async (kitId: string) => {
+      const requestId = ++detailRequestRef.current;
+      const initiatingOwner = catalogOwnerRef.current;
       try {
         const detail = await fetchBrandKit(getToken(), kitId);
+        if (
+          requestId !== detailRequestRef.current ||
+          initiatingOwner !== catalogOwnerRef.current
+        )
+          return;
         setSelectedKit(detail);
       } catch (err) {
+        if (requestId !== detailRequestRef.current) return;
         if (await handleAuthError(err)) return;
         console.error("Failed to load brand kit detail:", err);
       }
@@ -100,9 +127,11 @@ export function BrandKitPage() {
     try {
       if (!kitKey) return [];
       await queryClient.resetQueries({ queryKey: kitKey, exact: true });
-      const result = await kitsQuery.refetch();
+      const result = queryClient.getQueryData<{
+        pages: Array<{ items: BrandKitSummary[] }>;
+      }>(kitKey);
       const seen = new Set<string>();
-      return (result.data?.pages ?? []).flatMap((page) =>
+      return (result?.pages ?? []).flatMap((page) =>
         page.items.filter((kit) => {
           if (seen.has(kit.id)) return false;
           seen.add(kit.id);
@@ -114,7 +143,7 @@ export function BrandKitPage() {
       console.error("Failed to load brand kits:", err);
       return [];
     }
-  }, [handleAuthError, kitKey, kitsQuery.refetch, queryClient]);
+  }, [handleAuthError, kitKey, queryClient]);
 
   // Initial load — runs exactly once (workspace layout guarantees auth).
   useEffect(() => {
@@ -132,9 +161,13 @@ export function BrandKitPage() {
   );
 
   const handleCreateKit = useCallback(async () => {
+    detailRequestRef.current += 1;
+    const initiatingOwner = catalogOwnerRef.current;
     try {
       const newKit = await createBrandKit(getToken());
+      if (initiatingOwner !== catalogOwnerRef.current) return;
       await refreshList();
+      if (initiatingOwner !== catalogOwnerRef.current) return;
       setSelectedKit(newKit);
     } catch (err) {
       if (await handleAuthError(err)) return;
@@ -145,9 +178,13 @@ export function BrandKitPage() {
   const handleDuplicateKit = useCallback(async () => {
     const kit = selectedKitRef.current;
     if (!kit) return;
+    detailRequestRef.current += 1;
+    const initiatingOwner = catalogOwnerRef.current;
     try {
       const duplicated = await duplicateBrandKit(getToken(), kit.id);
+      if (initiatingOwner !== catalogOwnerRef.current) return;
       await refreshList();
+      if (initiatingOwner !== catalogOwnerRef.current) return;
       setSelectedKit(duplicated);
     } catch (err) {
       if (await handleAuthError(err)) return;
@@ -163,8 +200,11 @@ export function BrandKitPage() {
     }) => {
       const kit = selectedKitRef.current;
       if (!kit) return;
+      detailRequestRef.current += 1;
+      const initiatingOwner = catalogOwnerRef.current;
       try {
         const updated = await updateBrandKit(getToken(), kit.id, data);
+        if (initiatingOwner !== catalogOwnerRef.current) return;
         setSelectedKit(updated);
         await refreshList();
       } catch (err) {
@@ -178,9 +218,13 @@ export function BrandKitPage() {
   const handleDeleteKit = useCallback(async () => {
     const kit = selectedKitRef.current;
     if (!kit) return;
+    detailRequestRef.current += 1;
+    const initiatingOwner = catalogOwnerRef.current;
     try {
       await deleteBrandKit(getToken(), kit.id);
+      if (initiatingOwner !== catalogOwnerRef.current) return;
       const remaining = await refreshList();
+      if (initiatingOwner !== catalogOwnerRef.current) return;
       const nextKit = remaining[0];
       if (nextKit) {
         await loadKitDetail(nextKit.id);
@@ -195,9 +239,13 @@ export function BrandKitPage() {
 
   const handleDeleteKitFromSidebar = useCallback(
     async (kitId: string) => {
+      detailRequestRef.current += 1;
+      const initiatingOwner = catalogOwnerRef.current;
       try {
         await deleteBrandKit(getToken(), kitId);
+        if (initiatingOwner !== catalogOwnerRef.current) return;
         const remaining = await refreshList();
+        if (initiatingOwner !== catalogOwnerRef.current) return;
         if (selectedKitRef.current?.id === kitId) {
           const nextKit = remaining[0];
           if (nextKit) {
@@ -225,6 +273,8 @@ export function BrandKitPage() {
     ) => {
       const kit = selectedKitRef.current;
       if (!kit) return;
+      detailRequestRef.current += 1;
+      const initiatingOwner = catalogOwnerRef.current;
       try {
         await createBrandKitAsset(getToken(), kit.id, {
           asset_type: type,
@@ -232,6 +282,7 @@ export function BrandKitPage() {
           text_content: textContent ?? null,
           metadata,
         });
+        if (initiatingOwner !== catalogOwnerRef.current) return;
         await loadKitDetail(kit.id);
       } catch (err) {
         if (await handleAuthError(err)) return;
@@ -248,8 +299,11 @@ export function BrandKitPage() {
     ) => {
       const kit = selectedKitRef.current;
       if (!kit) return;
+      detailRequestRef.current += 1;
+      const initiatingOwner = catalogOwnerRef.current;
       try {
         await updateBrandKitAsset(getToken(), kit.id, assetId, data);
+        if (initiatingOwner !== catalogOwnerRef.current) return;
         await loadKitDetail(kit.id);
       } catch (err) {
         if (await handleAuthError(err)) return;
@@ -263,9 +317,13 @@ export function BrandKitPage() {
     async (assetId: string) => {
       const kit = selectedKitRef.current;
       if (!kit) return;
+      detailRequestRef.current += 1;
+      const initiatingOwner = catalogOwnerRef.current;
       try {
         await deleteBrandKitAsset(getToken(), kit.id, assetId);
+        if (initiatingOwner !== catalogOwnerRef.current) return;
         await loadKitDetail(kit.id);
+        if (initiatingOwner !== catalogOwnerRef.current) return;
         await refreshList();
       } catch (err) {
         if (await handleAuthError(err)) return;
@@ -279,9 +337,13 @@ export function BrandKitPage() {
     async (type: "logo" | "image", file: File) => {
       const kit = selectedKitRef.current;
       if (!kit) return;
+      detailRequestRef.current += 1;
+      const initiatingOwner = catalogOwnerRef.current;
       try {
         await uploadBrandKitAsset(getToken(), kit.id, type, file);
+        if (initiatingOwner !== catalogOwnerRef.current) return;
         await loadKitDetail(kit.id);
+        if (initiatingOwner !== catalogOwnerRef.current) return;
         await refreshList();
       } catch (err) {
         if (await handleAuthError(err)) return;
@@ -295,6 +357,23 @@ export function BrandKitPage() {
 
   if (viewer.isPending || kitsQuery.isPending) {
     return <BrandKitSkeleton />;
+  }
+
+  if (viewer.error || kitsQuery.error) {
+    return (
+      <div className="flex h-[100dvh] flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+        <p>Unable to load brand kits.</p>
+        <button
+          type="button"
+          className="rounded-md border px-3 py-1.5 text-foreground hover:bg-muted"
+          onClick={() =>
+            void (viewer.error ? viewer.refetch() : kitsQuery.refetch())
+          }
+        >
+          Retry brand kits
+        </button>
+      </div>
+    );
   }
 
   return (

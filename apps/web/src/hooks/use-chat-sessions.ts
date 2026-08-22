@@ -1,7 +1,14 @@
 "use client";
 
 import { useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import type { ChatSessionSummary, ContentBlock } from "@loomic/shared";
 import type { ChatMessage as ChatMessageData } from "@loomic/shared";
@@ -157,16 +164,23 @@ export function useChatSessions({
   const accessTokenRef = useRef(accessToken);
   accessTokenRef.current = accessToken;
   const activeSessionIdRef = useRef(activeSessionId);
-  activeSessionIdRef.current = activeSessionId;
   const sessionsRef = useRef(sessions);
-  sessionsRef.current = sessions;
   const messagesRef = useRef(messages);
-  messagesRef.current = messages;
   const onSessionChangeRef = useRef(onSessionChange);
   onSessionChangeRef.current = onSessionChange;
   const getToken = useCallback(() => accessTokenRef.current ?? null, []);
   const viewer = useViewerQuery(userId, getToken);
   const workspaceId = viewer.data?.workspace.id;
+  const ownerKey =
+    userId && workspaceId ? `${userId}:${workspaceId}:${canvasId}` : null;
+  const ownerKeyRef = useRef(ownerKey);
+  ownerKeyRef.current = ownerKey;
+  const [activeOwnerKey, setActiveOwnerKey] = useState<string | null>(null);
+  const ownsControllerState = ownerKey !== null && activeOwnerKey === ownerKey;
+  const effectiveSessionId = ownsControllerState ? activeSessionId : null;
+  activeSessionIdRef.current = effectiveSessionId;
+  sessionsRef.current = ownsControllerState ? sessions : [];
+  messagesRef.current = ownsControllerState ? messages : [];
   const sessionsQuery = useChatSessionsInfiniteQuery({
     userId: userId ?? "disabled",
     workspaceId,
@@ -178,7 +192,7 @@ export function useChatSessions({
     userId: userId ?? "disabled",
     workspaceId,
     canvasId,
-    sessionId: activeSessionId ?? "",
+    sessionId: effectiveSessionId ?? "",
     getAccessToken: getToken,
     limit: 30,
   });
@@ -193,22 +207,39 @@ export function useChatSessions({
   );
   const messagesKey = useMemo(
     () =>
-      userId && workspaceId && activeSessionId
+      userId && workspaceId && effectiveSessionId
         ? queryKeys.workspace.chatMessages(
             userId,
             workspaceId,
             canvasId,
-            activeSessionId,
+            effectiveSessionId,
             { limit: 30 },
           )
         : null,
-    [activeSessionId, canvasId, userId, workspaceId],
+    [effectiveSessionId, canvasId, userId, workspaceId],
   );
   const overlayRef = useRef(new Map<string, Message[]>());
   const creatingInitialSessionRef = useRef(false);
   const invalidCursorRecoveryRef = useRef(
     new Map<string, ApiApplicationError>(),
   );
+
+  useLayoutEffect(() => {
+    if (activeOwnerKey === ownerKey) return;
+    setActiveOwnerKey(ownerKey);
+    setActiveSessionId(null);
+    setSessions([]);
+    setMessages([]);
+    setSessionsLoading(Boolean(ownerKey));
+    setMessagesLoading(false);
+    setStreaming(false);
+    activeSessionIdRef.current = null;
+    sessionsRef.current = [];
+    messagesRef.current = [];
+    overlayRef.current.clear();
+    invalidCursorRecoveryRef.current.clear();
+    creatingInitialSessionRef.current = false;
+  }, [activeOwnerKey, ownerKey]);
 
   // ── Update messages for a specific session ──
   // Always writes to cache; only syncs to React state if the session is visible.
@@ -251,9 +282,12 @@ export function useChatSessions({
     setSessionsLoading(false);
     if (durableSessions.length === 0) {
       if (creatingInitialSessionRef.current) return;
+      const initiatingOwner = ownerKey;
+      if (!initiatingOwner) return;
       creatingInitialSessionRef.current = true;
       void createSession(accessTokenRef.current, canvasId)
         .then((created) => {
+          if (ownerKeyRef.current !== initiatingOwner) return;
           setSessions([created.session]);
           setActiveSessionId(created.session.id);
           onSessionChangeRef.current?.(created.session.id);
@@ -266,7 +300,9 @@ export function useChatSessions({
         })
         .catch(() => {})
         .finally(() => {
-          creatingInitialSessionRef.current = false;
+          if (ownerKeyRef.current === initiatingOwner) {
+            creatingInitialSessionRef.current = false;
+          }
         });
       return;
     }
@@ -285,14 +321,15 @@ export function useChatSessions({
     queryClient,
     sessionsKey,
     sessionsQuery.data,
+    ownerKey,
   ]);
 
   useEffect(() => {
-    if (!activeSessionId || !messagesQuery.data) return;
+    if (!effectiveSessionId || !messagesQuery.data) return;
     const durable = mapServerMessages(
       mergeMessagePages(messagesQuery.data.pages),
     );
-    const overlay = overlayRef.current.get(activeSessionId) ?? [];
+    const overlay = overlayRef.current.get(effectiveSessionId) ?? [];
     const next = mergeReloadedMessages(
       durable,
       overlay,
@@ -302,13 +339,13 @@ export function useChatSessions({
       (message) => !durable.some((item) => item.id === message.id),
     );
     if (pendingOverlay.length > 0) {
-      overlayRef.current.set(activeSessionId, pendingOverlay);
+      overlayRef.current.set(effectiveSessionId, pendingOverlay);
     } else {
-      overlayRef.current.delete(activeSessionId);
+      overlayRef.current.delete(effectiveSessionId);
     }
     setMessages(next);
     setMessagesLoading(false);
-  }, [activeSessionId, messagesQuery.data]);
+  }, [effectiveSessionId, messagesQuery.data]);
 
   useEffect(() => {
     if (sessionsQuery.error) setSessionsLoading(false);
@@ -418,8 +455,11 @@ export function useChatSessions({
   // ── New chat ──
   const handleNewChat = useCallback(async () => {
     if (streaming) setStreaming(false);
+    const initiatingOwner = ownerKeyRef.current;
+    if (!initiatingOwner) return;
     try {
       const res = await createSession(accessTokenRef.current, canvasId);
+      if (ownerKeyRef.current !== initiatingOwner) return;
       setSessions((prev) => [res.session, ...prev]);
       setActiveSessionId(res.session.id);
       onSessionChangeRef.current?.(res.session.id);
@@ -440,8 +480,11 @@ export function useChatSessions({
       const remaining = sessionsRef.current.filter((s) => s.id !== sessionId);
 
       if (remaining.length === 0) {
+        const initiatingOwner = ownerKeyRef.current;
+        if (!initiatingOwner) return;
         try {
           const res = await createSession(token, canvasId);
+          if (ownerKeyRef.current !== initiatingOwner) return;
           setSessions([res.session]);
           setActiveSessionId(res.session.id);
           onSessionChangeRef.current?.(res.session.id);
@@ -564,10 +607,10 @@ export function useChatSessions({
   );
 
   return {
-    sessions,
-    activeSessionId,
+    sessions: ownsControllerState ? sessions : [],
+    activeSessionId: effectiveSessionId,
     activeSessionIdRef,
-    messages,
+    messages: ownsControllerState ? messages : [],
     messagesRef,
     setMessages,
     sessionsLoading,

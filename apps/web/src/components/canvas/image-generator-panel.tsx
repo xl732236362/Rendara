@@ -6,18 +6,18 @@ import { createPortal } from "react-dom";
 
 import type { StartImageGenerationAttempt } from "../../hooks/use-canvas-image-generation";
 import { useGenerationErrorHandler } from "../../hooks/use-generation-error-handler";
+import { useAuth } from "../../lib/auth-context";
 import {
   type ImageGeneratorData,
   resizeImageGeneratorElement,
   updateImageGeneratorElement,
 } from "../../lib/canvas-image-generator";
 import { panelAnchor } from "../../lib/canvas-overlay-geometry";
-import type { ImageModelInfo } from "../../lib/server-api";
 import {
-  fetchImageModels,
-  getAssetUrl,
-  uploadFile,
-} from "../../lib/server-api";
+  useImageModelsQuery,
+  useViewerQuery,
+} from "../../lib/query/workspace-queries";
+import { getAssetUrl, uploadFile } from "../../lib/server-api";
 
 type ImageGeneratorPanelProps = {
   elementId: string;
@@ -61,6 +61,7 @@ export function ImageGeneratorPanel({
   canvasScrollZoom,
   onClose,
 }: ImageGeneratorPanelProps) {
+  const { user } = useAuth();
   const [prompt, setPrompt] = useState(data.prompt);
   const [model, setModel] = useState(data.model);
   const [aspectRatio, setAspectRatio] = useState(data.aspectRatio);
@@ -68,7 +69,6 @@ export function ImageGeneratorPanel({
   const loading = data.status === "generating";
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(data.errorMessage ?? null);
-  const [models, setModels] = useState<ImageModelInfo[]>([]);
   const [showModelDropdown, setShowModelDropdown] = useState(false);
   const [showRatioDropdown, setShowRatioDropdown] = useState(false);
   const [showQualityDropdown, setShowQualityDropdown] = useState(false);
@@ -85,23 +85,16 @@ export function ImageGeneratorPanel({
   const refInputRef = useRef<HTMLInputElement>(null);
   const accessTokenRef = useRef(accessToken);
   accessTokenRef.current = accessToken;
+  const getAccessToken = useCallback(() => accessTokenRef.current, []);
+  const viewer = useViewerQuery(user?.id, getAccessToken);
+  const modelsQuery = useImageModelsQuery({
+    userId: user?.id ?? "disabled",
+    workspaceId: viewer.data?.workspace.id,
+    getAccessToken,
+  });
+  const models = modelsQuery.data?.models ?? [];
   const { handleGenerationError } = useGenerationErrorHandler();
   const startingRef = useRef(false);
-
-  // Fetch available models with error logging
-  useEffect(() => {
-    let cancelled = false;
-    fetchImageModels()
-      .then((r) => {
-        if (!cancelled) setModels(r.models);
-      })
-      .catch((err) => {
-        console.warn("[image-gen] Failed to fetch models:", err);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     const unresolved = refImages.filter((image) => !image.previewUrl);

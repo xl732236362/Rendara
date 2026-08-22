@@ -33,6 +33,16 @@ vi.mock("../src/hooks/use-generation-error-handler", () => ({
   }),
 }));
 
+vi.mock("../src/lib/auth-context", () => ({
+  useAuth: () => ({ user: { id: "user-1" } }),
+}));
+
+vi.mock("../src/lib/query/workspace-queries", () => ({
+  useViewerQuery: () => ({ data: { workspace: { id: "workspace-1" } } }),
+  useImageModelsQuery: () => ({ data: { models: [] } }),
+  useVideoModelsQuery: () => ({ data: { models: [] } }),
+}));
+
 import { CanvasToolMenu } from "../src/components/canvas-tool-menu";
 import { ImageGeneratorPanel } from "../src/components/canvas/image-generator-panel";
 import type { ImageGeneratorData } from "../src/lib/canvas-image-generator";
