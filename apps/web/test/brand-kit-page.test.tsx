@@ -5,7 +5,8 @@ import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { duplicateKit, fetchDetail } = vi.hoisted(() => ({
+const { createKit, duplicateKit, fetchDetail } = vi.hoisted(() => ({
+  createKit: vi.fn(),
   duplicateKit: vi.fn(),
   fetchDetail: vi.fn(async (_token: string, id: string) => ({
     id,
@@ -20,7 +21,7 @@ const { duplicateKit, fetchDetail } = vi.hoisted(() => ({
 }));
 vi.mock("../src/lib/brand-kit-api", () => ({
   fetchBrandKit: fetchDetail,
-  createBrandKit: vi.fn(),
+  createBrandKit: createKit,
   createBrandKitAsset: vi.fn(),
   deleteBrandKit: vi.fn(),
   deleteBrandKitAsset: vi.fn(),
@@ -86,10 +87,32 @@ describe("BrandKitPage", () => {
   beforeEach(() => {
     vi.stubEnv("NEXT_PUBLIC_SERVER_BASE_URL", "http://localhost:3001");
     fetchMock.mockReset();
+    createKit.mockReset();
     duplicateKit.mockReset();
+    fetchDetail.mockReset();
+    fetchDetail.mockImplementation(async (_token: string, id: string) => ({
+      id,
+      name: id === "kit-2" ? "Launch" : "Core",
+      is_default: id === "kit-1",
+      guidance_text: null,
+      cover_url: null,
+      assets: [],
+      created_at: "2026-08-22T00:00:00.000Z",
+      updated_at: "2026-08-22T00:00:00.000Z",
+    }));
     duplicateKit.mockResolvedValue({
       id: "kit-copy",
       name: "Core Copy",
+      is_default: false,
+      guidance_text: null,
+      cover_url: null,
+      assets: [],
+      created_at: "2026-08-22T00:00:00.000Z",
+      updated_at: "2026-08-22T00:00:00.000Z",
+    });
+    createKit.mockResolvedValue({
+      id: "kit-new",
+      name: "New Kit",
       is_default: false,
       guidance_text: null,
       cover_url: null,
@@ -297,10 +320,8 @@ describe("BrandKitPage", () => {
     );
     await screen.findByText("Core editor");
     await userEvent.click(screen.getByText("Launch"));
-    await userEvent.click(
-      screen.getByRole("button", { name: "Duplicate kit" }),
-    );
-    expect(await screen.findByText("Core Copy editor")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "New Kit" }));
+    expect(await screen.findByText("New Kit editor")).toBeInTheDocument();
     await act(async () => {
       resolveLaunch({
         id: "kit-2",
@@ -314,5 +335,136 @@ describe("BrandKitPage", () => {
       });
     });
     expect(screen.queryByText("Launch editor")).toBeNull();
+  });
+
+  it("shows a detail error instead of the empty state and retries only that detail", async () => {
+    fetchDetail
+      .mockRejectedValueOnce(new Error("private upstream payload"))
+      .mockResolvedValueOnce({
+        id: "kit-1",
+        name: "Core",
+        is_default: true,
+        guidance_text: null,
+        cover_url: null,
+        assets: [],
+        created_at: "2026-08-22T00:00:00.000Z",
+        updated_at: "2026-08-22T00:00:00.000Z",
+      });
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    render(
+      <QueryClientProvider
+        client={
+          new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        }
+      >
+        <BrandKitPage />
+      </QueryClientProvider>,
+    );
+    expect(
+      await screen.findByText("Unable to load brand kit details."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("No brand kits yet")).toBeNull();
+    const catalogCalls = fetchMock.mock.calls.length;
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Retry brand kit details" }),
+    );
+    expect(await screen.findByText("Core editor")).toBeInTheDocument();
+    expect(fetchDetail).toHaveBeenNthCalledWith(2, "token-1", "kit-1");
+    expect(fetchMock.mock.calls.length).toBe(catalogCalls);
+    expect(consoleError).toHaveBeenCalledWith(
+      "Failed to load brand kit detail",
+      expect.objectContaining({ kitId: "kit-1" }),
+    );
+  });
+
+  it("hides A while B loads and shows B's detail error", async () => {
+    fetchDetail.mockImplementation(async (_token: string, id: string) => {
+      if (id === "kit-2") throw new Error("launch failed");
+      return {
+        id,
+        name: "Core",
+        is_default: true,
+        guidance_text: null,
+        cover_url: null,
+        assets: [],
+        created_at: "2026-08-22T00:00:00.000Z",
+        updated_at: "2026-08-22T00:00:00.000Z",
+      };
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    fetchMock.mockImplementation((url: string) => {
+      if (url.includes("/api/viewer"))
+        return Promise.resolve(new Response(JSON.stringify(viewer)));
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: [kit("kit-1", "Core"), kit("kit-2", "Launch")],
+            nextCursor: null,
+          }),
+        ),
+      );
+    });
+    render(
+      <QueryClientProvider
+        client={
+          new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        }
+      >
+        <BrandKitPage />
+      </QueryClientProvider>,
+    );
+    await screen.findByText("Core editor");
+    await userEvent.click(screen.getByText("Launch"));
+    expect(
+      await screen.findByText("Unable to load brand kit details."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Core editor")).toBeNull();
+  });
+
+  it("keeps B's error when A fails late", async () => {
+    let rejectCore!: (reason: Error) => void;
+    fetchDetail.mockImplementation((_token: string, id: string) => {
+      if (id === "kit-1")
+        return new Promise((_resolve, reject) => {
+          rejectCore = reject;
+        });
+      return Promise.reject(new Error("B failed"));
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    fetchMock.mockImplementation((url: string) => {
+      if (url.includes("/api/viewer"))
+        return Promise.resolve(new Response(JSON.stringify(viewer)));
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            items: [kit("kit-1", "Core"), kit("kit-2", "Launch")],
+            nextCursor: null,
+          }),
+        ),
+      );
+    });
+    render(
+      <QueryClientProvider
+        client={
+          new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        }
+      >
+        <BrandKitPage />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(fetchDetail).toHaveBeenCalledWith("token-1", "kit-1"),
+    );
+    await userEvent.click(screen.getByText("Launch"));
+    expect(
+      await screen.findByText("Unable to load brand kit details."),
+    ).toBeInTheDocument();
+    await act(async () => rejectCore(new Error("A failed late")));
+    expect(
+      screen.getByText("Unable to load brand kit details."),
+    ).toBeInTheDocument();
   });
 });

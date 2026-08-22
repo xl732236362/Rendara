@@ -41,6 +41,9 @@ export function BrandKitPage() {
   const { user, session, signOut } = useAuth();
   const queryClient = useQueryClient();
   const [selectedKit, setSelectedKit] = useState<BrandKitDetail | null>(null);
+  const [detailTargetId, setDetailTargetId] = useState<string | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   // Use refs for values that change on token refresh but shouldn't
   // trigger callback/effect cascades (root cause of tab-switch reloads).
@@ -98,6 +101,9 @@ export function BrandKitPage() {
   useLayoutEffect(() => {
     detailRequestRef.current += 1;
     setSelectedKit(null);
+    setDetailTargetId(null);
+    setDetailLoading(false);
+    setDetailError(null);
   }, [catalogOwnerKey]);
 
   // --- Data loading (ref-based, no dependency cascades) ---
@@ -106,6 +112,10 @@ export function BrandKitPage() {
     async (kitId: string) => {
       const requestId = ++detailRequestRef.current;
       const initiatingOwner = catalogOwnerRef.current;
+      setDetailTargetId(kitId);
+      setDetailLoading(true);
+      setDetailError(null);
+      setSelectedKit((current) => (current?.id === kitId ? current : null));
       try {
         const detail = await fetchBrandKit(getToken(), kitId);
         if (
@@ -114,10 +124,24 @@ export function BrandKitPage() {
         )
           return;
         setSelectedKit(detail);
+        setDetailError(null);
       } catch (err) {
-        if (requestId !== detailRequestRef.current) return;
+        if (
+          requestId !== detailRequestRef.current ||
+          initiatingOwner !== catalogOwnerRef.current
+        )
+          return;
         if (await handleAuthError(err)) return;
-        console.error("Failed to load brand kit detail:", err);
+        setSelectedKit(null);
+        setDetailError("Unable to load brand kit details.");
+        console.error("Failed to load brand kit detail", { kitId });
+      } finally {
+        if (
+          requestId === detailRequestRef.current &&
+          initiatingOwner === catalogOwnerRef.current
+        ) {
+          setDetailLoading(false);
+        }
       }
     },
     [getToken, handleAuthError],
@@ -160,6 +184,11 @@ export function BrandKitPage() {
     [loadKitDetail],
   );
 
+  const retryKitDetail = useCallback(() => {
+    if (!detailTargetId) return;
+    void loadKitDetail(detailTargetId);
+  }, [detailTargetId, loadKitDetail]);
+
   const handleCreateKit = useCallback(async () => {
     detailRequestRef.current += 1;
     const initiatingOwner = catalogOwnerRef.current;
@@ -168,6 +197,9 @@ export function BrandKitPage() {
       if (initiatingOwner !== catalogOwnerRef.current) return;
       await refreshList();
       if (initiatingOwner !== catalogOwnerRef.current) return;
+      setDetailTargetId(newKit.id);
+      setDetailLoading(false);
+      setDetailError(null);
       setSelectedKit(newKit);
     } catch (err) {
       if (await handleAuthError(err)) return;
@@ -185,6 +217,9 @@ export function BrandKitPage() {
       if (initiatingOwner !== catalogOwnerRef.current) return;
       await refreshList();
       if (initiatingOwner !== catalogOwnerRef.current) return;
+      setDetailTargetId(duplicated.id);
+      setDetailLoading(false);
+      setDetailError(null);
       setSelectedKit(duplicated);
     } catch (err) {
       if (await handleAuthError(err)) return;
@@ -205,6 +240,9 @@ export function BrandKitPage() {
       try {
         const updated = await updateBrandKit(getToken(), kit.id, data);
         if (initiatingOwner !== catalogOwnerRef.current) return;
+        setDetailTargetId(updated.id);
+        setDetailLoading(false);
+        setDetailError(null);
         setSelectedKit(updated);
         await refreshList();
       } catch (err) {
@@ -229,6 +267,9 @@ export function BrandKitPage() {
       if (nextKit) {
         await loadKitDetail(nextKit.id);
       } else {
+        setDetailTargetId(null);
+        setDetailLoading(false);
+        setDetailError(null);
         setSelectedKit(null);
       }
     } catch (err) {
@@ -251,6 +292,9 @@ export function BrandKitPage() {
           if (nextKit) {
             await loadKitDetail(nextKit.id);
           } else {
+            setDetailTargetId(null);
+            setDetailLoading(false);
+            setDetailError(null);
             setSelectedKit(null);
           }
         }
@@ -381,7 +425,7 @@ export function BrandKitPage() {
       {/* Sidebar: full width horizontal on mobile, vertical panel on md+ */}
       <BrandKitSidebar
         kits={kits}
-        selectedKitId={selectedKit?.id ?? null}
+        selectedKitId={detailTargetId}
         onSelectKit={handleSelectKit}
         onCreateKit={handleCreateKit}
         onDeleteKit={handleDeleteKitFromSidebar}
@@ -390,7 +434,22 @@ export function BrandKitPage() {
         onLoadMore={() => void kitsQuery.fetchNextPage()}
       />
 
-      {selectedKit ? (
+      {detailLoading ? (
+        <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
+          Loading brand kit details...
+        </div>
+      ) : detailError && detailTargetId ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+          <p>{detailError}</p>
+          <button
+            type="button"
+            className="rounded-md border px-3 py-1.5 text-foreground hover:bg-muted"
+            onClick={retryKitDetail}
+          >
+            Retry brand kit details
+          </button>
+        </div>
+      ) : selectedKit?.id === detailTargetId ? (
         <BrandKitEditor
           kit={selectedKit}
           onUpdateKit={handleUpdateKit}
