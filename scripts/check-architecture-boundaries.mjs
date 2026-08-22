@@ -14,6 +14,28 @@ const registryValueShapeWrappers = new Set([
   "Required",
 ]);
 
+const phase6ACollectionRouteInventory = new Map([
+  ["/api/v2/projects", "cursor-paginated"],
+  ["/api/v2/brand-kits", "cursor-paginated"],
+  ["/api/v2/credits/transactions", "cursor-paginated"],
+  ["/api/v2/canvases/:canvasId/sessions", "cursor-paginated"],
+  ["/api/v2/sessions/:sessionId/messages", "cursor-paginated"],
+  ["/api/projects", "legacy-compatibility-removal-window"],
+  ["/api/brand-kits", "legacy-compatibility-removal-window"],
+  ["/api/credits/transactions", "legacy-compatibility-removal-window"],
+  ["/api/canvases/:canvasId/sessions", "legacy-compatibility-removal-window"],
+  ["/api/sessions/:sessionId/messages", "legacy-compatibility-removal-window"],
+  ["/api/jobs", "intrinsically-bounded-service-limit"],
+  [
+    "/api/canvases/:canvasId/generated-asset-attachments",
+    "intrinsically-bounded-outstanding-only",
+  ],
+  ["/api/fonts", "intrinsically-bounded-upstream-catalog"],
+  ["/api/models", "intrinsically-bounded-static-catalog"],
+  ["/api/image-models", "intrinsically-bounded-provider-catalog"],
+  ["/api/video-models", "intrinsically-bounded-provider-catalog"],
+]);
+
 const rules = [
   {
     id: "instance-owned-registries",
@@ -109,6 +131,207 @@ export function scanArchitectureSources(sources) {
   return findings.sort((left, right) =>
     left.evidence.localeCompare(right.evidence),
   );
+}
+
+export function scanPhase6AArchitectureSources(sources) {
+  const findings = [];
+  for (const entry of sources) {
+    const filePath = normalizePath(entry.path);
+    if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(filePath)) continue;
+    const sourceFile = parseSourceFile(entry.source, filePath);
+    const context = { filePath, sourceFile };
+    findings.push(...scanRawQueryKeys(context));
+    findings.push(...scanIdentityScopedKeys(context));
+    findings.push(...scanComponentV2Fetches(context));
+    findings.push(...scanMutationRetries(context));
+    findings.push(...scanCollectionRoutes(context));
+  }
+  return findings.sort((left, right) =>
+    left.evidence.localeCompare(right.evidence),
+  );
+}
+
+function phase6AFinding(rule, message, node, context) {
+  return { ...findingAt(node, context), rule, message };
+}
+
+function scanRawQueryKeys(context) {
+  if (context.filePath === "apps/web/src/lib/query/keys.ts") return [];
+  return collectMatchingNodes(context, (node) => {
+    if (
+      !ts.isPropertyAssignment(node) ||
+      propertyName(node.name) !== "queryKey"
+    )
+      return false;
+    return ts.isArrayLiteralExpression(unwrapExpression(node.initializer));
+  }).map((finding) => ({
+    ...finding,
+    rule: "query-key-factory-boundary",
+    message: "query keys must be created by apps/web/src/lib/query/keys.ts",
+  }));
+}
+
+function scanIdentityScopedKeys(context) {
+  if (context.filePath !== "apps/web/src/lib/query/keys.ts") return [];
+  const findings = [];
+  function visit(node) {
+    if (
+      ts.isPropertyAssignment(node) &&
+      propertyName(node.name) === "global" &&
+      containsIdentityDerivedKey(node.initializer)
+    ) {
+      findings.push(
+        phase6AFinding(
+          "identity-scoped-query-keys",
+          "identity-derived resources cannot live below a global query-key namespace",
+          node,
+          context,
+        ),
+      );
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(context.sourceFile);
+  return findings;
+}
+
+function containsIdentityDerivedKey(node) {
+  let found = false;
+  function visit(current) {
+    if (
+      ts.isIdentifier(current) &&
+      /^(?:userId|workspaceId|canvasId|sessionId|ownerId)$/.test(current.text)
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(current, visit);
+  }
+  visit(node);
+  return found;
+}
+
+function scanComponentV2Fetches(context) {
+  if (!/^apps\/web\/src\/(?:app|components|hooks)\//.test(context.filePath))
+    return [];
+  const v2Bindings = new Set();
+  for (const statement of context.sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const moduleName = statement.moduleSpecifier;
+    if (!ts.isStringLiteral(moduleName) || !/lib\/api\//.test(moduleName.text))
+      continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const element of bindings.elements) {
+      const imported = (element.propertyName ?? element.name).text;
+      if (/^fetch\w+Page$/.test(imported)) v2Bindings.add(element.name.text);
+    }
+  }
+  return collectMatchingNodes(
+    context,
+    (node) =>
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      v2Bindings.has(node.expression.text),
+  ).map((finding) => ({
+    ...finding,
+    rule: "v2-fetch-ownership",
+    message: "V2 collection fetches must be owned by the shared query layer",
+  }));
+}
+
+function scanMutationRetries(context) {
+  if (!context.filePath.startsWith("apps/web/src/")) return [];
+  const findings = [];
+  function visit(node) {
+    if (ts.isObjectLiteralExpression(node)) {
+      const hasMutationFn = node.properties.some(
+        (property) => propertyName(property.name) === "mutationFn",
+      );
+      const retry = node.properties.find(
+        (property) => propertyName(property.name) === "retry",
+      );
+      if (
+        hasMutationFn &&
+        retry &&
+        ts.isPropertyAssignment(retry) &&
+        retry.initializer.kind !== ts.SyntaxKind.FalseKeyword
+      ) {
+        findings.push(
+          phase6AFinding(
+            "mutation-retry-policy",
+            "mutation retry requires an explicitly allowlisted idempotent command",
+            retry,
+            context,
+          ),
+        );
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(context.sourceFile);
+  return findings;
+}
+
+function scanCollectionRoutes(context) {
+  if (!context.filePath.startsWith("apps/server/src/http/")) return [];
+  const findings = [];
+  function visit(node) {
+    if (
+      !ts.isCallExpression(node) ||
+      !ts.isPropertyAccessExpression(node.expression)
+    ) {
+      ts.forEachChild(node, visit);
+      return;
+    }
+    if (node.expression.name.text !== "get") {
+      ts.forEachChild(node, visit);
+      return;
+    }
+    const routeArgument = node.arguments.find(ts.isStringLiteral);
+    const handler = node.arguments.at(-1);
+    if (
+      routeArgument &&
+      handler &&
+      containsCollectionServiceCall(handler) &&
+      !phase6ACollectionRouteInventory.has(routeArgument.text)
+    ) {
+      findings.push(
+        phase6AFinding(
+          "collection-route-inventory",
+          "collection routes must be cursor-paginated or inventoried with an intrinsic bound",
+          routeArgument,
+          context,
+        ),
+      );
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(context.sourceFile);
+  return findings;
+}
+
+function containsCollectionServiceCall(node) {
+  let found = false;
+  function visit(current) {
+    if (
+      ts.isCallExpression(current) &&
+      ts.isPropertyAccessExpression(current.expression) &&
+      /^(?:list|getAvailable)\w+/.test(current.expression.name.text)
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(current, visit);
+  }
+  visit(node);
+  return found;
+}
+
+function propertyName(name) {
+  if (!name) return undefined;
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
+  return undefined;
 }
 
 function parseSourceFile(source, filePath) {
@@ -482,6 +705,19 @@ export async function collectArchitectureSources(rootDir) {
     "apps/web/src/lib/server-api.ts",
   ].sort();
 
+  return Promise.all(
+    targets.map(async (relativePath) => ({
+      path: relativePath,
+      source: await readFile(path.join(rootDir, relativePath), "utf8"),
+    })),
+  );
+}
+
+export async function collectPhase6AArchitectureSources(rootDir) {
+  const targets = [
+    ...(await productionTypeScriptFiles(rootDir, "apps/web/src")),
+    ...(await productionTypeScriptFiles(rootDir, "apps/server/src/http")),
+  ].sort();
   return Promise.all(
     targets.map(async (relativePath) => ({
       path: relativePath,

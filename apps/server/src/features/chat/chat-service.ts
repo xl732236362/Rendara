@@ -11,15 +11,15 @@ import type {
 } from "@loomic/shared";
 
 import type {
-  AuthenticatedUser,
-  UserSupabaseClient,
-} from "../../supabase/user.js";
-import type { ThreadService } from "./thread-service.js";
-import type {
   CursorCodec,
   CursorScope,
 } from "../../pagination/cursor-codec.js";
 import { buildKeysetPredicate } from "../../pagination/keyset.js";
+import type {
+  AuthenticatedUser,
+  UserSupabaseClient,
+} from "../../supabase/user.js";
+import type { ThreadService } from "./thread-service.js";
 
 export class ChatServiceError extends Error {
   readonly statusCode: number;

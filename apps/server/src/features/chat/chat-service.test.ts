@@ -196,6 +196,7 @@ describe("chat canonical reads", () => {
         return query;
       };
     }
+    // biome-ignore lint/suspicious/noThenProperty: Supabase query builders are PromiseLike by contract.
     query.then = (resolve: (value: unknown) => unknown) =>
       resolve({ data: [], error: null });
     const service = createChatService({

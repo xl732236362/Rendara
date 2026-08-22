@@ -60,10 +60,10 @@
 | ENG-032 | P1 | 已解决 | 横向扩展 | PostgreSQL 持久重放、跨副本通知补偿和持久运行权威已通过完整验收 |
 | ENG-033 | P1 | 已确认 | 认证 | Token 缓存缺少硬容量上限和主动失效机制 |
 | ENG-034 | P2 | 已确认 | 数据库性能 | 部分 RLS 策略仍使用逐行 `auth.uid()` 并缺少系统化索引验证 |
-| ENG-035 | P2 | 已确认 | 数据访问 | 消息、项目、技能等列表接口缺少一致的分页策略 |
+| ENG-035 | P2 | 部分解决 | 数据访问 | V2 核心集合已 cursor 分页；5 个 legacy 兼容列表仍待移除 |
 | ENG-036 | P1 | 已确认 | 可运维性 | 健康检查只返回常量，缺少 readiness 与关键依赖诊断 |
 | ENG-037 | P2 | 已确认 | 数据库交付 | Migration 缺少自动化重建、静态安全检查和升级验证流程 |
-| ENG-038 | P2 | 已确认 | 前端数据层 | 服务端状态主要由组件 useEffect 手工管理，缓存与失效规则分散 |
+| ENG-038 | P2 | 部分解决 | 前端数据层 | 核心资源已统一 Query owner；旧 run listener 与模型失败重试仍有 ownership gap |
 
 阶段 2 关闭证据：ENG-001/002 由 `196aad6`、`54965ba`、`e16e817`、`63fbcce`、`b204607` 与审查修复 `4df284d`、`bc40b7f` 落地；提交事务内只扣款一次且不自动退款，外部效果先记意图、歧义不重放，租约过期不可结算，补偿累计不超过原 debit。ENG-011/017 由 `f876e43`、`86771a3`、`55fe338`、`cba1e83` 与 `4df284d` 落地；浏览器使用窄权限 CAS RPC，Job effect 仅 service role 且校验 Job/Canvas/Workspace/actor 关系。最终证据见 `docs/tech/phase-2-verification.md`，关闭日期 2026-08-18。
 
@@ -366,10 +366,12 @@
 ### ENG-035：列表接口缺少一致分页
 
 - 严重度：P2
-- 状态：已确认
+- 状态：部分解决
 - 证据：chat sessions/messages、projects、brand kits、skills 和 workspace skill 查询多为全量读取；只有 jobs、credit history 和 marketplace 等少数接口设置 limit/page。
 - 影响：长期使用后单次响应、React 渲染和 RLS 查询成本线性增长，尤其消息内容包含 blocks 和工具输出时会快速放大。
 - 建议方向：为所有集合接口定义统一 cursor pagination、稳定排序和最大 page size；聊天消息采用倒序 cursor 获取最近窗口，前端虚拟化长列表并按需加载历史。
+- 阶段 6A 结果：projects、brand kits、credit transactions、chat sessions、chat messages 五个 V2 集合已使用有作用域签名 cursor 和 1-100 page limit；jobs 固定 50，outstanding attachments 固定 100，model catalogs 为 sealed/static 有界集合。架构门禁维护 15 个集合路由 inventory，并拒绝新增未登记的 unbounded collection service。
+- 未关闭项：对应五个 legacy list endpoint 仍执行全量读取；Google Fonts 属于上游有限 catalog 但本地没有 response cap。兼容端点需连续 14 天调用量为零后在下一部署窗口删除，最早 Phase 6B。详见 `phase-6a-verification.md`。
 
 ### ENG-036：健康检查不能反映服务可用性
 
@@ -390,10 +392,12 @@
 ### ENG-038：前端服务端状态管理规则分散
 
 - 严重度：P2
-- 状态：已确认
+- 状态：部分解决
 - 证据：项目、设置、skills、brand kit、模型和聊天数据主要在页面/组件内以 `useEffect + useState + fetch` 管理；只有少量请求使用自定义 dedupe，缺少统一 query key、缓存、重试、取消和 mutation invalidation 机制。
 - 影响：页面切换和多个组件消费同一资源时容易重复请求、显示陈旧数据或各自实现 loading/error；新增功能需要重复编写生命周期代码。
 - 建议方向：引入统一 server-state 层（如项目选定的成熟 query library或轻量内部封装），集中 auth-aware fetch、schema parse、query key、重试与失效；本地交互状态继续留在组件，避免建立无边界全局 store。
+- 阶段 6A 结果：TanStack Query provider、owner-scoped key factory、统一 query retry/mutation no-retry、V2 page clients 与 projects/brand kits/credits/chat/model hooks 已落地；AST 门禁禁止 factory 外 raw key arrays、identity-derived global keys、component-local V2 fetch 和非 allowlisted mutation retry。
+- 未关闭项：Task 9 的两个 Minor 不影响分页正确性，但阻止 single-owner 结论：旧 run listener 的 owner cleanup 仍与 chat controller 生命周期耦合；`agent-section.tsx` 仍保留 component-local model catalog failure/retry。两项完成并重新盘点 resource inventory 前保持“部分解决”。详见 `phase-6a-verification.md`。
 
 ### 阶段 4 验收记录：画布领域模型
 

@@ -2,7 +2,7 @@
 
 ### `supabase/`
 
-Ordered PostgreSQL migrations, local configuration, and database security tests. Phase 3 adds durable Agent attempts/effects/Skill read budgets and permanently drops the former dynamic Skill schema. Phase 5 adds service-role realtime canvas events, never-reset per-canvas cursors, replay/gap RPCs, transaction-commit notifications, bounded retention cleanup, and a forward fix that passes server-resolved attachment geometry to the strict finalizer.
+Ordered PostgreSQL migrations, local configuration, and database security tests. Phase 5 adds durable realtime and strict attachment finalization. Phase 6A adds pagination-supporting indexes and pgTAP coverage for stable keyset ordering while keeping cursor signing keys in process environment rather than the database.
 
 ### `.github/workflows/ci.yml`
 
@@ -10,7 +10,7 @@ Quality, database reset/security, and Docker gates established in phase 0. Every
 
 ### `tests/` and package tests
 
-Workspace invariants use Node test; server/shared/web behavior uses Vitest; browser workflows use Playwright. Phase 1 coverage includes contracts, configuration, registries, application use cases, error boundaries, API-client behavior, and TypeScript-AST architecture enforcement with actionable file/line diagnostics.
+Workspace invariants use Node test; server/shared/web behavior uses Vitest; browser workflows use Playwright. TypeScript-AST architecture enforcement now also covers Phase 6A query-key ownership, V2 fetch ownership, mutation retry policy and the bounded collection-route inventory. Verification evidence and removal/rollback windows live in `docs/tech/phase-6a-verification.md`.
 
 ### `skills/`
 
@@ -18,4 +18,4 @@ Server-owned built-in Skills. Only `builtin-skills.manifest.json` entries are lo
 
 ### Deployment Files
 
-`apps/server/Dockerfile`, `railway.json`, `deploy/railway-api.json`, `deploy/railway-worker.json`, and `vercel.json` define API/worker and Web deployment. Environment-template validation covers process requirements and exact runtime entrypoints without embedding secrets. The API requires `SUPABASE_DB_URL` and Railway gates traffic on `/api/health/realtime`.
+`apps/server/Dockerfile`, `railway.json`, `deploy/railway-api.json`, `deploy/railway-worker.json`, and `vercel.json` define API/worker and Web deployment. Environment-template validation covers process requirements and exact runtime entrypoints without embedding secrets. The API requires `SUPABASE_DB_URL` plus active cursor key ID/key, accepts a previous key pair during rotation, and Railway gates traffic on `/api/health/realtime`.

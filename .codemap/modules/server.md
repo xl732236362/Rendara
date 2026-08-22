@@ -2,7 +2,7 @@
 
 ### `apps/server/src/app.ts`
 
-Composition root for Fastify, validated environment loading, infrastructure clients, services, security boundaries, routes, sealed registries, and frozen application-use-case dependencies. Phase 5 composes the durable realtime store, PostgreSQL listener, missed-notification reconciliation, retention cleanup, and realtime readiness lifecycle.
+Composition root for Fastify, validated environment loading, infrastructure clients, services, security boundaries, routes, sealed registries, and frozen application-use-case dependencies. Phase 5 composes durable realtime; Phase 6A additionally requires and composes the active/previous pagination cursor key ring before route registration.
 
 ### `apps/server/src/events/`
 
@@ -10,7 +10,7 @@ Transactional outbox publishing and the Phase 5 realtime projection. Canvas even
 
 ### `apps/server/src/http/`
 
-REST interface adapters authenticate, parse shared boundary schemas, call application use cases/services, and serialize responses. A global `AppError` boundary owns canonical error envelopes; workspace architecture tests reject route-local Zod duck typing and migrated orchestration bypasses.
+REST interface adapters authenticate, parse shared boundary schemas, call application use cases/services, and serialize responses. Phase 6A adds cursor-paginated V2 routes for projects, brand kits, credit transactions, chat sessions and chat messages while retaining five legacy list routes for a measured removal window. A structured route inventory rejects new unbounded collection services.
 
 ### `apps/server/src/ws/`
 
@@ -22,7 +22,11 @@ Tool-only LangChain/LangGraph runtime, persistence, prompts, and exact capabilit
 
 ### `apps/server/src/features/`
 
-Domain-oriented services and adapters for jobs, credits, canvas, chat, projects, payments, settings, uploads, and Agent execution metadata. User-extensible Skill services are removed; the `application/` layer composes narrow ports.
+Domain-oriented services and adapters for jobs, credits, canvas, chat, projects, payments, settings, uploads, and Agent execution metadata. Projects, brand kits, credits and chat expose stable keyset pages; chat messages use canonical durable content blocks and server-owned terminal persistence.
+
+### `apps/server/src/pagination/`
+
+Signed opaque cursor codec and keyset helpers. Tokens bind user/workspace/resource/filter/direction scope, enforce expiry, redact diagnostics, and support active plus previous keys for rotation without exposing cursor material.
 
 ### `apps/server/src/generation/`
 

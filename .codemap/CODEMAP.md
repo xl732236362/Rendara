@@ -1,7 +1,7 @@
 # Loomic - Codemap
 
 > **Version**: 0.0.0 | **Stack**: TypeScript, Next.js, Fastify, LangGraph, Supabase | **Architecture**: pnpm monorepo
-> **Created**: 2026-08-17 | **Updated**: 2026-08-21 | **This change**: Phase 5 realtime files
+> **Created**: 2026-08-17 | **Updated**: 2026-08-22 | **This change**: Phase 6A server state and pagination
 
 ## L1: Project Panorama
 
@@ -58,6 +58,7 @@ worker -> sealed executor registry -> generation providers / Supabase / storage
 
 | Date | Change | Scope |
 | --- | --- | --- |
+| 2026-08-22 | Phase 6A owner-scoped Query layer, V2 cursor pagination, chat ownership and cursor-key rotation | Web, Server, database, quality |
 | 2026-08-21 | Phase 5 durable canvas cursors, cross-replica delivery, persistent active-run lookup, readiness and retention | Server, Web, database, deployment |
 | 2026-08-17 | Initial codemap after phase 0 | Entire repository |
 | 2026-08-18 | Phase 1 contracts, application boundaries, explicit registries, and architecture gates | Server, Web, packages, quality |

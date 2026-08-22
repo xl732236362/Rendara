@@ -82,7 +82,7 @@ integration("Phase 2 real PostgreSQL concurrency", () => {
     const commit = (source: string) =>
       pool.query(
         `select public.commit_canvas_revision(
-          $1, $2, 0, $3::jsonb, $4, $5, 'canvas.generated_asset_attached', $6::jsonb)`,
+          $1, $2, 0, $3::jsonb, $4, $5)`,
         [
           canvasId,
           userId,
@@ -93,7 +93,6 @@ integration("Phase 2 real PostgreSQL concurrency", () => {
           }),
           jobId,
           `effect-${source}`,
-          JSON.stringify({ source }),
         ],
       );
     const results = await Promise.allSettled([commit("a"), commit("b")]);
@@ -125,7 +124,7 @@ integration("Phase 2 real PostgreSQL concurrency", () => {
         client.query(
           `select public.commit_canvas_revision(
             $1, $2, $3, '{"elements":[],"appState":{},"files":{}}',
-            $4, 'fault-effect', 'canvas.generated_asset_attached', '{}')`,
+            $4, 'fault-effect')`,
           [canvasId, userId, Number(before.rows[0]?.revision), jobId],
         ),
       ).rejects.toMatchObject({ detail: "before_canvas_commit" });

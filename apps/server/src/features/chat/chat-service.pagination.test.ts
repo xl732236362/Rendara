@@ -254,6 +254,7 @@ function database(initialRows: Record<string, Row[]>) {
               : null,
         error: null,
       });
+      // biome-ignore lint/suspicious/noThenProperty: Supabase query builders are PromiseLike by contract.
       query.then = (resolve: (value: unknown) => unknown) => {
         let result = [...(rows[table] ?? [])];
         result = result.filter((row) =>

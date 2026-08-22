@@ -10,7 +10,15 @@ Product UI for canvas, chat, projects, skills, brand kits, credits, and settings
 
 ### `apps/web/src/hooks/`
 
-Client lifecycle and server-state orchestration. Hooks currently call domain API helpers and manage loading/error/cache behavior locally.
+Client lifecycle and interaction orchestration. Phase 6A moves projects, brand kits, credit history, chat history and model catalogs behind owner-scoped TanStack Query hooks; `use-chat-sessions.ts` merges durable message pages with the live run overlay and owns exact-query recovery after invalid cursors.
+
+### `apps/web/src/lib/query/`
+
+Single server-state ownership boundary. `keys.ts` creates identity-scoped, normalized keys; `query-client.ts` centrally retries only transient reads and disables mutation retry; `workspace-queries.ts` owns V2 collection fetching, cancellation and cursor traversal. Architecture tests reject raw query-key arrays, identity-derived global keys and component-local V2 collection fetches.
+
+### `apps/web/src/lib/api/`
+
+Schema-aware Phase 6A page clients for projects, brand kits, credits and chat plus model/viewer reads. Cursors are opaque transport values and are never decoded or logged by the browser.
 
 ### `apps/web/src/lib/server-api.ts`
 

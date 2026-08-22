@@ -7,7 +7,9 @@ import { fileURLToPath } from "node:url";
 
 import {
   collectArchitectureSources,
+  collectPhase6AArchitectureSources,
   scanArchitectureSources,
+  scanPhase6AArchitectureSources,
 } from "../scripts/check-architecture-boundaries.mjs";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1089,6 +1091,63 @@ test("phase 1 architecture boundaries remain enforced across migrated sources", 
     );
   }
   const findings = scanArchitectureSources(sources);
+
+  assert.deepEqual(
+    findings,
+    [],
+    findings.map(({ evidence, message }) => `${evidence}${message}`).join("\n"),
+  );
+});
+
+const phase6AArchitectureFixtures = [
+  {
+    name: "raw query-key arrays outside the key factory",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "query-key-factory-boundary",
+    source:
+      'useQuery({ queryKey: ["projects", workspaceId], queryFn: loadProjects });',
+  },
+  {
+    name: "identity-derived resources under global keys",
+    path: "apps/web/src/lib/query/keys.ts",
+    rule: "identity-scoped-query-keys",
+    source:
+      'export const queryKeys = { global: { projects: (workspaceId: string) => ["global", "projects", workspaceId] as const } };',
+  },
+  {
+    name: "component-local V2 collection fetches",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "v2-fetch-ownership",
+    source:
+      'import { fetchProjectsPage } from "../lib/api/projects";\nexport function ProjectList() { return fetchProjectsPage(token, {}); }',
+  },
+  {
+    name: "mutation retries without an idempotent-command allowlist",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "mutation-retry-policy",
+    source: "useMutation({ mutationFn: createProject, retry: 2 });",
+  },
+  {
+    name: "unbounded collection services outside the route inventory",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      'export function register(app: FastifyInstance, service: WidgetService) { app.get("/api/widgets", async () => service.listWidgets()); }',
+  },
+];
+
+for (const fixture of phase6AArchitectureFixtures) {
+  test(`phase 6A architecture boundary rejects ${fixture.name}`, () => {
+    const findings = scanPhase6AArchitectureSources([fixture]);
+    assert.equal(findings.length, 1, fixture.name);
+    assert.equal(findings[0].rule, fixture.rule, fixture.name);
+    assert.match(findings[0].evidence, new RegExp(`^${fixture.path}:`));
+  });
+}
+
+test("phase 6A server-state and collection boundaries remain enforced", async () => {
+  const sources = await collectPhase6AArchitectureSources(rootDir);
+  const findings = scanPhase6AArchitectureSources(sources);
 
   assert.deepEqual(
     findings,
