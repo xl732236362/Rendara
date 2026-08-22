@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import type {
   ChatMessage,
   ChatMessageCreateRequest,
@@ -13,15 +15,18 @@ import type {
   UserSupabaseClient,
 } from "../../supabase/user.js";
 import type { ThreadService } from "./thread-service.js";
-import type { CursorCodec, CursorScope } from "../../pagination/cursor-codec.js";
+import type {
+  CursorCodec,
+  CursorScope,
+} from "../../pagination/cursor-codec.js";
 import { buildKeysetPredicate } from "../../pagination/keyset.js";
 
 export class ChatServiceError extends Error {
   readonly statusCode: number;
-  readonly code: "chat_error" | "session_not_found";
+  readonly code: "chat_error" | "message_conflict" | "session_not_found";
 
   constructor(
-    code: "chat_error" | "session_not_found",
+    code: "chat_error" | "message_conflict" | "session_not_found",
     message: string,
     statusCode: number,
   ) {
@@ -203,8 +208,17 @@ export function createChatService(options: {
       }
       const { data, error } = await collectionQuery;
       if (error) {
-        logChatPagingFailure(options.logger, "chat_sessions", user.id, workspaceId);
-        throw new ChatServiceError("chat_error", "Failed to list sessions.", 500);
+        logChatPagingFailure(
+          options.logger,
+          "chat_sessions",
+          user.id,
+          workspaceId,
+        );
+        throw new ChatServiceError(
+          "chat_error",
+          "Failed to list sessions.",
+          500,
+        );
       }
       const pageRows = (data ?? []).slice(0, query.limit);
       const tail = pageRows.at(-1);
@@ -329,7 +343,11 @@ export function createChatService(options: {
     async listMessagesPage(user, sessionId, query) {
       const cursorCodec = requireChatCursorCodec(options.cursorCodec);
       const client = options.createUserClient(user.accessToken);
-      const sessionScope = await resolveSessionScope(client, user.id, sessionId);
+      const sessionScope = await resolveSessionScope(
+        client,
+        user.id,
+        sessionId,
+      );
       const scope: CursorScope = {
         userId: user.id,
         workspaceId: sessionScope.workspaceId,
@@ -363,7 +381,11 @@ export function createChatService(options: {
           user.id,
           sessionScope.workspaceId,
         );
-        throw new ChatServiceError("chat_error", "Failed to list messages.", 500);
+        throw new ChatServiceError(
+          "chat_error",
+          "Failed to list messages.",
+          500,
+        );
       }
       const pageRows = (data ?? []).slice(0, query.limit);
       const tail = pageRows.at(-1);
@@ -393,18 +415,40 @@ export function createChatService(options: {
           ? { content_blocks: input.contentBlocks as unknown as Json }
           : {}),
       };
-      const query = input.id
-        ? client
-            .from("chat_messages")
-            .upsert(messageInsert, { onConflict: "id" })
-        : client.from("chat_messages").insert(messageInsert);
-      const { data, error } = await query
+      const { data: inserted, error } = await client
+        .from("chat_messages")
+        .insert(messageInsert)
         .select(
           "id, role, content, tool_activities, content_blocks, created_at",
         )
         .single();
 
-      if (error || !data) {
+      let data = inserted;
+      if (error?.code === "23505" && input.id) {
+        const { data: existing, error: existingError } = await client
+          .from("chat_messages")
+          .select(
+            "id, session_id, role, content, tool_activities, content_blocks, created_at",
+          )
+          .eq("id", input.id)
+          .maybeSingle();
+        if (
+          existingError ||
+          !existing ||
+          !isIdempotentMessage(existing, sessionId, input)
+        ) {
+          options.logger?.error("chat.message_conflict", {
+            code: "stable_message_id_conflict",
+            stage: "idempotency_verification",
+          });
+          throw new ChatServiceError(
+            "message_conflict",
+            "Message identity conflicts with an existing message.",
+            409,
+          );
+        }
+        data = existing;
+      } else if (error || !data) {
         throw new ChatServiceError(
           "chat_error",
           "Failed to save message.",
@@ -436,6 +480,28 @@ export function createChatService(options: {
       };
     },
   };
+}
+
+function isIdempotentMessage(
+  existing: {
+    id: string;
+    session_id: string;
+    role: string;
+    content: string;
+    tool_activities: Json;
+    content_blocks: Json;
+  },
+  sessionId: string,
+  input: ChatMessageCreateRequest & { id?: string | undefined },
+): boolean {
+  return (
+    existing.id === input.id &&
+    existing.session_id === sessionId &&
+    existing.role === input.role &&
+    existing.content === input.content &&
+    isDeepStrictEqual(existing.tool_activities, input.toolActivities ?? null) &&
+    isDeepStrictEqual(existing.content_blocks, input.contentBlocks ?? null)
+  );
 }
 
 type MessageRow = {
@@ -495,7 +561,9 @@ async function resolveSessionScope(
 ): Promise<{ workspaceId: string }> {
   const { data, error } = await client
     .from("chat_sessions")
-    .select("id, canvas_id, created_by, canvases!inner(projects!inner(workspace_id))")
+    .select(
+      "id, canvas_id, created_by, canvases!inner(projects!inner(workspace_id))",
+    )
     .eq("id", sessionId)
     .eq("created_by", userId)
     .maybeSingle();
@@ -518,7 +586,9 @@ function serializeKeyset(
 }
 
 function logChatPagingFailure(
-  logger: { error(event: string, context: Record<string, unknown>): void } | undefined,
+  logger:
+    | { error(event: string, context: Record<string, unknown>): void }
+    | undefined,
   collection: string,
   userId: string,
   workspaceId: string,

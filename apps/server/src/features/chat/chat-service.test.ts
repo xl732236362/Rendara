@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { ChatMessage } from "@loomic/shared";
 import { deduplicateAdjacentMessages } from "./chat-service.js";
@@ -199,8 +199,7 @@ describe("chat canonical reads", () => {
     query.then = (resolve: (value: unknown) => unknown) =>
       resolve({ data: [], error: null });
     const service = createChatService({
-      createUserClient: () =>
-        ({ from: () => query }) as never,
+      createUserClient: () => ({ from: () => query }) as never,
       threadService: { createThreadId: () => "thread-1" },
     });
 
@@ -217,3 +216,233 @@ describe("chat canonical reads", () => {
     expect(calls).toContainEqual(["is", "superseded_by", null]);
   });
 });
+
+describe("chat message append-only identity", () => {
+  const authenticatedUser = {
+    accessToken: "private-token",
+    email: "user@example.com",
+    id: "user-1",
+    userMetadata: {},
+  };
+  const stableInput = {
+    id: "11111111-1111-4111-8111-111111111111",
+    role: "assistant" as const,
+    content: "Stable response.",
+    toolActivities: [
+      {
+        toolCallId: "tool-1",
+        toolName: "inspect_canvas",
+        status: "completed" as const,
+      },
+    ],
+    contentBlocks: [{ type: "text" as const, text: "Stable response." }],
+  };
+
+  it("uses a plain insert for the first write with a stable id", async () => {
+    const db = messageDatabase({
+      insertData: persistedRow("session-1", stableInput),
+    });
+
+    await messageService(db).createMessage(
+      authenticatedUser,
+      "session-1",
+      stableInput,
+    );
+
+    expect(db.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ id: stableInput.id }),
+    );
+    expect(db.upsert).not.toHaveBeenCalled();
+    expect(db.sessionUpdates).toHaveLength(1);
+  });
+
+  it("treats a duplicate insert as success only after reading an identical row", async () => {
+    const existing = persistedRow("session-1", stableInput);
+    const db = messageDatabase({
+      insertError: { code: "23505", message: "duplicate key" },
+      existing,
+    });
+
+    await expect(
+      messageService(db).createMessage(
+        authenticatedUser,
+        "session-1",
+        stableInput,
+      ),
+    ).resolves.toMatchObject({ id: stableInput.id });
+
+    expect(db.existingSelect).toHaveBeenCalledWith(
+      "id, session_id, role, content, tool_activities, content_blocks, created_at",
+    );
+    expect(db.existingId).toHaveBeenCalledWith("id", stableInput.id);
+    expect(db.sessionUpdates).toHaveLength(1);
+  });
+
+  it.each([
+    ["session", { session_id: "session-other" }],
+    ["role", { role: "user" }],
+    ["content", { content: "Different response." }],
+    ["tool activities", { tool_activities: [] }],
+    ["content blocks", { content_blocks: [] }],
+  ] satisfies Array<[string, Partial<ReturnType<typeof persistedRow>>]>)(
+    "rejects a duplicate id with different %s without touching the session",
+    async (_label, difference) => {
+      const logger = { error: vi.fn() };
+      const db = messageDatabase({
+        insertError: { code: "23505", message: "duplicate key" },
+        existing: { ...persistedRow("session-1", stableInput), ...difference },
+      });
+
+      await expect(
+        messageService(db, logger).createMessage(
+          authenticatedUser,
+          "session-1",
+          stableInput,
+        ),
+      ).rejects.toMatchObject({ code: "message_conflict", statusCode: 409 });
+
+      expect(db.sessionUpdates).toEqual([]);
+      expect(logger.error).toHaveBeenCalledWith("chat.message_conflict", {
+        code: "stable_message_id_conflict",
+        stage: "idempotency_verification",
+      });
+      const logged = JSON.stringify(logger.error.mock.calls);
+      expect(logged).not.toContain(authenticatedUser.accessToken);
+      expect(logged).not.toContain(stableInput.id);
+      expect(logged).not.toContain(stableInput.content);
+      expect(logged).not.toContain("tool-1");
+    },
+  );
+
+  it("maps non-duplicate insert failures to a safe server error", async () => {
+    const db = messageDatabase({
+      insertError: { code: "42501", message: "permission denied" },
+    });
+
+    await expect(
+      messageService(db).createMessage(
+        authenticatedUser,
+        "session-1",
+        stableInput,
+      ),
+    ).rejects.toMatchObject({ code: "chat_error", statusCode: 500 });
+
+    expect(db.existingSelect).not.toHaveBeenCalled();
+    expect(db.sessionUpdates).toEqual([]);
+  });
+
+  it("keeps legacy messages without an id on the plain insert path", async () => {
+    const db = messageDatabase({
+      insertData: persistedRow("session-1", {
+        role: "user",
+        content: "Legacy message.",
+      }),
+    });
+
+    await messageService(db).createMessage(authenticatedUser, "session-1", {
+      role: "user",
+      content: "Legacy message.",
+    });
+
+    expect(db.insert).toHaveBeenCalledWith(
+      expect.not.objectContaining({ id: expect.anything() }),
+    );
+    expect(db.upsert).not.toHaveBeenCalled();
+  });
+});
+
+function messageService(
+  db: ReturnType<typeof messageDatabase>,
+  logger?: { error: ReturnType<typeof vi.fn> },
+) {
+  return createChatService({
+    createUserClient: () => db.client,
+    threadService: { createThreadId: () => "thread-1" },
+    ...(logger ? { logger } : {}),
+  });
+}
+
+function persistedRow(
+  sessionId: string,
+  input: {
+    id?: string;
+    role: "user" | "assistant";
+    content: string;
+    toolActivities?: unknown[];
+    contentBlocks?: unknown[];
+  },
+) {
+  return {
+    id: input.id ?? "22222222-2222-4222-8222-222222222222",
+    session_id: sessionId,
+    role: input.role,
+    content: input.content,
+    tool_activities: input.toolActivities ?? null,
+    content_blocks: input.contentBlocks ?? null,
+    created_at: timestamp,
+  };
+}
+
+function messageDatabase(options: {
+  insertData?: ReturnType<typeof persistedRow>;
+  insertError?: { code: string; message: string };
+  existing?: ReturnType<typeof persistedRow>;
+}) {
+  const insert = vi.fn();
+  const upsert = vi.fn();
+  const existingSelect = vi.fn();
+  const existingId = vi.fn();
+  const sessionUpdates: unknown[] = [];
+  let messageTableAccess = 0;
+  const client = {
+    from(table: string) {
+      if (table === "chat_sessions") {
+        const sessionQuery = {
+          update(value: unknown) {
+            sessionUpdates.push(value);
+            return sessionQuery;
+          },
+          eq() {
+            return sessionQuery;
+          },
+        };
+        return sessionQuery;
+      }
+      messageTableAccess += 1;
+      const query: Record<string, unknown> = {};
+      query.insert = (value: unknown) => {
+        insert(value);
+        return query;
+      };
+      query.upsert = (value: unknown) => {
+        upsert(value);
+        return query;
+      };
+      query.select = (columns: string) => {
+        if (messageTableAccess > 1) existingSelect(columns);
+        return query;
+      };
+      query.eq = (column: string, value: unknown) => {
+        existingId(column, value);
+        return query;
+      };
+      query.single = async () => ({
+        data: options.insertData ?? null,
+        error: options.insertError ?? null,
+      });
+      query.maybeSingle = async () => ({
+        data: options.existing ?? null,
+        error: null,
+      });
+      return query;
+    },
+  };
+  return {
+    client: client as never,
+    existingId,
+    existingSelect,
+    insert,
+    sessionUpdates,
+    upsert,
+  };
+}
