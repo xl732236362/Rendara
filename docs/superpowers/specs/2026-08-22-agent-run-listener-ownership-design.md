@@ -51,8 +51,9 @@ Canvas page
   |
   +-- Canvas-scoped AgentRunController
         |
-        +-- run A listener and state
-        +-- run B listener and state
+        +-- one canvas WebSocket subscription
+        +-- run A state
+        +-- run B state
         +-- reconnect/replay coordination
         +-- terminal cleanup
 
@@ -62,16 +63,19 @@ ChatSidebar instances
   +-- never own run listener cleanup
 ```
 
-The controller is created for one `canvasId` and one authenticated WebSocket
-owner. It remains the same while that canvas remains active, even if
-ChatSidebar is temporarily closed or remounted. On a canvas change, the old
-controller is disposed and a new controller is created; no run state crosses
-that boundary.
+The controller is created by `apps/web/src/app/canvas/page.tsx` for one
+`canvasId` and the page's existing `WebSocketHandle`. It remains the same
+while that canvas remains active, even if ChatSidebar is temporarily closed or
+remounted. On a canvas change, the page disposes the old controller and creates
+a new controller; no run state crosses that boundary. The controller owns one
+`ws.onEvent` subscription for the canvas, not one WebSocket subscription per
+Agent run.
 
 The controller owns only live run coordination:
 
 - active run identity and session association;
 - assistant placeholder identity;
+- latest normalized live assistant state needed by a remounted sidebar;
 - processed event IDs/sequences;
 - WebSocket subscriptions and replay cleanup;
 - terminal and recovery status.
@@ -81,13 +85,15 @@ message pages, notifications, or Canvas local editing state.
 
 ## 5. Proposed Boundary
 
-Create a framework-independent module, for example:
+Create the framework-independent module at:
 
 `apps/web/src/lib/agent-run-controller.ts`
 
 with a factory that receives the existing WebSocket handle and explicit
 callbacks for stream application, Canvas sync, persistence fallback, and
-diagnostics. The public operations are:
+diagnostics. The page creates it with a stable `useRef`/canvas identity guard;
+ChatSidebar receives the controller instance through an explicit prop. The
+public operations are:
 
 ```ts
 type AgentRunController = {
@@ -96,18 +102,79 @@ type AgentRunController = {
     sessionId: string;
     assistantId: string;
   }): void;
-  handleResume(ack: ResumeAck): void;
-  handleEvent(event: StreamEvent): void;
+  requestResume(): void;
+  handleResumeAck(ack: WsCommandAck): void;
   getActiveRuns(): ReadonlyMap<string, ActiveRun>;
   subscribe(listener: () => void): () => void;
+  acknowledgeTerminal(runId: string): void;
   disposeRun(runId: string): void;
   dispose(): void;
 };
+
+type ActiveRun = {
+  runId: string;
+  sessionId: string;
+  assistantId: string;
+  status: "running" | "stopping" | "completed" | "failed" | "canceled";
+  contentBlocks: ContentBlock[];
+  lastEventId?: string;
+  latestBillingError?: Extract<StreamEvent, { type: "billing.error" }>;
+  terminalEvent?: Extract<
+    StreamEvent,
+    { type: "run.completed" | "run.failed" | "run.canceled" }
+  >;
+};
+
+type ControllerHandlers = {
+  onCanvasSync(event: Extract<StreamEvent, { type: "canvas.sync" }>): void;
+  onPersistenceFailure(run: ActiveRun): Promise<void> | void;
+  onReplayGap(input: { canvasId: string; sessionId?: string }): Promise<void> | void;
+  onDiagnostic(input: {
+    marker: string;
+    runId?: string;
+    sessionId?: string;
+    eventType?: string;
+  }): void;
+};
 ```
 
-The exact callback types should reuse existing shared WebSocket and stream
-types. The controller must not import React, routing, QueryClient, or UI
-notification modules.
+`ContentBlock` and `StreamEvent` come from `@loomic/shared`; `WsCommandAck`
+comes from the existing WebSocket hook/protocol types. `ActiveRun` is the
+smallest state needed to rebuild the temporary assistant item after a sidebar
+remount. It is not a replacement for the durable message page.
+
+Extract the switch currently inside `useChatStream` into one pure reducer,
+for example `reduceAgentRunContent(previousBlocks, event)`. The controller
+uses that reducer to update `ActiveRun.contentBlocks`; ChatSidebar renders the
+resulting snapshot and does not maintain a second event-to-message reducer.
+The existing behavior for text/thinking deltas, tool start/completion/failure,
+run failure fallback text, and cancel cleanup must be preserved exactly and
+covered by the existing Chat tests plus focused reducer tests.
+
+The controller installs one `ws.onEvent` callback when created. That callback
+routes `canvas.sync` by canvas ID and all run events by run ID plus session ID.
+The existing WebSocket hook remains responsible for canvas sequence filtering;
+the controller must not invent a second sequence cursor. For events that carry
+an event ID, the controller keeps a bounded per-run set of processed IDs to
+protect against replay duplicates. The controller must not import React,
+routing, QueryClient, or UI notification modules.
+
+`ControllerHandlers` are fixed when the canvas page creates the controller and
+must use stable page-owned refs where a current token or callback is required.
+ChatSidebar observes snapshots only through `subscribe`; unmounting removes
+only that UI subscription. Run routing, accumulated assistant state, terminal
+cleanup, and persistence-fallback authorization therefore do not depend on a
+stale sidebar closure. The fallback handler receives the controller's run
+snapshot and uses the existing stable assistant ID and idempotent save path.
+
+UI-only effects remain outside the controller. Billing dialogs, tier-limit
+toasts, preview-model hints, stop-button state, performance display, and
+attachment refresh are produced by observing `ActiveRun` snapshots. A billing
+or terminal event received while ChatSidebar is absent stays in the snapshot
+until a sidebar observes it; the controller does not import or invoke UI code.
+Persistence fallback and replay-gap recovery are different: they protect
+durable correctness and therefore remain controller handlers that work without
+a mounted sidebar.
 
 `ChatSidebar` will subscribe to controller snapshots and call controller
 operations. It will retain presentation state and existing message update
@@ -120,39 +187,57 @@ removed after migration.
 
 1. ChatSidebar sends the run command and receives the existing ACK.
 2. It calls `startRun` with the run ID, session ID, and assistant placeholder ID.
-3. The controller registers exactly one listener for that run.
-4. Incoming stream events are routed by run ID and session ID before callbacks
+3. The existing canvas subscription routes later events into the controller.
+4. The controller routes stream events by run ID and session ID before callbacks
    update the UI or durable-message recovery path.
+5. The controller accumulates normalized assistant state so a later
+   ChatSidebar can render the current placeholder and continue from the same
+   assistant ID.
 
 ### Live events
 
-The controller accepts each event once. Event identity/sequence is used for
-deduplication; message text is never used as a duplicate key. Events for a
-different canvas or session are ignored and logged with redacted identifiers.
+The controller accepts each event once. The WebSocket hook filters canvas
+sequence duplicates; the controller filters repeated event IDs when present.
+Message text is never used as a duplicate key. Events for a different canvas
+or session are ignored and logged with redacted identifiers.
 
 ### Reconnect and replay
 
 1. The controller preserves active run state while the socket is disconnected.
-2. After reconnect, it sends the existing resume request.
+2. When the page observes the existing `ws.connected` transition, it calls
+   `requestResume`; the controller sends the existing resume request and owns
+   the ACK callback even when ChatSidebar is absent.
 3. Replay events are routed through the same deduplication path as live events.
 4. If the server reports a replay gap, the controller asks the existing chat
    recovery callback to reload the authoritative durable message page.
-5. A replay listener is cleaned only after its expected replay window is
-   consumed, or after an explicit terminal/dispose action.
+5. The single canvas subscription remains active for the whole controller
+   lifetime. Replay bookkeeping is cleared after the replay window is consumed;
+   the final run snapshot follows the terminal acknowledgement and bounded
+   retention rules below.
 
 ### Terminal events
 
-For completed, failed, cancelled, and persistence-failure terminal states, the
-controller publishes the terminal status, invokes the existing fallback or
-reload callback where required, and then cleans only that run's listener.
-Cleanup is idempotent and safe to call more than once.
+For `run.completed`, `run.failed`, and `run.canceled`, the controller marks the
+run terminal and stops treating it as active, but retains its final snapshot.
+ChatSidebar calls `acknowledgeTerminal(runId)` only after the terminal UI has
+been observed or the authoritative durable message reload has replaced the
+temporary assistant item. That acknowledgement removes the retained snapshot.
+`assistant.persistence_failed` invokes the idempotent fallback before terminal
+acknowledgement. All cleanup is scoped to one run and idempotent.
+
+To prevent an unmounted sidebar from retaining terminal snapshots forever,
+the controller keeps at most 20 terminal snapshots and removes snapshots older
+than 30 minutes whenever a run starts, a resume completes, or a terminal state
+is acknowledged. These limits affect only temporary UI snapshots; durable
+messages remain in the server-owned chat history.
 
 ## 7. Error and Lifecycle Rules
 
 - Closing ChatSidebar removes only the sidebar subscription; it does not stop
   an Agent or dispose the canvas controller.
-- A stop button sends the existing stop command first. The run is disposed only
-  after the server confirms a terminal state.
+- A stop button sends the existing stop command first. The run changes to
+  `stopping`; it becomes terminal only after server confirmation and its final
+  snapshot remains until acknowledged or pruned by the bounded retention rule.
 - A failed stop request keeps the listener active until a terminal result or
   canvas disposal.
 - A canvas change disposes the old controller before creating the new one.
@@ -168,12 +253,24 @@ Create `apps/web/test/agent-run-controller.test.ts` and preserve existing
 ChatSidebar tests. The focused suite must cover:
 
 - active run survives sidebar unsubscribe/resubscribe;
+- controller installs exactly one `ws.onEvent` subscription per canvas;
+- creating and disposing a controller removes that one subscription exactly once;
+- remounting replaces rendering callbacks without losing accumulated run state;
+- a persistence-failure event still uses controller-owned assistant state when
+  no ChatSidebar is mounted;
+- text, thinking, tool, failure, and cancellation events use one shared pure
+  reducer with behavior identical to the current `useChatStream` rules;
+- billing and terminal UI state received while the sidebar is absent is visible
+  after remount without reprocessing the event;
 - only the matching run receives an event;
 - different sessions and canvases are ignored;
 - duplicate live/replay events are applied once;
 - reconnect replays only the missing event window;
 - replay gaps trigger authoritative message reload;
-- terminal events clean only their own run;
+- terminal events stop only their own active run and retain only that run's
+  bounded final snapshot;
+- terminal acknowledgement and age/count pruning remove final snapshots
+  without touching active runs;
 - stop waits for server confirmation;
 - repeated `disposeRun` and `dispose` do not double-unsubscribe;
 - canvas disposal prevents later events from reaching the new canvas;
