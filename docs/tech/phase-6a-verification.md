@@ -3,7 +3,8 @@
 ## Verification context
 
 - Time: 2026-08-22 16:24-18:30 +08:00
-- Baseline HEAD: `96a4e5828de6`
+- Task 10 implementation baseline: `96a4e5828de6`
+- Fully gated and aggregate-reviewed implementation HEAD: `fbe2579`
 - Runtime: Windows, Node `v24.14.0`, pnpm `10.26.2`, Supabase CLI `2.115.0`, Docker Engine `29.6.1`
 - Local database: Supabase worktree stack on the checked-in ports; no persistent configuration changes
 - Secret handling: commands used local credentials only through process environment. This document records no keys, secrets, or cursor values.
