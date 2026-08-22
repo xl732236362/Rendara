@@ -84,6 +84,46 @@ describe("project service cursor pagination", () => {
       `workspace/${rows[1]!.id}/thumbnail.webp`,
     ]);
   });
+
+  it("fails immediately without a cursor codec and performs no authorization or database work", async () => {
+    const db = database({ projects: [] });
+    const ensureViewer = vi.fn(async () => ({} as never));
+    const createUserClient = vi.fn(() => db.client);
+    const service = createProjectService({
+      createUserClient,
+      viewerService: { ensureViewer },
+    });
+
+    await expect(service.listProjectsPage(user, { limit: 1 })).rejects.toThrow(
+      "CursorCodec is required for paged project queries.",
+    );
+    expect(ensureViewer).not.toHaveBeenCalled();
+    expect(createUserClient).not.toHaveBeenCalled();
+    expect(db.tables).toEqual([]);
+  });
+
+  it("logs a safe enrichment failure when a paged project has no primary canvas", async () => {
+    const db = database({ projects: [rows[0]!], canvases: [] });
+    const logger = { error: vi.fn() };
+    const service = createProjectService({
+      createUserClient: () => db.client,
+      viewerService: { ensureViewer: vi.fn(async () => ({} as never)) },
+      cursorCodec: codec(),
+      logger,
+    });
+
+    await expect(service.listProjectsPage(user, { limit: 1 })).rejects.toMatchObject({
+      code: "project_query_failed",
+    });
+    expect(logger.error).toHaveBeenCalledWith("pagination.query_failed", {
+      collection: "projects",
+      stage: "enrichment_query",
+      userId: user.id,
+      workspaceId: workspace.id,
+    });
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain("token");
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(rows[0]!.id);
+  });
 });
 
 function project(id: string, updated_at: string) {

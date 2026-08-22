@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createCursorCodec } from "../../pagination/cursor-codec.js";
 import type { UserSupabaseClient } from "../../supabase/user.js";
@@ -61,6 +61,18 @@ describe("brand kit service cursor pagination", () => {
     expect(db.calls).toContainEqual(["brand_kits", "order", "created_at", { ascending: true }]);
     expect(db.calls).toContainEqual(["brand_kits", "order", "id", { ascending: true }]);
     expect(db.calls).toContainEqual(["brand_kits", "limit", 2]);
+  });
+
+  it("fails without a cursor codec before creating a client or accessing the collection", async () => {
+    const db = database({ brand_kits: [] });
+    const createUserClient = vi.fn(() => db.client);
+    const service = createBrandKitService({ createUserClient });
+
+    await expect(service.listKitsPage(user, workspaceId, { limit: 1 })).rejects.toThrow(
+      "CursorCodec is required for paged brand kit queries.",
+    );
+    expect(createUserClient).not.toHaveBeenCalled();
+    expect(db.tables).toEqual([]);
   });
 });
 

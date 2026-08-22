@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createCursorCodec } from "../../pagination/cursor-codec.js";
 import type { AdminSupabaseClient } from "../../supabase/admin.js";
@@ -65,6 +65,18 @@ describe("credit service cursor pagination", () => {
     expect(db.calls).toContainEqual(["credit_transactions", "order", "created_at", { ascending: false }]);
     expect(db.calls).toContainEqual(["credit_transactions", "order", "id", { ascending: false }]);
     expect(db.calls).toContainEqual(["credit_transactions", "limit", 2]);
+  });
+
+  it("fails without a cursor codec before creating an admin client or accessing transactions", async () => {
+    const db = database({ credit_transactions: [] });
+    const getAdminClient = vi.fn(() => db.client);
+    const service = createCreditService({ getAdminClient });
+
+    await expect(
+      service.listTransactionsPage(workspaceId, userId, { limit: 1 }),
+    ).rejects.toThrow("CursorCodec is required for paged credit transaction queries.");
+    expect(getAdminClient).not.toHaveBeenCalled();
+    expect(db.tables).toEqual([]);
   });
 });
 

@@ -298,10 +298,10 @@ export function createProjectService(options: {
       });
     },
     async listProjectsPage(user, query) {
+      const cursorCodec = requireCursorCodec(options.cursorCodec);
       await ensureFoundation(options.viewerService, user, "project_query_failed");
       const client = options.createUserClient(user.accessToken);
       const workspace = await resolvePersonalWorkspace(client, user.id, "project_query_failed");
-      const cursorCodec = requireCursorCodec(options.cursorCodec);
       const scope: CursorScope = {
         userId: user.id,
         workspaceId: workspace.id,
@@ -343,7 +343,17 @@ export function createProjectService(options: {
       const thumbnailUrls = generateThumbnailUrls(client, projects.filter((project) => project.thumbnail_path));
       const items = projects.map((project) => {
         const canvas = canvasByProject.get(project.id);
-        if (!canvas) throw new ProjectServiceError("project_query_failed", PROJECT_QUERY_FAILED_MESSAGE, 500);
+        if (!canvas) {
+          logPaginationFailure(options.logger, "projects", "enrichment_query", {
+            userId: user.id,
+            workspaceId: workspace.id,
+          });
+          throw new ProjectServiceError(
+            "project_query_failed",
+            PROJECT_QUERY_FAILED_MESSAGE,
+            500,
+          );
+        }
         return mapProjectSummary({ canvas, project, thumbnailUrl: thumbnailUrls.get(project.id) ?? null, workspace });
       });
       const tail = projects.at(-1)!;
