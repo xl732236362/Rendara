@@ -10,7 +10,7 @@ Quality, database reset/security, and Docker gates established in phase 0. Every
 
 ### `tests/` and package tests
 
-Workspace invariants use Node test; server/shared/web behavior uses Vitest; browser workflows use Playwright. TypeScript-AST architecture enforcement resolves authoritative module/export provenance for Phase 6A query-key ownership and mutation retry policy, and rejects component-owned direct V2 requests. Its exported fail-closed GET inventory classifies all 29 production routes (13 singleton plus 16 collection); the collection subset proves registration and caps where present while keeping uncapped catalogs and compatibility routes explicit gaps. Verification evidence and removal/rollback windows live in `docs/tech/phase-6a-verification.md`.
+Workspace invariants use Node test; server/shared/web behavior uses Vitest; browser workflows use Playwright. TypeScript-AST architecture enforcement resolves authoritative module/export provenance, propagates identity taint into global query-key closures, evaluates composed V2 URLs, and rejects component-owned direct requests. A unified route discovery pass feeds both the scanner and exported fail-closed GET inventory, which classifies all 29 production routes (13 singleton plus 16 collection). The collection subset proves registration and caps where present while keeping uncapped catalogs and compatibility routes explicit gaps. Verification evidence and removal/rollback windows live in `docs/tech/phase-6a-verification.md`.
 
 ### `skills/`
 

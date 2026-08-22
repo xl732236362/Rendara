@@ -1165,6 +1165,41 @@ const phase6AArchitectureFixtures = [
       'const scoped = "workspace";\nfunction makeKey(value: string) { return ["global", value]; }\nexport const queryKeys = { global: { projects: () => makeKey(scoped) } };',
   },
   {
+    name: "global query-key closures capturing scoped object properties",
+    path: "apps/web/src/lib/query/keys.ts",
+    rule: "identity-scoped-query-keys",
+    source:
+      'const viewer = getViewer();\nconst owner = viewer.user;\nconst identity = owner.id;\nexport const queryKeys = { global: { projects: () => ["global", identity] } };',
+  },
+  {
+    name: "global query-key closures capturing scoped parameters",
+    path: "apps/web/src/lib/query/keys.ts",
+    rule: "identity-scoped-query-keys",
+    source:
+      'export function createKeys(workspace: Workspace) { const scope = workspace.id; return { global: { projects: () => ["global", scope] } }; }',
+  },
+  {
+    name: "global query-key closures capturing multi-level identity aliases",
+    path: "apps/web/src/lib/query/keys.ts",
+    rule: "identity-scoped-query-keys",
+    source:
+      'const sessionId = currentSession.id;\nconst first = sessionId;\nconst second = first;\nexport const queryKeys = { global: { messages: () => ["global", second] } };',
+  },
+  {
+    name: "global query-key closures capturing tainted helper functions",
+    path: "apps/web/src/lib/query/keys.ts",
+    rule: "identity-scoped-query-keys",
+    source:
+      'const workspaceId = currentWorkspace.id;\nfunction scopedKey() { return ["global", workspaceId]; }\nexport const queryKeys = { global: { projects: () => scopedKey() } };',
+  },
+  {
+    name: "global query-key closures capturing aliased auth imports",
+    path: "apps/web/src/lib/query/keys.ts",
+    rule: "identity-scoped-query-keys",
+    source:
+      'import { currentUser as principal } from "../auth/viewer";\nconst key = principal.id;\nexport const queryKeys = { global: { viewer: () => ["global", key] } };',
+  },
+  {
     name: "component-local V2 collection fetches",
     path: "apps/web/src/components/project-list.tsx",
     rule: "v2-fetch-ownership",
@@ -1233,6 +1268,34 @@ const phase6AArchitectureFixtures = [
     rule: "v2-fetch-ownership",
     source:
       'export function loadProjects() { return apiFetch("/api/v2/projects"); }',
+  },
+  {
+    name: "direct V2 requests assembled with binary concatenation",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "v2-fetch-ownership",
+    source:
+      'const base = "/api/v2";\nconst projects = "/projects";\nexport function ProjectList() { return apiFetch(base + projects); }',
+  },
+  {
+    name: "direct V2 requests assembled with template substitutions",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "v2-fetch-ownership",
+    source:
+      'const version = "v2";\nexport function ProjectList() { return apiFetch(`/api/${version}/projects`); }',
+  },
+  {
+    name: "direct V2 requests through multi-level URL aliases",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "v2-fetch-ownership",
+    source:
+      'const endpoint = "/api/v2/projects";\nconst first = endpoint;\nconst second = first;\nexport function ProjectList() { return request(second); }',
+  },
+  {
+    name: "unresolved direct API requests with static API fragments",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "v2-fetch-ownership",
+    source:
+      "const version = getVersion();\nexport function ProjectList() { return request(`/api/${version}/projects`); }",
   },
   {
     name: "mutation retries without an idempotent-command allowlist",
@@ -1323,6 +1386,34 @@ const phase6AArchitectureFixtures = [
     source:
       'export function register(app: FastifyInstance, service: WidgetService) { app.get("/api/widgets", async () => service.load()); }',
   },
+  {
+    name: "unknown GET routes through constant paths",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      'const routePath = "/api/widgets";\nexport function register(app: FastifyInstance) { app.get(routePath, async () => []); }',
+  },
+  {
+    name: "unknown app.route GET registrations",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      'const routePath = "/api/widgets";\nexport function register(app: FastifyInstance) { app.route({ method: "GET", url: routePath, handler: async () => [] }); }',
+  },
+  {
+    name: "unknown app.route GET registrations through method arrays",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      'const methods = ["HEAD", "GET"];\nexport function register(app: FastifyInstance) { app.route({ method: methods, path: "/api/widgets", handler: async () => db.query("SELECT * FROM widgets") }); }',
+  },
+  {
+    name: "dynamic GET route registrations",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      "export function register(app: FastifyInstance) { app.get(buildRoutePath(), async () => []); }",
+  },
 ];
 
 for (const fixture of phase6AArchitectureFixtures) {
@@ -1386,6 +1477,40 @@ test("phase 6A query factory provenance accepts authoritative imports only", () 
     },
   ]);
   assert.equal(forgedReexport[0]?.rule, "query-key-factory-boundary");
+});
+
+test("phase 6A global keys allow fixed deployment constants", () => {
+  const findings = scanPhase6AArchitectureSources([
+    {
+      path: "apps/web/src/lib/query/keys.ts",
+      source:
+        'const DEPLOYMENT_REGION = "cn-east";\nconst API_REVISION = "2026-08";\nfunction deploymentKey() { return ["health", DEPLOYMENT_REGION, API_REVISION]; }\nexport const queryKeys = { global: { health: () => deploymentKey() } };',
+    },
+  ]);
+  assert.deepEqual(findings, []);
+});
+
+test("phase 6A route discovery handles existing constant and app.route forms", () => {
+  const sources = [
+    {
+      path: "apps/server/src/http/health.ts",
+      source:
+        'const healthPath = "/api/health";\nexport function register(app: FastifyInstance) { app.get(healthPath, async () => ({ ok: true })); }',
+    },
+    {
+      path: "apps/server/src/http/viewer.ts",
+      source:
+        'const method = ["HEAD", "GET"];\nconst viewerPath = "/api/viewer";\nexport function register(app: FastifyInstance) { app.route({ method, url: viewerPath, handler: async () => ({}) }); }',
+    },
+  ];
+  assert.deepEqual(
+    phase6ABoundaries
+      .discoverPhase6AGetRoutes(sources)
+      .map(({ path }) => path)
+      .sort(),
+    ["/api/health", "/api/viewer"],
+  );
+  assert.deepEqual(scanPhase6AArchitectureSources(sources), []);
 });
 
 test("phase 6A mutation retry allowlist accepts only proven exports", () => {

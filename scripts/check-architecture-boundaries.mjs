@@ -450,7 +450,7 @@ function scanIdentityScopedKeys(context) {
     if (
       ts.isPropertyAssignment(node) &&
       propertyName(node.name) === "global" &&
-      containsIdentityDerivedKey(node.initializer)
+      containsIdentityDerivedKey(node.initializer, context)
     ) {
       findings.push(
         phase6AFinding(
@@ -467,7 +467,7 @@ function scanIdentityScopedKeys(context) {
   return findings;
 }
 
-function containsIdentityDerivedKey(node) {
+function containsIdentityDerivedKey(node, context) {
   let found = false;
   function visit(current) {
     if (
@@ -479,14 +479,47 @@ function containsIdentityDerivedKey(node) {
       found = true;
       return;
     }
-    if (ts.isCallExpression(current) && current.arguments.length > 0) {
-      found = true;
-      return;
+    if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
+      if (capturesTaintedBinding(current, context)) found = true;
+      if (found) return;
     }
     ts.forEachChild(current, visit);
   }
   visit(node);
   return found;
+}
+
+function capturesTaintedBinding(factory, context) {
+  let captured = false;
+  const localNames = new Set(
+    factory.parameters.flatMap((parameter) =>
+      ts.isIdentifier(parameter.name) ? [parameter.name.text] : [],
+    ),
+  );
+  function collectLocals(node) {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      findContainingFunction(node) === factory
+    ) {
+      localNames.add(node.name.text);
+    }
+    ts.forEachChild(node, collectLocals);
+  }
+  collectLocals(factory.body);
+  function visit(node) {
+    if (
+      ts.isIdentifier(node) &&
+      !localNames.has(node.text) &&
+      context.taintedBindings.has(node.text)
+    ) {
+      captured = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(factory.body);
+  return captured;
 }
 
 function scanComponentV2Fetches(context) {
@@ -532,23 +565,87 @@ function isDirectV2Request(call, context) {
   const callee = resolveExpression(call.expression, context);
   if (!ts.isIdentifier(callee)) return false;
   if (!/^(?:fetch|apiFetch|request)$/.test(callee.text)) return false;
-  const url = staticStringValue(call.arguments[0], context);
-  return url?.includes("/api/v2/") ?? false;
+  const url = evaluateStaticString(call.arguments[0], context);
+  return url.known
+    ? url.value.includes("/api/v2/")
+    : /^apps\/web\/src\/(?:app|components|hooks)\//.test(context.filePath) &&
+        (url.hasApiFragment || url.hasV2Binding);
 }
 
-function staticStringValue(expression, context) {
-  const current = resolveExpression(expression, context);
+function evaluateStaticString(expression, context, seen = new Set()) {
+  const current = unwrapExpression(expression);
+  if (!current)
+    return { known: false, hasApiFragment: false, hasV2Binding: false };
+  if (ts.isIdentifier(current) && context.bindings.has(current.text)) {
+    if (seen.has(current.text)) {
+      return {
+        known: false,
+        hasApiFragment: false,
+        hasV2Binding: /v2/i.test(current.text),
+      };
+    }
+    seen.add(current.text);
+    const result = evaluateStaticString(
+      context.bindings.get(current.text),
+      context,
+      seen,
+    );
+    return {
+      ...result,
+      hasV2Binding: result.hasV2Binding || /v2/i.test(current.text),
+    };
+  }
   if (
     ts.isStringLiteral(current) ||
     ts.isNoSubstitutionTemplateLiteral(current)
   )
-    return current.text;
+    return {
+      known: true,
+      value: current.text,
+      hasApiFragment: current.text.includes("/api/"),
+      hasV2Binding: current.text.includes("v2"),
+    };
   if (ts.isTemplateExpression(current)) {
-    return `${current.head.text}${current.templateSpans
-      .map((span) => `${span.literal.text}`)
-      .join("")}`;
+    let value = current.head.text;
+    let known = true;
+    let hasApiFragment = current.head.text.includes("/api/");
+    let hasV2Binding = false;
+    for (const span of current.templateSpans) {
+      const substitution = evaluateStaticString(
+        span.expression,
+        context,
+        new Set(seen),
+      );
+      known &&= substitution.known;
+      if (substitution.known) value += substitution.value;
+      value += span.literal.text;
+      hasApiFragment ||=
+        substitution.hasApiFragment || span.literal.text.includes("/api/");
+      hasV2Binding ||=
+        substitution.hasV2Binding || span.literal.text.includes("v2");
+    }
+    return { known, value, hasApiFragment, hasV2Binding };
   }
-  return undefined;
+  if (
+    ts.isBinaryExpression(current) &&
+    current.operatorToken.kind === ts.SyntaxKind.PlusToken
+  ) {
+    const left = evaluateStaticString(current.left, context, new Set(seen));
+    const right = evaluateStaticString(current.right, context, new Set(seen));
+    return {
+      known: left.known && right.known,
+      value: `${left.known ? left.value : ""}${right.known ? right.value : ""}`,
+      hasApiFragment: left.hasApiFragment || right.hasApiFragment,
+      hasV2Binding: left.hasV2Binding || right.hasV2Binding,
+    };
+  }
+  return {
+    known: false,
+    hasApiFragment: current.getText(context.sourceFile).includes("/api/"),
+    hasV2Binding:
+      (ts.isIdentifier(current) && /v2/i.test(current.text)) ||
+      current.getText(context.sourceFile).includes("v2"),
+  };
 }
 
 function isDomainApiModule(moduleName) {
@@ -647,39 +744,93 @@ function isCallNamed(expression, name) {
 
 function scanCollectionRoutes(context) {
   if (!context.filePath.startsWith("apps/server/src/http/")) return [];
-  const findings = [];
+  return discoverGetRoutesInContext(context)
+    .filter((route) => route.dynamic || !phase6AGetRoutesByPath.has(route.path))
+    .map((route) =>
+      phase6AFinding(
+        "collection-route-inventory",
+        "GET routes must have a static path classified by the Phase 6A inventory",
+        route.evidenceNode,
+        context,
+      ),
+    );
+}
+
+export function discoverPhase6AGetRoutes(sources) {
+  const sourceGraph = createSourceGraph(sources);
+  const routes = [];
+  for (const [filePath, sourceFile] of sourceGraph) {
+    if (!filePath.startsWith("apps/server/src/http/")) continue;
+    const context = createPhase6AContext(filePath, sourceFile, sourceGraph);
+    routes.push(
+      ...discoverGetRoutesInContext(context).map((route) => ({
+        ...route,
+        filePath,
+      })),
+    );
+  }
+  return routes;
+}
+
+function discoverGetRoutesInContext(context) {
+  const routes = [];
   function visit(node) {
     if (
-      !ts.isCallExpression(node) ||
-      !ts.isPropertyAccessExpression(node.expression)
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      callRootIdentifier(node.expression) === "app"
     ) {
-      ts.forEachChild(node, visit);
-      return;
-    }
-    if (node.expression.name.text !== "get") {
-      ts.forEachChild(node, visit);
-      return;
-    }
-    const routeArgument = node.arguments.find(ts.isStringLiteral);
-    const handler = node.arguments.at(-1);
-    if (
-      routeArgument &&
-      handler &&
-      !phase6AGetRoutesByPath.has(routeArgument.text)
-    ) {
-      findings.push(
-        phase6AFinding(
-          "collection-route-inventory",
-          "collection routes must be cursor-paginated or inventoried with an intrinsic bound",
-          routeArgument,
+      const methodName = node.expression.name.text;
+      if (methodName === "get") {
+        const pathExpression = node.arguments[0];
+        const pathResult = evaluateStaticString(pathExpression, context);
+        routes.push({
+          path: pathResult.known ? pathResult.value : undefined,
+          dynamic: !pathResult.known,
+          handler: node.arguments.at(-1),
+          evidenceNode: pathExpression ?? node,
+        });
+      }
+      if (methodName === "route") {
+        const options = resolveObjectProperties(node.arguments[0], context);
+        const methods = evaluateHttpMethods(
+          options.values.get("method"),
           context,
-        ),
-      );
+        );
+        if (!methods.known || methods.values.has("GET")) {
+          const pathExpression =
+            options.values.get("url") ?? options.values.get("path");
+          const pathResult = evaluateStaticString(pathExpression, context);
+          routes.push({
+            path: pathResult.known ? pathResult.value : undefined,
+            dynamic: !methods.known || !pathResult.known,
+            handler: options.values.get("handler"),
+            evidenceNode: pathExpression ?? node,
+          });
+        }
+      }
     }
     ts.forEachChild(node, visit);
   }
   visit(context.sourceFile);
-  return findings;
+  return routes;
+}
+
+function evaluateHttpMethods(expression, context) {
+  const resolved = resolveExpression(expression, context);
+  if (ts.isStringLiteral(resolved)) {
+    return { known: true, values: new Set([resolved.text.toUpperCase()]) };
+  }
+  if (ts.isArrayLiteralExpression(resolved)) {
+    const values = new Set();
+    for (const element of resolved.elements) {
+      const result = evaluateStaticString(element, context);
+      if (!result.known) return { known: false, values };
+      values.add(result.value.toUpperCase());
+    }
+    return { known: true, values };
+  }
+  return { known: false, values: new Set() };
 }
 
 function containsCollectionServiceCall(node) {
@@ -747,6 +898,8 @@ function createSourceGraph(sources) {
 
 function createPhase6AContext(filePath, sourceFile, sourceGraph) {
   const bindings = new Map();
+  const parameters = [];
+  const taintSeeds = new Set();
   function visit(node) {
     if (
       ts.isVariableDeclaration(node) &&
@@ -755,10 +908,99 @@ function createPhase6AContext(filePath, sourceFile, sourceGraph) {
     ) {
       bindings.set(node.name.text, node.initializer);
     }
+    if (ts.isFunctionDeclaration(node) && node.name) {
+      bindings.set(node.name.text, node);
+    }
+    if (ts.isParameter(node) && ts.isIdentifier(node.name)) {
+      parameters.push(node);
+    }
+    if (
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      const moduleIsScoped = isScopedIdentityName(node.moduleSpecifier.text);
+      const importClause = node.importClause;
+      if (moduleIsScoped && importClause?.name) {
+        taintSeeds.add(importClause.name.text);
+      }
+      const namedBindings = importClause?.namedBindings;
+      if (namedBindings && ts.isNamedImports(namedBindings)) {
+        for (const element of namedBindings.elements) {
+          const importedName = element.propertyName?.text ?? element.name.text;
+          if (moduleIsScoped || isScopedIdentityName(importedName)) {
+            taintSeeds.add(element.name.text);
+          }
+        }
+      }
+      if (
+        moduleIsScoped &&
+        namedBindings &&
+        ts.isNamespaceImport(namedBindings)
+      ) {
+        taintSeeds.add(namedBindings.name.text);
+      }
+    }
     ts.forEachChild(node, visit);
   }
   visit(sourceFile);
-  return { filePath, sourceFile, bindings, sourceGraph };
+  const context = { filePath, sourceFile, bindings, sourceGraph };
+  context.taintedBindings = computeTaintedBindings(
+    bindings,
+    parameters,
+    taintSeeds,
+    context,
+  );
+  return context;
+}
+
+function computeTaintedBindings(bindings, parameters, taintSeeds, context) {
+  const tainted = new Set(taintSeeds);
+  for (const parameter of parameters) {
+    const typeText = parameter.type?.getText(context.sourceFile) ?? "";
+    if (
+      isScopedIdentityName(parameter.name.text) ||
+      isScopedIdentityName(typeText)
+    ) {
+      tainted.add(parameter.name.text);
+    }
+  }
+  for (const name of bindings.keys()) {
+    if (isScopedIdentityName(name)) tainted.add(name);
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [name, initializer] of bindings) {
+      if (tainted.has(name)) continue;
+      if (expressionReferencesTaint(initializer, tainted)) {
+        tainted.add(name);
+        changed = true;
+      }
+    }
+  }
+  return tainted;
+}
+
+function expressionReferencesTaint(expression, tainted) {
+  let found = false;
+  function visit(node) {
+    if (
+      ts.isIdentifier(node) &&
+      (tainted.has(node.text) || isScopedIdentityName(node.text))
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(expression);
+  return found;
+}
+
+function isScopedIdentityName(name) {
+  return /(?:auth|viewer|user|workspace|session|canvas|owner|identity|scope)/i.test(
+    name,
+  );
 }
 
 function rootAccess(expression) {
@@ -925,19 +1167,15 @@ export function auditPhase6ACollectionRouteInventory(sources) {
   const sourceByPath = new Map(
     sources.map((entry) => [normalizePath(entry.path), entry.source]),
   );
-  const registered = [];
+  const registered = discoverPhase6AGetRoutes(sources);
   const discoveredCollections = new Set();
-
-  for (const entry of sources) {
-    const filePath = normalizePath(entry.path);
-    if (!filePath.startsWith("apps/server/src/http/")) continue;
-    const sourceFile = parseSourceFile(entry.source, filePath);
-    const context = createPhase6AContext(filePath, sourceFile);
-    for (const route of registeredGetRoutes(context)) {
-      registered.push({ ...route, filePath });
-      if (containsCollectionServiceCall(route.handler)) {
-        discoveredCollections.add(route.path);
-      }
+  for (const route of registered) {
+    if (
+      route.path &&
+      route.handler &&
+      containsCollectionServiceCall(route.handler)
+    ) {
+      discoveredCollections.add(route.path);
     }
   }
 
@@ -979,31 +1217,15 @@ export function auditPhase6ACollectionRouteInventory(sources) {
     }
   }
   for (const route of registered) {
-    if (!phase6AGetRoutesByPath.has(route.path)) {
+    if (route.dynamic) {
+      issues.push(
+        `${route.filePath} has a dynamic GET route missing from the inventory`,
+      );
+    } else if (!phase6AGetRoutesByPath.has(route.path)) {
       issues.push(`${route.path} is a GET route missing from the inventory`);
     }
   }
   return issues.sort();
-}
-
-function registeredGetRoutes(context) {
-  const routes = [];
-  function visit(node) {
-    if (
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      node.expression.name.text === "get"
-    ) {
-      const routeArgument = node.arguments.find(ts.isStringLiteral);
-      const handler = node.arguments.at(-1);
-      if (routeArgument && handler) {
-        routes.push({ path: routeArgument.text, handler });
-      }
-    }
-    ts.forEachChild(node, visit);
-  }
-  visit(context.sourceFile);
-  return routes;
 }
 
 function isCursorCollectionHandler(handler) {
