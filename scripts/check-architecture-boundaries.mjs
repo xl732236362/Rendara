@@ -1099,7 +1099,7 @@ function createLexicalBindings(sourceFile) {
         );
       }
     }
-    if (ts.isVariableDeclaration(node) && node.initializer) {
+    if (ts.isVariableDeclaration(node)) {
       declare(
         node.name,
         { kind: "variable", node: node.name, initializer: node.initializer },

@@ -2025,6 +2025,41 @@ test("phase 6A jobs cap evidence follows one lexical query binding", async () =>
   );
 });
 
+test("phase 6A lexical shadows include uninitialized variable declarations", async () => {
+  const sources = await collectPhase6AArchitectureSources(rootDir);
+  const jobPath = "apps/server/src/features/jobs/job-service.ts";
+  const mutated = sources.map((source) =>
+    source.path === jobPath
+      ? {
+          ...source,
+          source: source.source
+            .replace(".limit(50);", ".limit(runtimeLimit);")
+            .replace(
+              "      let query = client",
+              "      const runtimeLimit = 25;\n      { let query; query = unrelated.limit(50); void query; }\n      let query = client",
+            ),
+        }
+      : source,
+  );
+  assert.ok(
+    phase6ABoundaries
+      .auditPhase6ACollectionRouteInventory(mutated)
+      .some((issue) => issue.includes("/api/jobs cap")),
+    "an uninitialized block shadow proved the outer jobs cap",
+  );
+
+  assert.deepEqual(
+    scanPhase6AArchitectureSources([
+      {
+        path: "apps/web/src/components/uninitialized.tsx",
+        source:
+          "export function Component() { let pending; pending = 1; return pending; }",
+      },
+    ]),
+    [],
+  );
+});
+
 test("phase 6A verification derives collection counts from the scanner inventory", async () => {
   const verification = await readText("docs/tech/phase-6a-verification.md");
   assert.match(
