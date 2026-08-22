@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import "@testing-library/jest-dom/vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -60,7 +61,7 @@ const workspace = {
 };
 
 const projectsResponse = {
-  projects: [
+  items: [
     {
       id: "p1",
       name: "Brand System",
@@ -82,6 +83,7 @@ const projectsResponse = {
       updatedAt: "2026-03-22T00:00:00Z",
     },
   ],
+  nextCursor: null,
 };
 
 /**
@@ -97,7 +99,7 @@ function mockSuccessfulLoad(projectsOverride?: unknown) {
         json: async () => viewerResponse,
       });
     }
-    if (url.includes("/api/projects")) {
+    if (url.includes("/api/v2/projects")) {
       return Promise.resolve({
         ok: true,
         status: 200,
@@ -109,10 +111,15 @@ function mockSuccessfulLoad(projectsOverride?: unknown) {
 }
 
 function renderProjectsPage() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   return render(
-    <ToastProvider>
-      <ProjectsPage />
-    </ToastProvider>,
+    <QueryClientProvider client={queryClient}>
+      <ToastProvider>
+        <ProjectsPage />
+      </ToastProvider>
+    </QueryClientProvider>,
   );
 }
 
@@ -135,13 +142,64 @@ describe("Projects page", () => {
   });
 
   it("keeps project creation available when the list is empty", async () => {
-    mockSuccessfulLoad({ projects: [] });
+    mockSuccessfulLoad({ items: [], nextCursor: null });
     renderProjectsPage();
 
     expect(
       await screen.findByRole("button", { name: "新建项目" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("Brand System")).not.toBeInTheDocument();
+  });
+
+  it("loads the next cursor page without rendering duplicate project IDs", async () => {
+    let projectRequest = 0;
+    mockFetch.mockImplementation((url: string) => {
+      if (url.includes("/api/viewer")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => viewerResponse,
+        });
+      }
+      if (url.includes("/api/v2/projects")) {
+        projectRequest += 1;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () =>
+            projectRequest === 1
+              ? { items: projectsResponse.items, nextCursor: "next-projects" }
+              : {
+                  items: [
+                    projectsResponse.items[1],
+                    {
+                      ...projectsResponse.items[0],
+                      id: "p3",
+                      name: "Launch Campaign",
+                    },
+                  ],
+                  nextCursor: null,
+                },
+        });
+      }
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        json: async () => ({}),
+      });
+    });
+
+    renderProjectsPage();
+    await userEvent.click(
+      await screen.findByRole("button", { name: /load more/i }),
+    );
+
+    expect(await screen.findByText("Launch Campaign")).toBeInTheDocument();
+    expect(screen.getAllByText("App Redesign")).toHaveLength(1);
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining("cursor=next-projects"),
+      expect.anything(),
+    );
   });
 
   it("starts immediate project creation from the new project card", async () => {
@@ -211,7 +269,7 @@ describe("Projects page", () => {
           json: async () => viewerResponse,
         });
       }
-      if (url.includes("/api/projects")) {
+      if (url.includes("/api/v2/projects")) {
         return Promise.resolve({
           ok: false,
           status: 401,

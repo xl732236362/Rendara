@@ -3,9 +3,9 @@
 import type { ReadyAttachment } from "@/hooks/use-image-attachments";
 import type {
   ImageGenerationPreference,
-  ProjectSummary,
   VideoGenerationPreference,
 } from "@loomic/shared";
+import { useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -21,6 +21,7 @@ import { HomeProjectsSkeleton } from "@/components/skeletons/home-skeleton";
 import { useCreateProject } from "@/hooks/use-create-project";
 import { useDeleteProject } from "@/hooks/use-delete-project";
 import { useImageAttachments } from "@/hooks/use-image-attachments";
+import { ApiAuthError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
 import { loadHomeDiscoveryCategories } from "@/lib/home-discovery-library";
 import {
@@ -32,7 +33,11 @@ import {
   type HomeExampleSelection,
   homeExampleSeedCategories,
 } from "@/lib/home-example-seeds";
-import { ApiAuthError, fetchProjects } from "@/lib/server-api";
+import { queryKeys } from "@/lib/query/keys";
+import {
+  useProjectsInfiniteQuery,
+  useViewerQuery,
+} from "@/lib/query/workspace-queries";
 import { formatDate } from "@/lib/utils";
 import { Trash2 } from "lucide-react";
 
@@ -74,17 +79,37 @@ const cardItem = {
 // Home Page
 // ---------------------------------------------------------------------------
 export default function HomePage() {
-  const { session, signOut } = useAuth();
+  const { user, session, signOut } = useAuth();
   const router = useRouter();
+  const queryClient = useQueryClient();
 
-  const { create: createNewProject, creating } = useCreateProject();
-  const handleDeleted = useCallback((id: string) => {
-    setProjects((prev) => prev.filter((p) => p.id !== id));
-  }, []);
+  const accessTokenRef = useRef(session?.access_token);
+  accessTokenRef.current = session?.access_token;
+  const getToken = useCallback(() => accessTokenRef.current ?? null, []);
+  const viewer = useViewerQuery(user?.id, getToken);
+  const workspaceId = viewer.data?.workspace.id;
+  const projectsQuery = useProjectsInfiniteQuery({
+    userId: user?.id ?? "disabled",
+    workspaceId,
+    getAccessToken: getToken,
+    limit: RECENT_PROJECTS_LIMIT,
+  });
+  const projectsKey =
+    user && workspaceId
+      ? queryKeys.workspace.projects(user.id, workspaceId, {
+          limit: RECENT_PROJECTS_LIMIT,
+        })
+      : null;
+  const resetProjects = useCallback(() => {
+    if (projectsKey) {
+      void queryClient.resetQueries({ queryKey: projectsKey, exact: true });
+    }
+  }, [projectsKey, queryClient]);
+  const { create: createNewProject, creating } = useCreateProject({
+    onCreated: resetProjects,
+  });
   const { pendingId, deleting, requestDelete, confirmDelete, cancelDelete } =
-    useDeleteProject({ onDeleted: handleDeleted });
-  const [projects, setProjects] = useState<ProjectSummary[]>([]);
-  const [projectsLoading, setProjectsLoading] = useState(true);
+    useDeleteProject({ onDeleted: resetProjects });
   const [homeDiscoveryCategories, setHomeDiscoveryCategories] = useState(
     homeDiscoverySeedCategories,
   );
@@ -95,10 +120,6 @@ export default function HomePage() {
     useState<HomeExampleSelection | null>(null);
 
   const promptRef = useRef<HomePromptHandle>(null);
-
-  // Ref pattern: avoid token changes cascading through dep arrays
-  const accessTokenRef = useRef(session?.access_token);
-  accessTokenRef.current = session?.access_token;
 
   // Image attachments for the home prompt.
   // No projectId yet — uploads go to the general bucket; the project is created on submit.
@@ -114,38 +135,13 @@ export default function HomePage() {
   signOutRef.current = signOut;
   const routerRef = useRef(router);
   routerRef.current = router;
-  const hasInitialized = useRef(false);
-
-  const getToken = useCallback(() => accessTokenRef.current, []);
-
-  // -----------------------------------------------------------------------
-  // Load recent projects
-  // -----------------------------------------------------------------------
-  const loadProjects = useCallback(async () => {
-    const token = getToken();
-    if (!token) return;
-    setProjectsLoading(true);
-    try {
-      const data = await fetchProjects(token);
-      setProjects(data.projects.slice(0, RECENT_PROJECTS_LIMIT));
-    } catch (err) {
-      if (err instanceof ApiAuthError) {
-        await signOutRef.current();
-        routerRef.current.replace("/login");
-        return;
-      }
-      // Silently fail — the section just stays empty.
-      console.warn("[home] failed to load recent projects", err);
-    } finally {
-      setProjectsLoading(false);
-    }
-  }, [getToken]);
-
   useEffect(() => {
-    if (hasInitialized.current) return;
-    hasInitialized.current = true;
-    loadProjects();
-  }, [loadProjects]);
+    const error = viewer.error ?? projectsQuery.error;
+    if (!(error instanceof ApiAuthError)) return;
+    void Promise.resolve(signOutRef.current()).then(() =>
+      routerRef.current.replace("/login"),
+    );
+  }, [viewer.error, projectsQuery.error]);
 
   useEffect(() => {
     if (!session) {
@@ -314,7 +310,7 @@ export default function HomePage() {
           </Link>
         </motion.div>
 
-        {projectsLoading ? (
+        {viewer.isPending || projectsQuery.isPending ? (
           <HomeProjectsSkeleton />
         ) : (
           <motion.div
@@ -354,7 +350,7 @@ export default function HomePage() {
             </motion.button>
 
             {/* Project cards */}
-            {projects.map((project) => (
+            {(projectsQuery.data?.pages[0]?.items ?? []).map((project) => (
               <motion.div
                 key={project.id}
                 variants={cardItem}

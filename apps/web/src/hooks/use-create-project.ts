@@ -24,7 +24,7 @@ export const INITIAL_AGENT_MODEL_KEY = "loomic:initial-agent-model";
  * Shared hook for creating an Untitled project and navigating to its canvas.
  * Used by Home page, Projects page, and Canvas logo menu.
  */
-export function useCreateProject() {
+export function useCreateProject(opts?: { onCreated?: () => void }) {
   const { session, signOut } = useAuth();
   const router = useRouter();
   const { error: toastError } = useToast();
@@ -34,6 +34,8 @@ export function useCreateProject() {
   signOutRef.current = signOut;
   const routerRef = useRef(router);
   routerRef.current = router;
+  const onCreatedRef = useRef(opts?.onCreated);
+  onCreatedRef.current = opts?.onCreated;
 
   const create = useCallback(
     async (opts?: {
@@ -106,6 +108,7 @@ export function useCreateProject() {
       setCreating(true);
       try {
         const result = await createProject(token, { name: "Untitled" });
+        onCreatedRef.current?.();
         const canvasId = result.project.primaryCanvas.id;
 
         const url = opts?.prompt
