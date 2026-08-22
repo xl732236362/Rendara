@@ -35,6 +35,7 @@ describe("reduceAgentRunContent", () => {
       toolCallId: "tool-1",
       toolName: "search",
       input: { query: "Loomic" },
+      timestamp: "2026-08-22T00:00:00.000Z",
     } as StreamEvent;
     let blocks = reduceAgentRunContent([], started);
     blocks = reduceAgentRunContent(blocks, started);
