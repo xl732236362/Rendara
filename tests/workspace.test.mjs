@@ -1484,6 +1484,20 @@ const phase6AArchitectureFixtures = [
     source:
       'import Fastify from "fastify";\nconst server = Fastify();\nserver.route({ method: "GET", url: "/api/widgets", handler: async () => [] });',
   },
+  {
+    name: "unknown GET routes in typed Fastify plugins",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      'import type { FastifyPluginAsync as RoutePlugin } from "fastify";\nconst widgetRoutes: RoutePlugin<{ feature: string }> = async (server) => { server.get("/api/widgets", async () => []); };',
+  },
+  {
+    name: "unknown GET routes in nested registered plugin aliases",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      'export function register(app: FastifyInstance) { const nested = async function (server) { const childPlugin = function (router) { router.get("/api/widgets", async () => []); }; server.register(childPlugin); }; const pluginAlias = nested; app.register(pluginAlias); }',
+  },
 ];
 
 for (const fixture of phase6AArchitectureFixtures) {
@@ -1606,6 +1620,26 @@ test("phase 6A ownership gates retain valid non-V2 and owner patterns", () => {
     },
   ];
   assert.deepEqual(scanPhase6AArchitectureSources(sources), []);
+});
+
+test("phase 6A Fastify contextual provenance retains classified and ordinary callbacks", () => {
+  const sources = [
+    {
+      path: "apps/server/src/http/health-plugin.ts",
+      source:
+        'import type { FastifyPluginCallback as HealthPlugin } from "fastify";\nconst healthRoutes: HealthPlugin = function (server, _options, done) { server.get("/api/health", async () => ({ ok: true })); done(); };',
+    },
+    {
+      path: "apps/server/src/http/ordinary-register.ts",
+      source:
+        'const registry = { register(callback: (service: Service) => void) { callback(service); } };\nregistry.register((service) => service.get("widget"));',
+    },
+  ];
+  assert.deepEqual(scanPhase6AArchitectureSources(sources), []);
+  assert.deepEqual(
+    phase6ABoundaries.discoverPhase6AGetRoutes(sources).map(({ path }) => path),
+    ["/api/health"],
+  );
 });
 
 test("phase 6A mutation retry allowlist accepts only proven exports", () => {

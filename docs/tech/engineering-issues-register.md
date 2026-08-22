@@ -370,7 +370,7 @@
 - 证据：chat sessions/messages、projects、brand kits、skills 和 workspace skill 查询多为全量读取；只有 jobs、credit history 和 marketplace 等少数接口设置 limit/page。
 - 影响：长期使用后单次响应、React 渲染和 RLS 查询成本线性增长，尤其消息内容包含 blocks 和工具输出时会快速放大。
 - 建议方向：为所有集合接口定义统一 cursor pagination、稳定排序和最大 page size；聊天消息采用倒序 cursor 获取最近窗口，前端虚拟化长列表并按需加载历史。
-- 阶段 6A 结果：projects、brand kits、credit transactions、chat sessions、chat messages 五个 V2 集合已使用有作用域签名 cursor 和 1-100 page limit；jobs 固定 50，outstanding attachments 固定 100。集合 inventory 共 16 项（cursor 5、bounded 2、legacy-gap 9）；总 GET inventory 另含 13 个有明确理由的 singleton，共 29 项。统一 route discovery 同时驱动架构扫描与 inventory audit，按 `FastifyInstance` 参数、`Fastify()` 构造和别名 provenance 解析 literal/const `.get` 与 `.route` GET 注册，并 fail closed 拒绝动态或未分类 GET，包括无法通过方法名识别的 SQL/服务访问。
+- 阶段 6A 结果：projects、brand kits、credit transactions、chat sessions、chat messages 五个 V2 集合已使用有作用域签名 cursor 和 1-100 page limit；jobs 固定 50，outstanding attachments 固定 100。集合 inventory 共 16 项（cursor 5、bounded 2、legacy-gap 9）；总 GET inventory 另含 13 个有明确理由的 singleton，共 29 项。统一 route discovery 同时驱动架构扫描与 inventory audit，按 `FastifyInstance` 参数、`Fastify()` 构造、typed plugin callback、嵌套 `.register` callback 和别名 provenance 解析 literal/const `.get` 与 `.route` GET 注册，并 fail closed 拒绝动态或未分类 GET，包括无法通过方法名识别的 SQL/服务访问。
 - 未关闭项：对应五个 legacy list endpoint 仍执行全量读取；fonts 与 agent/image/video model catalogs 虽在当前运行时有限，但没有本地数值 cap 或 schema enum，不能计为 intrinsically bounded。兼容端点需连续 14 天调用量为零后在下一部署窗口删除，最早 Phase 6B。详见 `phase-6a-verification.md`。
 
 ### ENG-036：健康检查不能反映服务可用性

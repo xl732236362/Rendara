@@ -1023,6 +1023,8 @@ function computeFastifyProvenance(sourceFile) {
   const methods = new Map();
   const directFactories = new Set();
   const factoryNamespaces = new Set();
+  const pluginTypes = new Set(["FastifyPluginAsync", "FastifyPluginCallback"]);
+  const callbackBindings = new Map();
   for (const statement of sourceFile.statements) {
     if (
       !ts.isImportDeclaration(statement) ||
@@ -1040,10 +1042,74 @@ function computeFastifyProvenance(sourceFile) {
         if (/^(?:Fastify|fastify)$/.test(importedName)) {
           directFactories.add(element.name.text);
         }
+        if (/^FastifyPlugin(?:Async|Callback)$/.test(importedName)) {
+          pluginTypes.add(element.name.text);
+        }
       }
     } else if (namedBindings && ts.isNamespaceImport(namedBindings)) {
       factoryNamespaces.add(namedBindings.name.text);
     }
+  }
+  let typeAliasesChanged = true;
+  while (typeAliasesChanged) {
+    typeAliasesChanged = false;
+    for (const statement of sourceFile.statements) {
+      if (!ts.isTypeAliasDeclaration(statement)) continue;
+      const root = typeReferenceRoot(statement.type);
+      if (
+        root &&
+        pluginTypes.has(root) &&
+        !pluginTypes.has(statement.name.text)
+      ) {
+        pluginTypes.add(statement.name.text);
+        typeAliasesChanged = true;
+      }
+    }
+  }
+  function collectCallbackBindings(node) {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer
+    ) {
+      callbackBindings.set(node.name.text, node.initializer);
+    }
+    if (ts.isFunctionDeclaration(node) && node.name) {
+      callbackBindings.set(node.name.text, node);
+    }
+    ts.forEachChild(node, collectCallbackBindings);
+  }
+  collectCallbackBindings(sourceFile);
+  function resolveCallback(expression, seen = new Set()) {
+    let current = unwrapExpression(expression);
+    while (
+      current &&
+      ts.isIdentifier(current) &&
+      callbackBindings.has(current.text)
+    ) {
+      if (seen.has(current.text)) return undefined;
+      seen.add(current.text);
+      current = unwrapExpression(callbackBindings.get(current.text));
+    }
+    return current &&
+      (ts.isArrowFunction(current) ||
+        ts.isFunctionExpression(current) ||
+        ts.isFunctionDeclaration(current))
+      ? current
+      : undefined;
+  }
+  function seedCallbackReceiver(expression) {
+    const callback = resolveCallback(expression);
+    const parameter = callback?.parameters[0];
+    if (!parameter) return false;
+    let added = false;
+    for (const name of bindingIdentifiers(parameter.name)) {
+      if (!bindings.has(name)) {
+        bindings.add(name);
+        added = true;
+      }
+    }
+    return added;
   }
   function isFastifyFactory(expression) {
     const access = rootAccess(expression);
@@ -1072,6 +1138,14 @@ function computeFastifyProvenance(sourceFile) {
       isFastifyFactory(unwrapExpression(node.initializer).expression)
     ) {
       bindings.add(node.name.text);
+    }
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.type &&
+      pluginTypes.has(typeReferenceRoot(node.type)) &&
+      node.initializer
+    ) {
+      seedCallbackReceiver(node.initializer);
     }
     ts.forEachChild(node, visitSeeds);
   }
@@ -1111,11 +1185,34 @@ function computeFastifyProvenance(sourceFile) {
           }
         }
       }
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === "register"
+      ) {
+        const receiver = callRootIdentifier(node.expression.expression);
+        if (
+          receiver &&
+          bindings.has(receiver) &&
+          seedCallbackReceiver(node.arguments[0])
+        ) {
+          changed = true;
+        }
+      }
       ts.forEachChild(node, visitAliases);
     }
     visitAliases(sourceFile);
   }
   return { bindings, methods };
+}
+
+function typeReferenceRoot(typeNode) {
+  let current = typeNode;
+  while (ts.isParenthesizedTypeNode(current)) current = current.type;
+  if (!ts.isTypeReferenceNode(current)) return undefined;
+  let name = current.typeName;
+  while (ts.isQualifiedName(name)) name = name.left;
+  return ts.isIdentifier(name) ? name.text : undefined;
 }
 
 function expressionReferencesTaint(expression, tainted) {
