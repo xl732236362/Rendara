@@ -1200,6 +1200,34 @@ const phase6AArchitectureFixtures = [
       'import { currentUser as principal } from "../auth/viewer";\nconst key = principal.id;\nexport const queryKeys = { global: { viewer: () => ["global", key] } };',
   },
   {
+    name: "global query-key closures capturing destructured viewer ids",
+    path: "apps/web/src/lib/query/keys.ts",
+    rule: "identity-scoped-query-keys",
+    source:
+      'const viewer = getViewer();\nconst { id } = viewer;\nexport const queryKeys = { global: { viewer: () => ["global", id] } };',
+  },
+  {
+    name: "global query-key closures capturing nested destructured workspace ids",
+    path: "apps/web/src/lib/query/keys.ts",
+    rule: "identity-scoped-query-keys",
+    source:
+      'const viewer = getViewer();\nconst { workspace: { id: workspaceId = "missing", ...workspaceRest } } = viewer;\nexport const queryKeys = { global: { viewer: () => ["global", workspaceId, workspaceRest] } };',
+  },
+  {
+    name: "global query-key closures capturing destructured identity arrays",
+    path: "apps/web/src/lib/query/keys.ts",
+    rule: "identity-scoped-query-keys",
+    source:
+      'const sessions = currentSessions;\nconst [primary, ...remaining] = sessions;\nconst alias = primary;\nexport const queryKeys = { global: { sessions: () => ["global", alias, remaining] } };',
+  },
+  {
+    name: "global query-key closures capturing destructured viewer parameters",
+    path: "apps/web/src/lib/query/keys.ts",
+    rule: "identity-scoped-query-keys",
+    source:
+      'export function createKeys({ workspace: { id: workspaceId = "missing" }, ...viewerRest }: Viewer) { return { global: { viewer: () => ["global", workspaceId, viewerRest] } }; }',
+  },
+  {
     name: "component-local V2 collection fetches",
     path: "apps/web/src/components/project-list.tsx",
     rule: "v2-fetch-ownership",
@@ -1233,6 +1261,20 @@ const phase6AArchitectureFixtures = [
     rule: "v2-fetch-ownership",
     source:
       'import projectClient from "../lib/api/projects";\nexport function ProjectList() { return projectClient.page(token, {}); }',
+  },
+  {
+    name: "namespace destructured domain clients",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "v2-fetch-ownership",
+    source:
+      'import * as projects from "../lib/api/projects";\nconst { fetchProjectsPage } = projects;\nexport function ProjectList() { return fetchProjectsPage(token, {}); }',
+  },
+  {
+    name: "namespace destructured aliased domain clients",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "v2-fetch-ownership",
+    source:
+      'import * as projects from "../lib/api/projects";\nconst { fetchProjectsPage: loadProjects } = projects;\nconst load = loadProjects;\nexport function ProjectList() { return load(token, {}); }',
   },
   {
     name: "direct global fetch calls to literal V2 paths",
@@ -1296,6 +1338,13 @@ const phase6AArchitectureFixtures = [
     rule: "v2-fetch-ownership",
     source:
       "const version = getVersion();\nexport function ProjectList() { return request(`/api/${version}/projects`); }",
+  },
+  {
+    name: "unresolved component request URLs imported from constants",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "v2-fetch-ownership",
+    source:
+      'import { PROJECTS_URL } from "../config/routes";\nexport function ProjectList() { return fetch(PROJECTS_URL); }',
   },
   {
     name: "mutation retries without an idempotent-command allowlist",
@@ -1414,6 +1463,27 @@ const phase6AArchitectureFixtures = [
     source:
       "export function register(app: FastifyInstance) { app.get(buildRoutePath(), async () => []); }",
   },
+  {
+    name: "unknown GET routes on named Fastify server parameters",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      'export function registerWidgetRoutes(server: FastifyInstance) { server.get("/api/widgets", async () => []); }',
+  },
+  {
+    name: "unknown GET routes through Fastify receiver aliases",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      'export function registerWidgetRoutes(server: FastifyInstance) { const router = server; router.get("/api/widgets", async () => []); }',
+  },
+  {
+    name: "unknown GET routes on constructed Fastify apps",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      'import Fastify from "fastify";\nconst server = Fastify();\nserver.route({ method: "GET", url: "/api/widgets", handler: async () => [] });',
+  },
 ];
 
 for (const fixture of phase6AArchitectureFixtures) {
@@ -1510,6 +1580,31 @@ test("phase 6A route discovery handles existing constant and app.route forms", (
       .sort(),
     ["/api/health", "/api/viewer"],
   );
+  assert.deepEqual(scanPhase6AArchitectureSources(sources), []);
+});
+
+test("phase 6A ownership gates retain valid non-V2 and owner patterns", () => {
+  const sources = [
+    {
+      path: "apps/web/src/components/status.tsx",
+      source: 'export function Status() { return fetch("/api/health"); }',
+    },
+    {
+      path: "apps/web/src/lib/api/projects.ts",
+      source:
+        'import { PROJECTS_URL } from "../../config/routes";\nexport function load() { return apiFetch(PROJECTS_URL); }',
+    },
+    {
+      path: "apps/server/src/http/cache.ts",
+      source:
+        'const cache = { get: (key: string) => key };\ncache.get("widget");',
+    },
+    {
+      path: "apps/server/src/http/local-fastify-name.ts",
+      source:
+        'function Fastify() { return { get: (key: string) => key }; }\nconst local = Fastify();\nlocal.get("widget");',
+    },
+  ];
   assert.deepEqual(scanPhase6AArchitectureSources(sources), []);
 });
 

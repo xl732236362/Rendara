@@ -493,16 +493,15 @@ function capturesTaintedBinding(factory, context) {
   let captured = false;
   const localNames = new Set(
     factory.parameters.flatMap((parameter) =>
-      ts.isIdentifier(parameter.name) ? [parameter.name.text] : [],
+      bindingIdentifiers(parameter.name),
     ),
   );
   function collectLocals(node) {
     if (
       ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
       findContainingFunction(node) === factory
     ) {
-      localNames.add(node.name.text);
+      for (const name of bindingIdentifiers(node.name)) localNames.add(name);
     }
     ts.forEachChild(node, collectLocals);
   }
@@ -547,6 +546,24 @@ function scanComponentV2Fetches(context) {
       domainBindings.add(bindings.name.text);
     }
   }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const statement of context.sourceFile.statements) {
+      if (!ts.isVariableStatement(statement)) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        if (!declaration.initializer) continue;
+        const root = callRootIdentifier(declaration.initializer);
+        if (!root || !domainBindings.has(root)) continue;
+        for (const name of bindingIdentifiers(declaration.name)) {
+          if (!domainBindings.has(name)) {
+            domainBindings.add(name);
+            changed = true;
+          }
+        }
+      }
+    }
+  }
   return collectMatchingNodes(
     context,
     (node) =>
@@ -568,8 +585,7 @@ function isDirectV2Request(call, context) {
   const url = evaluateStaticString(call.arguments[0], context);
   return url.known
     ? url.value.includes("/api/v2/")
-    : /^apps\/web\/src\/(?:app|components|hooks)\//.test(context.filePath) &&
-        (url.hasApiFragment || url.hasV2Binding);
+    : /^apps\/web\/src\/(?:app|components|hooks)\//.test(context.filePath);
 }
 
 function evaluateStaticString(expression, context, seen = new Set()) {
@@ -775,38 +791,47 @@ export function discoverPhase6AGetRoutes(sources) {
 function discoverGetRoutesInContext(context) {
   const routes = [];
   function visit(node) {
-    if (
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      callRootIdentifier(node.expression) === "app"
-    ) {
-      const methodName = node.expression.name.text;
-      if (methodName === "get") {
-        const pathExpression = node.arguments[0];
-        const pathResult = evaluateStaticString(pathExpression, context);
-        routes.push({
-          path: pathResult.known ? pathResult.value : undefined,
-          dynamic: !pathResult.known,
-          handler: node.arguments.at(-1),
-          evidenceNode: pathExpression ?? node,
-        });
-      }
-      if (methodName === "route") {
-        const options = resolveObjectProperties(node.arguments[0], context);
-        const methods = evaluateHttpMethods(
-          options.values.get("method"),
-          context,
-        );
-        if (!methods.known || methods.values.has("GET")) {
-          const pathExpression =
-            options.values.get("url") ?? options.values.get("path");
+    if (ts.isCallExpression(node)) {
+      const propertyCall = ts.isPropertyAccessExpression(node.expression);
+      const receiver = propertyCall
+        ? callRootIdentifier(node.expression.expression)
+        : undefined;
+      const methodName = propertyCall
+        ? node.expression.name.text
+        : ts.isIdentifier(node.expression)
+          ? context.fastifyMethods.get(node.expression.text)
+          : undefined;
+      const fastifyCall = propertyCall
+        ? receiver !== undefined && context.fastifyBindings.has(receiver)
+        : methodName !== undefined;
+      if (fastifyCall) {
+        if (methodName === "get") {
+          const pathExpression = node.arguments[0];
           const pathResult = evaluateStaticString(pathExpression, context);
           routes.push({
             path: pathResult.known ? pathResult.value : undefined,
-            dynamic: !methods.known || !pathResult.known,
-            handler: options.values.get("handler"),
+            dynamic: !pathResult.known,
+            handler: node.arguments.at(-1),
             evidenceNode: pathExpression ?? node,
           });
+        }
+        if (methodName === "route") {
+          const options = resolveObjectProperties(node.arguments[0], context);
+          const methods = evaluateHttpMethods(
+            options.values.get("method"),
+            context,
+          );
+          if (!methods.known || methods.values.has("GET")) {
+            const pathExpression =
+              options.values.get("url") ?? options.values.get("path");
+            const pathResult = evaluateStaticString(pathExpression, context);
+            routes.push({
+              path: pathResult.known ? pathResult.value : undefined,
+              dynamic: !methods.known || !pathResult.known,
+              handler: options.values.get("handler"),
+              evidenceNode: pathExpression ?? node,
+            });
+          }
         }
       }
     }
@@ -901,17 +926,15 @@ function createPhase6AContext(filePath, sourceFile, sourceGraph) {
   const parameters = [];
   const taintSeeds = new Set();
   function visit(node) {
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer
-    ) {
-      bindings.set(node.name.text, node.initializer);
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      for (const name of bindingIdentifiers(node.name)) {
+        bindings.set(name, node.initializer);
+      }
     }
     if (ts.isFunctionDeclaration(node) && node.name) {
       bindings.set(node.name.text, node);
     }
-    if (ts.isParameter(node) && ts.isIdentifier(node.name)) {
+    if (ts.isParameter(node)) {
       parameters.push(node);
     }
     if (
@@ -950,6 +973,9 @@ function createPhase6AContext(filePath, sourceFile, sourceGraph) {
     taintSeeds,
     context,
   );
+  const fastify = computeFastifyProvenance(sourceFile);
+  context.fastifyBindings = fastify.bindings;
+  context.fastifyMethods = fastify.methods;
   return context;
 }
 
@@ -957,11 +983,9 @@ function computeTaintedBindings(bindings, parameters, taintSeeds, context) {
   const tainted = new Set(taintSeeds);
   for (const parameter of parameters) {
     const typeText = parameter.type?.getText(context.sourceFile) ?? "";
-    if (
-      isScopedIdentityName(parameter.name.text) ||
-      isScopedIdentityName(typeText)
-    ) {
-      tainted.add(parameter.name.text);
+    const names = bindingIdentifiers(parameter.name);
+    if (names.some(isScopedIdentityName) || isScopedIdentityName(typeText)) {
+      for (const name of names) tainted.add(name);
     }
   }
   for (const name of bindings.keys()) {
@@ -979,6 +1003,119 @@ function computeTaintedBindings(bindings, parameters, taintSeeds, context) {
     }
   }
   return tainted;
+}
+
+function bindingIdentifiers(name) {
+  if (ts.isIdentifier(name)) return [name.text];
+  if (!ts.isObjectBindingPattern(name) && !ts.isArrayBindingPattern(name)) {
+    return [];
+  }
+  const names = [];
+  for (const element of name.elements) {
+    if (ts.isOmittedExpression(element)) continue;
+    names.push(...bindingIdentifiers(element.name));
+  }
+  return names;
+}
+
+function computeFastifyProvenance(sourceFile) {
+  const bindings = new Set();
+  const methods = new Map();
+  const directFactories = new Set();
+  const factoryNamespaces = new Set();
+  for (const statement of sourceFile.statements) {
+    if (
+      !ts.isImportDeclaration(statement) ||
+      !ts.isStringLiteral(statement.moduleSpecifier) ||
+      statement.moduleSpecifier.text !== "fastify"
+    ) {
+      continue;
+    }
+    const importClause = statement.importClause;
+    if (importClause?.name) directFactories.add(importClause.name.text);
+    const namedBindings = importClause?.namedBindings;
+    if (namedBindings && ts.isNamedImports(namedBindings)) {
+      for (const element of namedBindings.elements) {
+        const importedName = element.propertyName?.text ?? element.name.text;
+        if (/^(?:Fastify|fastify)$/.test(importedName)) {
+          directFactories.add(element.name.text);
+        }
+      }
+    } else if (namedBindings && ts.isNamespaceImport(namedBindings)) {
+      factoryNamespaces.add(namedBindings.name.text);
+    }
+  }
+  function isFastifyFactory(expression) {
+    const access = rootAccess(expression);
+    if (!access) return false;
+    if (directFactories.has(access.root) && access.members.length === 0) {
+      return true;
+    }
+    return (
+      factoryNamespaces.has(access.root) &&
+      access.members.length === 1 &&
+      /^(?:default|Fastify|fastify)$/.test(access.members[0])
+    );
+  }
+  function visitSeeds(node) {
+    if (ts.isParameter(node)) {
+      const typeText = node.type?.getText(sourceFile) ?? "";
+      if (/\bFastifyInstance\b/.test(typeText)) {
+        for (const name of bindingIdentifiers(node.name)) bindings.add(name);
+      }
+    }
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      ts.isCallExpression(unwrapExpression(node.initializer)) &&
+      isFastifyFactory(unwrapExpression(node.initializer).expression)
+    ) {
+      bindings.add(node.name.text);
+    }
+    ts.forEachChild(node, visitSeeds);
+  }
+  visitSeeds(sourceFile);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    function visitAliases(node) {
+      if (ts.isVariableDeclaration(node) && node.initializer) {
+        const root = callRootIdentifier(node.initializer);
+        if (root && bindings.has(root)) {
+          if (ts.isIdentifier(node.name) && !bindings.has(node.name.text)) {
+            bindings.add(node.name.text);
+            changed = true;
+          }
+          if (ts.isObjectBindingPattern(node.name)) {
+            for (const element of node.name.elements) {
+              const importedMethod = propertyName(
+                element.propertyName ?? element.name,
+              );
+              for (const localName of bindingIdentifiers(element.name)) {
+                if (
+                  (importedMethod === "get" || importedMethod === "route") &&
+                  methods.get(localName) !== importedMethod
+                ) {
+                  methods.set(localName, importedMethod);
+                  changed = true;
+                }
+              }
+            }
+          }
+        } else if (ts.isIdentifier(node.name) && root && methods.has(root)) {
+          const method = methods.get(root);
+          if (methods.get(node.name.text) !== method) {
+            methods.set(node.name.text, method);
+            changed = true;
+          }
+        }
+      }
+      ts.forEachChild(node, visitAliases);
+    }
+    visitAliases(sourceFile);
+  }
+  return { bindings, methods };
 }
 
 function expressionReferencesTaint(expression, tainted) {
