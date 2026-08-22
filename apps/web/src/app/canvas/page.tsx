@@ -29,6 +29,10 @@ import { EditableProjectName } from "../../components/editable-project-name";
 import { LoadingScreen } from "../../components/loading-screen";
 import { useJobFallbackPolling } from "../../hooks/use-job-fallback-polling";
 import { useWebSocket } from "../../hooks/use-websocket";
+import {
+  type AgentRunController,
+  createAgentRunController,
+} from "../../lib/agent-run-controller";
 import { useAuth } from "../../lib/auth-context";
 import {
   createAuthExpiryHandler,
@@ -294,6 +298,35 @@ function CanvasPageContent() {
     [checkForTimedOutJobs],
   );
 
+  const runController = useMemo<AgentRunController | null>(() => {
+    if (!canvasData?.id) return null;
+    return createAgentRunController({
+      canvasId: canvasData.id,
+      ws: {
+        onEvent: ws.onEvent,
+        resumeCanvas: ws.resumeCanvas,
+      },
+      onCanvasSync: (event) => void handleCanvasSync(event),
+      onRunEvent: handleStreamEvent,
+      onReplayGap: ({ canvasId: replayCanvasId, sessionId }) => {
+        console.warn("[agent-run] replay_gap", {
+          canvasId: replayCanvasId,
+          ...(sessionId ? { sessionId } : {}),
+        });
+      },
+    });
+  }, [
+    canvasData?.id,
+    handleCanvasSync,
+    handleStreamEvent,
+    ws.onEvent,
+    ws.resumeCanvas,
+  ]);
+
+  useEffect(() => {
+    return () => runController?.dispose();
+  }, [runController]);
+
   if (!canvasId) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -393,6 +426,7 @@ function CanvasPageContent() {
         onRequestCanvasImages={handleRequestCanvasImages}
         currentBrandKitId={brandKitId}
         ws={ws}
+        runController={runController}
         selectedCanvasElements={selectedCanvasElements}
       />
     </div>

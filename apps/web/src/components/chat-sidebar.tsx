@@ -1,7 +1,7 @@
 "use client";
 
 import { RotateCcw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   ContentBlock,
@@ -16,7 +16,6 @@ import type {
 import { useAgentModel } from "../hooks/use-agent-model";
 import { useBreakpoint } from "../hooks/use-breakpoint";
 import { mapServerMessages, useChatSessions } from "../hooks/use-chat-sessions";
-import { useChatStream } from "../hooks/use-chat-stream";
 import {
   INITIAL_AGENT_MODEL_KEY,
   INITIAL_ATTACHMENTS_KEY,
@@ -27,6 +26,10 @@ import { useImageAttachments } from "../hooks/use-image-attachments";
 import { useImageModelPreference } from "../hooks/use-image-model-preference";
 import { useVideoModelPreference } from "../hooks/use-video-model-preference";
 import type { RunCallbacks, WebSocketHandle } from "../hooks/use-websocket";
+import {
+  type AgentRunController,
+  createAgentRunController,
+} from "../lib/agent-run-controller";
 import { useAuth } from "../lib/auth-context";
 import { fetchBrandKit } from "../lib/brand-kit-api";
 import { claimDailyCredits } from "../lib/credits-api";
@@ -73,6 +76,7 @@ type ChatSidebarProps = {
   onRequestCanvasImages?: () => CanvasImageItem[];
   currentBrandKitId?: string | null;
   ws: WebSocketHandle;
+  runController?: AgentRunController | null;
   selectedCanvasElements?: CanvasSelectedElement[];
 };
 
@@ -112,11 +116,26 @@ export function ChatSidebar({
   onRequestCanvasImages,
   currentBrandKitId,
   ws,
+  runController: providedRunController,
   selectedCanvasElements,
 }: ChatSidebarProps) {
   const breakpoint = useBreakpoint();
   const isOverlay = breakpoint !== "desktop";
   const { user } = useAuth();
+  const compatibilityRunController = useMemo(
+    () =>
+      providedRunController ??
+      createAgentRunController({
+        canvasId,
+        ws: { onEvent: ws.onEvent, resumeCanvas: ws.resumeCanvas },
+      }),
+    [canvasId, providedRunController, ws.onEvent, ws.resumeCanvas],
+  );
+  const runController = providedRunController ?? compatibilityRunController;
+  useEffect(() => {
+    if (providedRunController) return;
+    return () => compatibilityRunController.dispose();
+  }, [compatibilityRunController, providedRunController]);
   const catalogTokenRef = useRef(accessToken);
   catalogTokenRef.current = accessToken;
   const getCatalogToken = useCallback(() => catalogTokenRef.current, []);
@@ -168,8 +187,34 @@ export function ChatSidebar({
     onSessionChange,
   });
 
-  // ── Stream event handler (extracted hook, shared between send & reconnect) ──
-  const { applyStreamEvent } = useChatStream(updateSessionMessages);
+  useEffect(() => {
+    if (!runController) return;
+    return runController.subscribe(() => {
+      for (const run of runController.getRuns().values()) {
+        updateSessionMessages(run.sessionId, (previous) => {
+          const existing = previous.find(
+            (message) => message.id === run.assistantId,
+          );
+          if (!existing) {
+            return [
+              ...previous,
+              {
+                id: run.assistantId,
+                role: "assistant" as const,
+                contentBlocks: run.contentBlocks,
+              },
+            ];
+          }
+          if (existing.contentBlocks === run.contentBlocks) return previous;
+          return previous.map((message) =>
+            message.id === run.assistantId
+              ? { ...message, contentBlocks: run.contentBlocks }
+              : message,
+          );
+        });
+      }
+    });
+  }, [runController, updateSessionMessages]);
 
   // ── Mention & attachment state ──
   const [atQuery, setAtQuery] = useState<string | null>(null);
@@ -205,24 +250,6 @@ export function ChatSidebar({
   selectedCanvasElementsRef.current = selectedCanvasElements;
   const prevConnectedRef = useRef(false);
   const fallbackPersistedRunIdsRef = useRef(new Set<string>());
-  const assistantIdByRunIdRef = useRef(new Map<string, string>());
-  const runListenerByRunIdRef = useRef(
-    new Map<
-      string,
-      { assistantId: string; cleanup: () => void; resolve?: () => void }
-    >(),
-  );
-
-  // A remounted sidebar owns fresh listeners. Release any listeners from this
-  // instance so resume can safely recover the active run without duplicates.
-  useEffect(() => {
-    return () => {
-      for (const listener of runListenerByRunIdRef.current.values()) {
-        listener.cleanup();
-      }
-      runListenerByRunIdRef.current.clear();
-    };
-  }, []);
 
   const {
     attachments: imageAttachments,
@@ -257,7 +284,7 @@ export function ChatSidebar({
   const persistAssistantFallback = useCallback(
     (sessionId: string, runId: string) => {
       if (fallbackPersistedRunIdsRef.current.has(runId)) return;
-      const assistantId = assistantIdByRunIdRef.current.get(runId);
+      const assistantId = runController.getRuns().get(runId)?.assistantId;
       if (!assistantId) return;
       const assistant = getSessionMessages(sessionId).find(
         (message) => message.id === assistantId && message.role === "assistant",
@@ -283,33 +310,33 @@ export function ChatSidebar({
         });
       });
     },
-    [accessTokenRef, getSessionMessages],
+    [accessTokenRef, getSessionMessages, runController],
   );
 
-  const persistRecoveredAssistantFallback = useCallback(
-    (
-      sessionId: string,
-      runId: string,
-      assistant: { content: string; contentBlocks: ContentBlock[] },
-    ) => {
-      if (fallbackPersistedRunIdsRef.current.has(runId)) return;
-      fallbackPersistedRunIdsRef.current.add(runId);
-      void saveMessage(accessTokenRef.current, sessionId, {
-        id: runId,
-        role: "assistant",
-        content: assistant.content,
-        contentBlocks: assistant.contentBlocks,
-      }).catch(() => {
-        fallbackPersistedRunIdsRef.current.delete(runId);
-        console.warn("[chat] remounted assistant fallback persistence failed", {
-          errorCode: "assistant_remounted_fallback_persistence_failed",
-          runId,
-          sessionId,
+  useEffect(() => {
+    runController.setPersistenceHandlers({
+      onPersistenceFailure: (run) =>
+        persistAssistantFallback(run.sessionId, run.runId),
+      onRecoveredPersistenceFailure: (event) => {
+        if (!event.assistant || !event.sessionId) return;
+        if (fallbackPersistedRunIdsRef.current.has(event.runId)) return;
+        fallbackPersistedRunIdsRef.current.add(event.runId);
+        void saveMessage(accessTokenRef.current, event.sessionId, {
+          id: event.runId,
+          role: "assistant",
+          content: event.assistant.content,
+          contentBlocks: event.assistant.contentBlocks,
+        }).catch(() => {
+          fallbackPersistedRunIdsRef.current.delete(event.runId);
+          console.warn("[chat] recovered assistant persistence failed", {
+            runId: event.runId,
+            sessionId: event.sessionId,
+          });
         });
-      });
-    },
-    [accessTokenRef],
-  );
+      },
+    });
+    return () => runController.setPersistenceHandlers({});
+  }, [persistAssistantFallback, runController]);
 
   const syncedAttachmentRevisionsRef = useRef(new Map<string, number>());
   const attachedJobIdsRef = useRef(new Set<string>());
@@ -835,85 +862,73 @@ export function ChatSidebar({
         });
         const runIdRef = { current: "" };
 
-        let cleanup = () => {};
-        const cleanupRunListener = () => {
-          cleanup();
-          const runId = runIdRef.current;
-          if (
-            runId &&
-            runListenerByRunIdRef.current.get(runId)?.cleanup ===
-              cleanupRunListener
-          ) {
-            runListenerByRunIdRef.current.delete(runId);
-          }
-        };
-        cleanup = ws.onEvent((event) => {
-          if (event.type === "canvas.sync") {
-            if (event.canvasId === canvasId) onCanvasSync?.(event);
-            return;
-          }
-          if (!runIdRef.current || event.runId !== runIdRef.current) return;
-          if (abortRef.current) {
-            resolveStream();
-            return;
-          }
-
-          // Track first token timing
-          if (!perf.gotFirstToken && event.type === "message.delta") {
-            perf.tFirstToken = performance.now();
-            perf.gotFirstToken = true;
-            console.log(
-              `[perf] send → first token: ${(perf.tFirstToken - perf.t0Send).toFixed(0)}ms` +
-                ` (ack→token: ${(perf.tFirstToken - perf.tAck).toFixed(0)}ms)`,
-            );
-          }
-
-          // Billing error: route to appropriate UI, run.canceled will follow
-          if (event.type === "billing.error") {
-            if (event.code === "insufficient_credits") {
-              setCreditDialog({
-                open: true,
-                currentBalance: event.currentBalance ?? 0,
-                requiredAmount: event.requiredAmount ?? 0,
-                plan: event.plan ?? "free",
-                dailyClaimed: event.dailyClaimed ?? false,
-              });
-            } else {
-              // model_not_accessible, resolution_not_allowed, concurrency_limit
-              showTierLimit({ code: event.code, message: event.message });
+        const cleanupRunListener = runController.onEvent(
+          (event: StreamEvent) => {
+            if (event.type === "canvas.sync") {
+              if (event.canvasId === canvasId) onCanvasSync?.(event);
+              return;
             }
-          }
+            if (!runIdRef.current || event.runId !== runIdRef.current) return;
+            if (abortRef.current) {
+              resolveStream();
+              return;
+            }
 
-          // Apply event to messages (single source of truth — shared with reconnect)
-          applyStreamEvent(event, assistantId, currentSessionId);
-
-          // Forward event to parent for fallback job polling (timed-out generation recovery)
-          onStreamEvent?.(event);
-
-          if (event.type === "assistant.persistence_failed") {
-            persistAssistantFallback(currentSessionId, event.runId);
-          }
-
-          // Preview model hint: suggest switching when run fails
-          if (event.type === "run.failed") {
-            const currentModel = agentModelRef.current ?? "";
-            if (currentModel.includes("preview")) {
-              showToast(
-                "当前 Preview 模型请求不稳定，建议切换模型后重试",
-                "error",
+            // Track first token timing
+            if (!perf.gotFirstToken && event.type === "message.delta") {
+              perf.tFirstToken = performance.now();
+              perf.gotFirstToken = true;
+              console.log(
+                `[perf] send → first token: ${(perf.tFirstToken - perf.t0Send).toFixed(0)}ms` +
+                  ` (ack→token: ${(perf.tFirstToken - perf.tAck).toFixed(0)}ms)`,
               );
             }
-          }
 
-          if (
-            event.type === "run.completed" ||
-            event.type === "run.failed" ||
-            event.type === "run.canceled"
-          ) {
-            void refreshAttachmentRecovery(currentSessionId);
-            resolveStream();
-          }
-        });
+            // Billing error: route to appropriate UI, run.canceled will follow
+            if (event.type === "billing.error") {
+              if (event.code === "insufficient_credits") {
+                setCreditDialog({
+                  open: true,
+                  currentBalance: event.currentBalance ?? 0,
+                  requiredAmount: event.requiredAmount ?? 0,
+                  plan: event.plan ?? "free",
+                  dailyClaimed: event.dailyClaimed ?? false,
+                });
+              } else {
+                // model_not_accessible, resolution_not_allowed, concurrency_limit
+                showTierLimit({ code: event.code, message: event.message });
+              }
+            }
+
+            // Apply event to messages (single source of truth — shared with reconnect)
+            // Forward event to parent for fallback job polling (timed-out generation recovery)
+            onStreamEvent?.(event);
+
+            if (event.type === "assistant.persistence_failed") {
+              persistAssistantFallback(currentSessionId, event.runId);
+            }
+
+            // Preview model hint: suggest switching when run fails
+            if (event.type === "run.failed") {
+              const currentModel = agentModelRef.current ?? "";
+              if (currentModel.includes("preview")) {
+                showToast(
+                  "当前 Preview 模型请求不稳定，建议切换模型后重试",
+                  "error",
+                );
+              }
+            }
+
+            if (
+              event.type === "run.completed" ||
+              event.type === "run.failed" ||
+              event.type === "run.canceled"
+            ) {
+              void refreshAttachmentRecovery(currentSessionId);
+              resolveStream();
+            }
+          },
+        );
 
         // Start run via WebSocket
         const runId = await new Promise<string>((resolve, reject) => {
@@ -937,11 +952,10 @@ export function ChatSidebar({
               );
               const id = ack.payload.runId as string;
               runIdRef.current = id;
-              assistantIdByRunIdRef.current.set(id, assistantId);
-              runListenerByRunIdRef.current.set(id, {
+              runController.startRun({
+                runId: id,
+                sessionId: currentSessionId,
                 assistantId,
-                cleanup: cleanupRunListener,
-                resolve: resolveStream,
               });
               setActiveRunId(id);
               resolve(id);
@@ -1026,7 +1040,6 @@ export function ChatSidebar({
     [
       streaming,
       canvasId,
-      applyStreamEvent,
       updateSessionMessages,
       onCanvasSync,
       onStreamEvent,
@@ -1038,6 +1051,7 @@ export function ChatSidebar({
       activeSessionIdRef,
       refreshAttachmentRecovery,
       persistAssistantFallback,
+      runController,
     ],
   );
 
@@ -1167,8 +1181,8 @@ export function ChatSidebar({
     activeSessionIdRef,
   ]);
 
-  // ── Reconnection: resume canvas binding + reload messages ──
-  // Uses the shared applyStreamEvent to handle live events — no duplicated logic.
+  // Reconnect through the canvas-owned controller. Reload durable messages
+  // first so replayed live state overlays the latest server snapshot.
   useEffect(() => {
     if (!ws.connected || sessionsLoading) {
       if (!ws.connected) prevConnectedRef.current = false;
@@ -1183,230 +1197,19 @@ export function ChatSidebar({
     // Skip if initialPrompt effect will handle binding
     if (initialPrompt && !initialPromptSent.current) return;
 
-    void (async () => {
-      // Reload messages from DB (server may have persisted while disconnected)
-      await reloadMessages(
-        sessionId,
-        new Set(assistantIdByRunIdRef.current.values()),
-      );
-
-      // Resume canvas binding (after DB messages are set)
-      ws.resumeCanvas(canvasId, (ack) => {
-        const resumePayload = ack.payload as Record<string, unknown>;
-        const activeRunId = resumePayload.activeRunId;
-        let resumedRunId = typeof activeRunId === "string" ? activeRunId : null;
-        const activeRunSessionId = resumePayload.activeRunSessionId;
-        const resumedRunSessionId =
-          typeof activeRunSessionId === "string" ? activeRunSessionId : null;
-        const replayed = resumePayload.replayed;
-        const replayCount =
-          typeof replayed === "number" && replayed >= 0 ? replayed : 0;
-        const replayGap = resumePayload.replayGap === true;
-        const latestRevision = resumePayload.latestRevision;
-        const ownsResumedRun =
-          resumedRunId !== null && resumedRunSessionId === sessionId;
-
-        if (resumedRunId && !ownsResumedRun) {
-          console.info("[chat] ignored active run from another session", {
-            activeRunId: resumedRunId,
-            activeRunSessionId: resumedRunSessionId,
-            sessionId,
-          });
-          // The active marker may belong to another chat session. It must not
-          // prevent this sidebar from consuming replay events for its own runs.
-          resumedRunId = null;
-        }
-
-        if (replayGap) {
-          console.warn("[chat] replay cursor fell behind retained buffer", {
-            canvasId,
-            sessionId,
-          });
-          void reloadMessages(
-            sessionId,
-            new Set(assistantIdByRunIdRef.current.values()),
-          );
-          if (
-            typeof latestRevision === "number" &&
-            Number.isSafeInteger(latestRevision) &&
-            latestRevision > 0
-          ) {
-            onCanvasSync?.({
-              type: "canvas.sync",
-              eventId: `replay-gap-${latestRevision}`,
-              canvasId,
-              revision: latestRevision,
-              timestamp: new Date().toISOString(),
-            });
-          }
-        }
-
-        if (resumedRunId) {
-          setStreaming(true);
-          setActiveRunId(resumedRunId);
-
-          const activeListener =
-            runListenerByRunIdRef.current.get(resumedRunId);
-          if (activeListener) {
-            // The original send listener is still subscribed. It already owns
-            // the placeholder and will receive the resumed stream replay.
-            return;
-          }
-
-          const assistantId =
-            assistantIdByRunIdRef.current.get(resumedRunId) ??
-            `resumed_${resumedRunId}`;
-          assistantIdByRunIdRef.current.set(resumedRunId, assistantId);
-          // Must use updateSessionMessages (not setMessages) so the placeholder
-          // lands in msgCacheRef as well as React state. applyStreamEvent reads
-          // from the cache — if the placeholder only lives in React state, stream
-          // events can't find it and the first updateSessionMessages call
-          // overwrites state back to the stale cache (losing the placeholder).
-          updateSessionMessages(sessionId, (prev) => {
-            if (prev.some((m) => m.id === assistantId)) return prev;
-            return [
-              ...prev,
-              {
-                id: assistantId,
-                role: "assistant" as const,
-                contentBlocks: [],
-              },
-            ];
-          });
-        }
-
-        if (!resumedRunId && replayCount === 0) return;
-
-        // The original listener remains subscribed across a reconnect. When
-        // there is no active run, let one replay listener own all known runs so
-        // missed events cannot be applied once by each listener.
-        const replayResolvers = new Map<string, () => void>();
-        if (!resumedRunId) {
-          for (const [runId, listener] of runListenerByRunIdRef.current) {
-            if (listener.resolve) replayResolvers.set(runId, listener.resolve);
-          }
-          for (const listener of [...runListenerByRunIdRef.current.values()]) {
-            listener.cleanup();
-          }
-        }
-
-        // The server clears activeRunId before replaying terminal events. Register
-        // after every resume ACK so its preceding persistence marker is not lost.
-        let remainingReplayEvents = replayCount;
-        let unsub = () => {};
-        const cleanupResumedListener = () => {
-          unsub();
-          if (
-            resumedRunId &&
-            runListenerByRunIdRef.current.get(resumedRunId)?.cleanup ===
-              cleanupResumedListener
-          ) {
-            runListenerByRunIdRef.current.delete(resumedRunId);
-          }
-        };
-        unsub = ws.onEvent((evt) => {
-          if (!resumedRunId && remainingReplayEvents > 0) {
-            remainingReplayEvents -= 1;
-          }
-          if (evt.type === "canvas.sync") {
-            if (evt.canvasId === canvasId) onCanvasSync?.(evt);
-            if (!resumedRunId && remainingReplayEvents === 0) unsub();
-            return;
-          }
-
-          if (resumedRunId) {
-            if (evt.runId !== resumedRunId) return;
-            const assistantId = assistantIdByRunIdRef.current.get(evt.runId);
-            if (!assistantId) return;
-
-            applyStreamEvent(evt, assistantId, sessionId);
-            onStreamEvent?.(evt);
-
-            if (evt.type === "assistant.persistence_failed") {
-              persistAssistantFallback(sessionId, evt.runId);
-            }
-
-            if (
-              evt.type === "run.completed" ||
-              evt.type === "run.failed" ||
-              evt.type === "run.canceled"
-            ) {
-              void refreshAttachmentRecovery(sessionId);
-              setActiveRunId(null);
-              setStreaming(false);
-              cleanupResumedListener();
-            }
-            return;
-          }
-
-          // A terminal replay with no active run may belong to a different chat
-          // session on this canvas. Only recover a response this sidebar owns.
-          if (
-            evt.type === "assistant.persistence_failed" &&
-            evt.sessionId === sessionId &&
-            evt.assistant
-          ) {
-            persistRecoveredAssistantFallback(
-              sessionId,
-              evt.runId,
-              evt.assistant,
-            );
-            if (remainingReplayEvents === 0) unsub();
-            return;
-          }
-          if (!assistantIdByRunIdRef.current.has(evt.runId)) {
-            if (remainingReplayEvents === 0) unsub();
-            return;
-          }
-          const assistantId = assistantIdByRunIdRef.current.get(evt.runId);
-          if (assistantId) {
-            applyStreamEvent(evt, assistantId, sessionId);
-            onStreamEvent?.(evt);
-          }
-          if (evt.type === "assistant.persistence_failed") {
-            persistAssistantFallback(sessionId, evt.runId);
-            if (remainingReplayEvents === 0) unsub();
-            return;
-          }
-          if (
-            evt.type === "run.completed" ||
-            evt.type === "run.failed" ||
-            evt.type === "run.canceled"
-          ) {
-            void refreshAttachmentRecovery(sessionId);
-            replayResolvers.get(evt.runId)?.();
-            if (remainingReplayEvents === 0) unsub();
-            return;
-          }
-          if (remainingReplayEvents === 0) unsub();
-        });
-        if (resumedRunId) {
-          const assistantId = assistantIdByRunIdRef.current.get(resumedRunId);
-          if (assistantId) {
-            runListenerByRunIdRef.current.set(resumedRunId, {
-              assistantId,
-              cleanup: cleanupResumedListener,
-            });
-          }
-        }
-      });
-    })();
+    void reloadMessages(
+      sessionId,
+      new Set(
+        [...runController.getRuns().values()].map((run) => run.assistantId),
+      ),
+    ).then(() => runController.requestResume());
   }, [
     ws.connected,
-    ws,
-    canvasId,
     sessionsLoading,
-    applyStreamEvent,
-    onStreamEvent,
-    onCanvasSync,
     activeSessionIdRef,
     reloadMessages,
-    updateSessionMessages,
-    setStreaming,
     initialPrompt,
-    refreshAttachmentRecovery,
-    persistAssistantFallback,
-    persistRecoveredAssistantFallback,
+    runController,
   ]);
 
   // ── Collapsed state ──

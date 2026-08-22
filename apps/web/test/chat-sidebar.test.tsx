@@ -1843,9 +1843,9 @@ describe("ChatSidebar", () => {
       action: "canvas.resume",
       payload: { activeRunId: null, replayed: 2 },
     });
-    await waitFor(() => expect(listeners).toHaveLength(2));
+    await waitFor(() => expect(listeners).toHaveLength(1));
 
-    listeners[1]?.({
+    listeners[0]?.({
       type: "message.delta",
       runId: "run_123",
       messageId: "message-1",
@@ -1858,12 +1858,12 @@ describe("ChatSidebar", () => {
       ).toHaveLength(1),
     );
 
-    listeners[1]?.({
+    listeners[0]?.({
       type: "assistant.persistence_failed",
       runId: "run_123",
       timestamp: "2026-08-20T00:00:01.000Z",
     });
-    listeners[1]?.({
+    listeners[0]?.({
       type: "run.completed",
       runId: "run_123",
       timestamp: "2026-08-20T00:00:02.000Z",

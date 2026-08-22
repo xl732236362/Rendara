@@ -29,14 +29,22 @@ type ControllerOptions = {
   now?: () => number;
   onCanvasSync?: (event: Extract<StreamEvent, { type: "canvas.sync" }>) => void;
   onPersistenceFailure?: (run: ActiveRun) => Promise<void> | void;
+  onRecoveredPersistenceFailure?: (
+    event: Extract<StreamEvent, { type: "assistant.persistence_failed" }>,
+  ) => Promise<void> | void;
   onReplayGap?: (input: { canvasId: string; sessionId?: string }) => void;
+  onRunEvent?: (event: StreamEvent) => void;
 };
 
 export function createAgentRunController(options: ControllerOptions) {
   const now = options.now ?? Date.now;
   const runs = new Map<string, ActiveRun>();
   const subscribers = new Set<() => void>();
+  const eventSubscribers = new Set<(event: StreamEvent) => void>();
   const fallbackStarted = new Set<string>();
+  let persistenceFailureHandler = options.onPersistenceFailure;
+  let recoveredPersistenceFailureHandler =
+    options.onRecoveredPersistenceFailure;
   let disposed = false;
 
   const notify = () => {
@@ -65,7 +73,18 @@ export function createAgentRunController(options: ControllerOptions) {
     }
     if (!("runId" in event) || typeof event.runId !== "string") return;
     const run = runs.get(event.runId);
-    if (!run) return;
+    if (!run) {
+      if (
+        event.type === "assistant.persistence_failed" &&
+        event.assistant &&
+        !fallbackStarted.has(event.runId)
+      ) {
+        fallbackStarted.add(event.runId);
+        void recoveredPersistenceFailureHandler?.(event);
+      }
+      return;
+    }
+    options.onRunEvent?.(event);
 
     const next: ActiveRun = {
       ...run,
@@ -88,10 +107,11 @@ export function createAgentRunController(options: ControllerOptions) {
       !fallbackStarted.has(run.runId)
     ) {
       fallbackStarted.add(run.runId);
-      void options.onPersistenceFailure?.(next);
+      void persistenceFailureHandler?.(next);
     }
     prune();
     notify();
+    for (const subscriber of eventSubscribers) subscriber(event);
   };
 
   const unsubscribeSocket = options.ws.onEvent(handleEvent);
@@ -117,7 +137,25 @@ export function createAgentRunController(options: ControllerOptions) {
     subscribe(subscriber: () => void) {
       subscribers.add(subscriber);
       subscriber();
-      return () => subscribers.delete(subscriber);
+      return () => {
+        subscribers.delete(subscriber);
+      };
+    },
+    onEvent(subscriber: (event: StreamEvent) => void) {
+      eventSubscribers.add(subscriber);
+      return () => {
+        eventSubscribers.delete(subscriber);
+      };
+    },
+    setPersistenceHandlers(handlers: {
+      onPersistenceFailure?: (run: ActiveRun) => Promise<void> | void;
+      onRecoveredPersistenceFailure?: (
+        event: Extract<StreamEvent, { type: "assistant.persistence_failed" }>,
+      ) => Promise<void> | void;
+    }) {
+      persistenceFailureHandler = handlers.onPersistenceFailure;
+      recoveredPersistenceFailureHandler =
+        handlers.onRecoveredPersistenceFailure;
     },
     requestResume() {
       options.ws.resumeCanvas?.(options.canvasId, (ack) => {
@@ -125,16 +163,31 @@ export function createAgentRunController(options: ControllerOptions) {
         const payload = ack.payload;
         if (!payload || typeof payload !== "object") return;
         const replayGap = "replayGap" in payload && payload.replayGap === true;
-        if (!replayGap) return;
         const sessionId =
           "activeRunSessionId" in payload &&
           typeof payload.activeRunSessionId === "string"
             ? payload.activeRunSessionId
             : undefined;
-        options.onReplayGap?.({
-          canvasId: options.canvasId,
-          ...(sessionId ? { sessionId } : {}),
-        });
+        const activeRunId =
+          "activeRunId" in payload && typeof payload.activeRunId === "string"
+            ? payload.activeRunId
+            : undefined;
+        if (activeRunId && sessionId && !runs.has(activeRunId)) {
+          runs.set(activeRunId, {
+            runId: activeRunId,
+            sessionId,
+            assistantId: `resumed_${activeRunId}`,
+            status: "running",
+            contentBlocks: [],
+          });
+          notify();
+        }
+        if (replayGap) {
+          options.onReplayGap?.({
+            canvasId: options.canvasId,
+            ...(sessionId ? { sessionId } : {}),
+          });
+        }
       });
     },
     acknowledgeTerminal(runId: string) {
@@ -152,6 +205,7 @@ export function createAgentRunController(options: ControllerOptions) {
       disposed = true;
       unsubscribeSocket();
       subscribers.clear();
+      eventSubscribers.clear();
       runs.clear();
     },
   };
