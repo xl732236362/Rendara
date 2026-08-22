@@ -1731,53 +1731,78 @@ function verifyBoundedEvidence(entry, sourceByPath) {
 }
 
 function provesAwaitedQueryCap(method, contract, cap) {
-  let queryDeclaration;
+  const body = method.body ?? method.initializer?.body;
+  if (!body) return false;
+  const context = {
+    sourceFile: method.getSourceFile(),
+    lexicalBindings: createLexicalBindings(method.getSourceFile()),
+  };
+  const queryBinding = context.lexicalBindings
+    .get(body)
+    ?.get(contract.queryVariable);
+  if (queryBinding?.kind !== "variable" || !queryBinding.initializer) {
+    return false;
+  }
   let consumptionPosition = Number.POSITIVE_INFINITY;
   function findQueryFlow(node) {
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.name.text === contract.queryVariable &&
-      !queryDeclaration
-    ) {
-      queryDeclaration = node;
-    }
+    if (isNestedExecutableBoundary(node)) return;
     if (ts.isAwaitExpression(node)) {
       const root = rootAccess(node.expression)?.rootNode;
-      if (root?.text === contract.queryVariable) {
+      const binding = root
+        ? resolveIdentifierBinding(root, context)
+        : undefined;
+      if (binding?.node === queryBinding.node) {
         consumptionPosition = Math.min(consumptionPosition, node.pos);
       }
     }
     if (ts.isReturnStatement(node) && node.expression) {
       const root = rootAccess(node.expression)?.rootNode;
-      if (root?.text === contract.queryVariable) {
+      const binding = root
+        ? resolveIdentifierBinding(root, context)
+        : undefined;
+      if (binding?.node === queryBinding.node) {
         consumptionPosition = Math.min(consumptionPosition, node.pos);
       }
     }
     ts.forEachChild(node, findQueryFlow);
   }
-  findQueryFlow(method);
-  if (!queryDeclaration || !Number.isFinite(consumptionPosition)) return false;
+  findQueryFlow(body);
+  if (!Number.isFinite(consumptionPosition)) return false;
 
-  const flowExpressions = [];
-  if (queryDeclaration.initializer) {
-    flowExpressions.push(queryDeclaration.initializer);
-  }
+  const flowExpressions = [queryBinding.initializer];
   function collectAssignments(node) {
+    if (isNestedExecutableBoundary(node)) return;
     if (node.pos >= consumptionPosition) return;
     if (
       ts.isBinaryExpression(node) &&
       node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-      ts.isIdentifier(unwrapExpression(node.left)) &&
-      unwrapExpression(node.left).text === contract.queryVariable
+      ts.isIdentifier(unwrapExpression(node.left))
     ) {
-      flowExpressions.push(node.right);
+      const binding = resolveIdentifierBinding(
+        unwrapExpression(node.left),
+        context,
+      );
+      if (binding?.node === queryBinding.node) flowExpressions.push(node.right);
     }
     ts.forEachChild(node, collectAssignments);
   }
-  collectAssignments(method);
+  collectAssignments(body);
   return flowExpressions.some((expression) =>
     containsLiteralMemberCall(expression, contract.member, cap),
+  );
+}
+
+function isNestedExecutableBoundary(node) {
+  return (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node) ||
+    ts.isConstructorDeclaration(node) ||
+    ts.isClassDeclaration(node) ||
+    ts.isClassExpression(node)
   );
 }
 

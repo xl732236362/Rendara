@@ -1963,6 +1963,68 @@ test("phase 6A bounded evidence follows the actual capped flow", async () => {
   );
 });
 
+test("phase 6A jobs cap evidence follows one lexical query binding", async () => {
+  const sources = await collectPhase6AArchitectureSources(rootDir);
+  const jobPath = "apps/server/src/features/jobs/job-service.ts";
+  const actualDeclaration = "      let query = client";
+  const dynamicActual = ".limit(runtimeLimit);";
+  const cases = [
+    {
+      name: "nested uncalled function",
+      decoy:
+        '      function decoy() { let query = client.from("background_jobs").select("id").limit(50); return query; }\n',
+    },
+    {
+      name: "outer block shadow",
+      decoy:
+        '      { let query = client.from("background_jobs").select("id").limit(50); void query; }\n',
+    },
+  ];
+  const rejectedCases = [];
+  for (const entry of cases) {
+    const mutated = sources.map((source) =>
+      source.path === jobPath
+        ? {
+            ...source,
+            source: source.source
+              .replace(".limit(50);", dynamicActual)
+              .replace(
+                actualDeclaration,
+                `      const runtimeLimit = 25;\n${entry.decoy}${actualDeclaration}`,
+              ),
+          }
+        : source,
+    );
+    const issues =
+      phase6ABoundaries.auditPhase6ACollectionRouteInventory(mutated);
+    if (issues.some((issue) => issue.includes("/api/jobs cap"))) {
+      rejectedCases.push(entry.name);
+    }
+  }
+  assert.deepEqual(
+    rejectedCases,
+    cases.map(({ name }) => name),
+  );
+
+  const positive = sources.map((source) =>
+    source.path === jobPath
+      ? {
+          ...source,
+          source: source.source.replace(
+            actualDeclaration,
+            '      function decoy() { let query = client.from("background_jobs").select("id").limit(runtimeLimit); return query; }\n      { let query = client.from("background_jobs").select("id").limit(runtimeLimit); void query; }\n      const runtimeLimit = 25;\n      let query = client',
+          ),
+        }
+      : source,
+  );
+  assert.ok(
+    !phase6ABoundaries
+      .auditPhase6ACollectionRouteInventory(positive)
+      .some((issue) => issue.includes("/api/jobs cap")),
+    "the capped outer jobs query was rejected",
+  );
+});
+
 test("phase 6A verification derives collection counts from the scanner inventory", async () => {
   const verification = await readText("docs/tech/phase-6a-verification.md");
   assert.match(
