@@ -43,6 +43,7 @@ import {
   ApiAuthError,
   fetchCanvas,
   fetchProject,
+  saveMessage,
 } from "../../lib/server-api";
 
 function CanvasPageContent() {
@@ -308,6 +309,52 @@ function CanvasPageContent() {
       },
       onCanvasSync: (event) => void handleCanvasSync(event),
       onRunEvent: handleStreamEvent,
+      onPersistenceFailure: async (run) => {
+        const token = accessTokenRef.current;
+        if (!token) {
+          console.warn("[agent-run] fallback_persistence_skipped", {
+            canvasId: canvasData.id,
+            runId: run.runId,
+            reason: "missing_access_token",
+          });
+          return;
+        }
+        const content = run.contentBlocks
+          .filter((block) => block.type === "text")
+          .map((block) => block.text)
+          .join("");
+        await saveMessage(token, run.sessionId, {
+          id: run.runId,
+          role: "assistant",
+          content,
+          contentBlocks: run.contentBlocks,
+        }).catch((error) => {
+          console.warn("[agent-run] fallback_persistence_failed", {
+            canvasId: canvasData.id,
+            runId: run.runId,
+            sessionId: run.sessionId,
+            errorCode: "assistant_fallback_persistence_failed",
+            error: error instanceof Error ? error.message : "unknown_error",
+          });
+        });
+      },
+      onRecoveredPersistenceFailure: async (event) => {
+        const token = accessTokenRef.current;
+        if (!token || !event.assistant || !event.sessionId) return;
+        await saveMessage(token, event.sessionId, {
+          id: event.runId,
+          role: "assistant",
+          content: event.assistant.content,
+          contentBlocks: event.assistant.contentBlocks,
+        }).catch((error) => {
+          console.warn("[agent-run] recovered_persistence_failed", {
+            canvasId: canvasData.id,
+            runId: event.runId,
+            sessionId: event.sessionId,
+            error: error instanceof Error ? error.message : "unknown_error",
+          });
+        });
+      },
       onReplayGap: ({ canvasId: replayCanvasId, sessionId }) => {
         console.warn("[agent-run] replay_gap", {
           canvasId: replayCanvasId,

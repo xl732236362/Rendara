@@ -10,7 +10,7 @@ Transactional outbox publishing and the Phase 5 realtime projection. Canvas even
 
 ### `apps/server/src/http/`
 
-REST interface adapters authenticate, parse shared boundary schemas, call application use cases/services, and serialize responses. Phase 6A adds cursor-paginated V2 routes for projects, brand kits, credit transactions, chat sessions and chat messages while retaining five legacy list routes for a measured removal window. A structured route inventory rejects new unbounded collection services.
+REST interface adapters authenticate, parse shared boundary schemas, call application use cases/services, and serialize responses. Phase 6A adds cursor-paginated V2 routes for projects, brand kits, credit transactions, chat sessions and chat messages while retaining five legacy list routes for a measured removal window. Catalog responses have explicit caps (fonts 5000; agent/image/video models 100). A structured route inventory rejects new unbounded collection services.
 
 ### `apps/server/src/ws/`
 

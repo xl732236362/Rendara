@@ -104,6 +104,25 @@ describe("createAgentRunController", () => {
     expect(controller.getRuns().has("run-1")).toBe(false);
   });
 
+  it("marks a running run as stopping until a terminal event arrives", () => {
+    const socket = createSocket();
+    const controller = createAgentRunController({
+      canvasId: "canvas-1",
+      ws: socket.ws,
+    });
+    controller.startRun({
+      runId: "run-1",
+      sessionId: "session-1",
+      assistantId: "assistant-1",
+    });
+
+    controller.markStopping("run-1");
+    expect(controller.getRuns().get("run-1")?.status).toBe("stopping");
+
+    socket.emit({ type: "run.canceled", runId: "run-1" } as StreamEvent);
+    expect(controller.getRuns().get("run-1")?.status).toBe("canceled");
+  });
+
   it("runs persistence fallback once without a UI subscriber", () => {
     const socket = createSocket();
     const onPersistenceFailure = vi.fn();

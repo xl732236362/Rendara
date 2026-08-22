@@ -16,6 +16,10 @@ Client lifecycle and interaction orchestration. Phase 6A moves projects, brand k
 
 Single server-state ownership boundary. `keys.ts` creates identity-scoped, normalized keys; `query-client.ts` centrally retries only transient reads and disables mutation retry; `workspace-queries.ts` owns V2 collection fetching, cancellation and cursor traversal. Architecture tests reject raw query-key arrays, identity-derived global keys and component-local V2 collection fetches.
 
+Settings Agent model selection consumes `useAgentModelsQuery` state directly; catalog loading, failure, and retry remain Query-owned rather than component-local.
+
+Canvas pages own one `agent-run-controller.ts` instance per canvas. It is the sole live Agent run and WebSocket-listener owner, retains bounded terminal snapshots, and keeps replay and fallback persistence alive independently of ChatSidebar mounting.
+
 ### `apps/web/src/lib/api/`
 
 Schema-aware Phase 6A page clients for projects, brand kits, credits and chat plus model/viewer reads. Cursors are opaque transport values and are never decoded or logged by the browser.

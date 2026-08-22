@@ -42,9 +42,6 @@ export function createAgentRunController(options: ControllerOptions) {
   const subscribers = new Set<() => void>();
   const eventSubscribers = new Set<(event: StreamEvent) => void>();
   const fallbackStarted = new Set<string>();
-  let persistenceFailureHandler = options.onPersistenceFailure;
-  let recoveredPersistenceFailureHandler =
-    options.onRecoveredPersistenceFailure;
   let disposed = false;
 
   const notify = () => {
@@ -80,7 +77,7 @@ export function createAgentRunController(options: ControllerOptions) {
         !fallbackStarted.has(event.runId)
       ) {
         fallbackStarted.add(event.runId);
-        void recoveredPersistenceFailureHandler?.(event);
+        void options.onRecoveredPersistenceFailure?.(event);
       }
       return;
     }
@@ -107,7 +104,7 @@ export function createAgentRunController(options: ControllerOptions) {
       !fallbackStarted.has(run.runId)
     ) {
       fallbackStarted.add(run.runId);
-      void persistenceFailureHandler?.(next);
+      void options.onPersistenceFailure?.(next);
     }
     prune();
     notify();
@@ -131,6 +128,12 @@ export function createAgentRunController(options: ControllerOptions) {
       });
       notify();
     },
+    markStopping(runId: string) {
+      const run = runs.get(runId);
+      if (!run || run.status !== "running") return;
+      runs.set(runId, { ...run, status: "stopping" });
+      notify();
+    },
     getRuns(): ReadonlyMap<string, ActiveRun> {
       return runs;
     },
@@ -146,16 +149,6 @@ export function createAgentRunController(options: ControllerOptions) {
       return () => {
         eventSubscribers.delete(subscriber);
       };
-    },
-    setPersistenceHandlers(handlers: {
-      onPersistenceFailure?: (run: ActiveRun) => Promise<void> | void;
-      onRecoveredPersistenceFailure?: (
-        event: Extract<StreamEvent, { type: "assistant.persistence_failed" }>,
-      ) => Promise<void> | void;
-    }) {
-      persistenceFailureHandler = handlers.onPersistenceFailure;
-      recoveredPersistenceFailureHandler =
-        handlers.onRecoveredPersistenceFailure;
     },
     requestResume() {
       options.ws.resumeCanvas?.(options.canvasId, (ack) => {

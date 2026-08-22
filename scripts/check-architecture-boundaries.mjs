@@ -65,10 +65,34 @@ export const phase6ACollectionRouteInventory = Object.freeze([
       property: "limit",
     },
   ),
-  gapRoute("/api/fonts", "apps/server/src/http/fonts.ts"),
-  gapRoute("/api/models", "apps/server/src/http/models.ts"),
-  gapRoute("/api/image-models", "apps/server/src/http/image-models.ts"),
-  gapRoute("/api/video-models", "apps/server/src/http/video-models.ts"),
+  boundedCatalogRoute(
+    "/api/fonts",
+    "apps/server/src/http/fonts.ts",
+    5000,
+    "registerFontsRoutes",
+    "FONT_CATALOG_MAX_ITEMS",
+  ),
+  boundedCatalogRoute(
+    "/api/models",
+    "apps/server/src/http/models.ts",
+    100,
+    "registerModelRoutes",
+    "MODEL_CATALOG_MAX_ITEMS",
+  ),
+  boundedCatalogRoute(
+    "/api/image-models",
+    "apps/server/src/http/image-models.ts",
+    100,
+    "registerImageModelRoutes",
+    "IMAGE_MODEL_CATALOG_MAX_ITEMS",
+  ),
+  boundedCatalogRoute(
+    "/api/video-models",
+    "apps/server/src/http/video-models.ts",
+    100,
+    "registerVideoModelRoutes",
+    "VIDEO_MODEL_CATALOG_MAX_ITEMS",
+  ),
 ]);
 
 export const phase6ACollectionInventorySummary = Object.freeze(
@@ -178,6 +202,17 @@ function boundedRoute(pathname, file, cap, capContract) {
     cap,
     capContract: Object.freeze(capContract),
     implementationEvidence: `${capContract.ownerFile}#${capContract.ownerExport}.${capContract.method}:${capContract.kind}:${capContract.member}`,
+  });
+}
+
+function boundedCatalogRoute(pathname, file, cap, ownerExport, capIdentifier) {
+  return boundedRoute(pathname, file, cap, {
+    ownerFile: file,
+    ownerExport,
+    method: "response",
+    kind: "exported-function-response-slice",
+    member: "slice",
+    capIdentifier,
   });
 }
 
@@ -1690,6 +1725,11 @@ function verifyBoundedEvidence(entry, sourceByPath) {
   const source = sourceByPath.get(filePath);
   if (!source) return `${entry.path} evidence source is missing: ${filePath}`;
   const sourceFile = parseSourceFile(source, filePath);
+  if (contract.kind === "exported-function-response-slice") {
+    return provesExportedFunctionResponseSlice(sourceFile, contract, entry.cap)
+      ? undefined
+      : `${entry.path} cap ${entry.cap} is not proven by ${entry.implementationEvidence}`;
+  }
   let matched = false;
   function inspectMethod(method) {
     if (contract.kind === "awaited-query-call") {
@@ -1728,6 +1768,56 @@ function verifyBoundedEvidence(entry, sourceByPath) {
   return matched
     ? undefined
     : `${entry.path} cap ${entry.cap} is not proven by ${entry.implementationEvidence}`;
+}
+
+function provesExportedFunctionResponseSlice(sourceFile, contract, cap) {
+  let capDeclared = false;
+  let responseCapped = false;
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isVariableStatement(statement) &&
+      statement.modifiers?.some(
+        (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+      )
+    ) {
+      for (const declaration of statement.declarationList.declarations) {
+        if (
+          ts.isIdentifier(declaration.name) &&
+          declaration.name.text === contract.capIdentifier &&
+          declaration.initializer &&
+          ts.isNumericLiteral(declaration.initializer) &&
+          Number(declaration.initializer.text) === cap
+        ) {
+          capDeclared = true;
+        }
+      }
+    }
+    if (
+      ts.isFunctionDeclaration(statement) &&
+      statement.name?.text === contract.ownerExport &&
+      statement.modifiers?.some(
+        (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+      )
+    ) {
+      function visit(node) {
+        if (
+          ts.isCallExpression(node) &&
+          ts.isPropertyAccessExpression(node.expression) &&
+          node.expression.name.text === "slice" &&
+          node.arguments.length === 2 &&
+          ts.isNumericLiteral(node.arguments[0]) &&
+          Number(node.arguments[0].text) === 0 &&
+          ts.isIdentifier(node.arguments[1]) &&
+          node.arguments[1].text === contract.capIdentifier
+        ) {
+          responseCapped = true;
+        }
+        ts.forEachChild(node, visit);
+      }
+      visit(statement);
+    }
+  }
+  return capDeclared && responseCapped;
 }
 
 function provesAwaitedQueryCap(method, contract, cap) {

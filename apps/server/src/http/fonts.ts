@@ -21,6 +21,7 @@ type FontsCache = {
 };
 
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+export const FONT_CATALOG_MAX_ITEMS = 5000;
 
 let fontsCache: FontsCache | null = null;
 
@@ -87,6 +88,6 @@ export function registerFontsRoutes(
       fonts = fonts.filter((f) => f.category === category);
     }
 
-    return reply.send({ fonts });
+    return reply.send({ fonts: fonts.slice(0, FONT_CATALOG_MAX_ITEMS) });
   });
 }

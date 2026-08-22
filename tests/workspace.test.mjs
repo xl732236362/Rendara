@@ -1817,9 +1817,11 @@ test("phase 6A collection inventory is unique, classified, and evidence-backed",
       assert.equal(typeof entry.capContract?.ownerExport, "string", entry.path);
       assert.equal(typeof entry.capContract?.method, "string", entry.path);
       assert.ok(
-        ["awaited-query-call", "call-argument-property"].includes(
-          entry.capContract?.kind,
-        ),
+        [
+          "awaited-query-call",
+          "call-argument-property",
+          "exported-function-response-slice",
+        ].includes(entry.capContract?.kind),
         entry.path,
       );
       if (entry.capContract.kind === "awaited-query-call") {
@@ -1829,7 +1831,7 @@ test("phase 6A collection inventory is unique, classified, and evidence-backed",
           entry.path,
         );
         assert.equal(typeof entry.capContract.member, "string", entry.path);
-      } else {
+      } else if (entry.capContract.kind === "call-argument-property") {
         assert.equal(typeof entry.capContract.calleeRoot, "string", entry.path);
         assert.equal(
           typeof entry.capContract.calleeMethod,
@@ -1842,6 +1844,13 @@ test("phase 6A collection inventory is unique, classified, and evidence-backed",
           entry.path,
         );
         assert.equal(typeof entry.capContract.property, "string", entry.path);
+      }
+      if (entry.capContract.kind === "exported-function-response-slice") {
+        assert.equal(
+          typeof entry.capContract.capIdentifier,
+          "string",
+          entry.path,
+        );
       }
     }
   }
@@ -2081,5 +2090,28 @@ test("phase 6A server-state and collection boundaries remain enforced", async ()
     findings,
     [],
     findings.map(({ evidence, message }) => `${evidence}${message}`).join("\n"),
+  );
+});
+
+test("Agent run listener ownership remains canvas-scoped", async () => {
+  const [canvasPage, chatSidebar, controller] = await Promise.all([
+    readText("apps/web/src/app/canvas/page.tsx"),
+    readText("apps/web/src/components/chat-sidebar.tsx"),
+    readText("apps/web/src/lib/agent-run-controller.ts"),
+  ]);
+
+  assert.match(canvasPage, /createAgentRunController\s*\(/);
+  assert.match(canvasPage, /runController=\{runController\}/);
+  assert.match(canvasPage, /onPersistenceFailure:/);
+  assert.match(canvasPage, /onRecoveredPersistenceFailure:/);
+  assert.doesNotMatch(chatSidebar, /runListenerByRunIdRef/);
+  assert.doesNotMatch(chatSidebar, /assistantIdByRunIdRef/);
+  assert.doesNotMatch(chatSidebar, /ws\.onEvent\s*\(/);
+  assert.doesNotMatch(chatSidebar, /ws\.resumeCanvas\s*\(/);
+  assert.doesNotMatch(chatSidebar, /setPersistenceHandlers/);
+  assert.equal(
+    controller.match(/options\.ws\.onEvent\s*\(/g)?.length,
+    1,
+    "controller must own exactly one underlying WebSocket subscription",
   );
 });

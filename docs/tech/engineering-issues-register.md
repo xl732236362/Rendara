@@ -205,7 +205,7 @@
 ### ENG-017：画布写入绕过统一领域服务
 
 - 严重度：P1
-- 状态：部分解决
+- 状态：已解决
 - 证据：`CanvasService` 只提供整份读取和保存；Worker 的 `canvas-element-writer.ts` 与 Agent 的 `manipulate-canvas.ts` 均直接访问 `canvases.content`，各自实现读改写、错误处理和文件策略。
 - 影响：权限、revision、校验、迁移、日志和冲突处理无法在一个边界统一实施；未来修改存储模型需要同时改动多个调用方。
 - 建议方向：建立 canvas repository/application service，暴露 `applyOperations`、`insertArtifact` 等用例；所有写入统一经过校验、并发控制、审计日志和事件发布。
@@ -371,7 +371,7 @@
 - 影响：长期使用后单次响应、React 渲染和 RLS 查询成本线性增长，尤其消息内容包含 blocks 和工具输出时会快速放大。
 - 建议方向：为所有集合接口定义统一 cursor pagination、稳定排序和最大 page size；聊天消息采用倒序 cursor 获取最近窗口，前端虚拟化长列表并按需加载历史。
 - 阶段 6A 结果：projects、brand kits、credit transactions、chat sessions、chat messages 五个 V2 集合已使用有作用域签名 cursor 和 1-100 page limit；jobs 固定 50，outstanding attachments 固定 100。集合 inventory 共 16 项（cursor 5、bounded 2、legacy-gap 9）；总 GET inventory 另含 13 个有明确理由的 singleton，共 29 项。统一 route discovery 同时驱动架构扫描与 inventory audit，按 lexical declaration provenance 解析 `FastifyInstance` 参数、导入的 `Fastify()` factory、typed plugin callback、嵌套 `.register` callback 和别名上的 literal/const `.get` 与 `.route` GET 注册；所有 variable identifier/binding pattern（包括无 initializer 声明）都会建立 lexical shadow，同名参数或局部声明不能继承外层 provenance。两项 bounded evidence 使用显式 flow contract：jobs 的 `.limit(50)`、assignment、await 与 return 必须解析到 owner method body 中同一个 lexical query declaration，并跳过 nested function/class；attachments 的 `limit: 100` 必须位于指定 repository 调用第 0 个实参的顶层。动态值、shadow、嵌套值及同方法无关诱饵均失败关闭。
-- 未关闭项：对应五个 legacy list endpoint 仍执行全量读取；fonts 与 agent/image/video model catalogs 虽在当前运行时有限，但没有本地数值 cap 或 schema enum，不能计为 intrinsically bounded。兼容端点需连续 14 天调用量为零后在下一部署窗口删除，最早 Phase 6B。详见 `phase-6a-verification.md`。
+- 未关闭项：对应五个 legacy list endpoint 仍执行全量读取；兼容端点需连续 14 天调用量为零后在下一部署窗口删除，最早 Phase 6B。fonts、agent/image/video model catalogs 已增加显式响应上限（分别为 5000、100、100、100），但仍需在架构 inventory 中记录 cap 证据并补充回归测试。详见 `phase-6a-verification.md`。
 
 ### ENG-036：健康检查不能反映服务可用性
 
@@ -392,12 +392,12 @@
 ### ENG-038：前端服务端状态管理规则分散
 
 - 严重度：P2
-- 状态：部分解决
+- 状态：已解决
 - 证据：项目、设置、skills、brand kit、模型和聊天数据主要在页面/组件内以 `useEffect + useState + fetch` 管理；只有少量请求使用自定义 dedupe，缺少统一 query key、缓存、重试、取消和 mutation invalidation 机制。
 - 影响：页面切换和多个组件消费同一资源时容易重复请求、显示陈旧数据或各自实现 loading/error；新增功能需要重复编写生命周期代码。
 - 建议方向：引入统一 server-state 层（如项目选定的成熟 query library或轻量内部封装），集中 auth-aware fetch、schema parse、query key、重试与失效；本地交互状态继续留在组件，避免建立无边界全局 store。
 - 阶段 6A 结果：TanStack Query provider、owner-scoped key factory、统一 query retry/mutation no-retry、V2 page clients 与 projects/brand kits/credits/chat/model hooks 已落地；AST 门禁禁止 factory 外 raw key arrays、identity-derived global keys、component-local V2 fetch 和非 allowlisted mutation retry。
-- 未关闭项：Task 9 的两个 Minor 不影响分页正确性，但阻止 single-owner 结论：旧 run listener 的 owner cleanup 仍与 chat controller 生命周期耦合；`agent-section.tsx` 仍保留 component-local model catalog failure/retry。两项完成并重新盘点 resource inventory 前保持“部分解决”。详见 `phase-6a-verification.md`。
+- 阶段 6A 收尾：`agent-section.tsx` 直接消费共享 model Query 状态；每个画布由 `agent-run-controller.ts` 唯一持有实时任务与一个 WebSocket 监听。侧栏关闭或重新挂载不会中断任务和保存补救，架构门禁、Web 223 项检查、Workspace 165 项检查及两端类型检查均通过。详见 `phase-6a-verification.md`。
 
 ### 阶段 4 验收记录：画布领域模型
 

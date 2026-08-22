@@ -9,17 +9,21 @@ import { Label } from "./ui/label";
 interface AgentSectionProps {
   defaultModel: string;
   onSave: (defaultModel: string) => Promise<void>;
-  fetchModels: () => Promise<{ models: ModelInfo[] }>;
+  models: ModelInfo[];
+  modelsLoading: boolean;
+  modelsError: boolean;
+  onRetryModels: () => void;
 }
 
 export function AgentSection({
   defaultModel: initialModel,
   onSave,
-  fetchModels,
+  models,
+  modelsLoading,
+  modelsError,
+  onRetryModels,
 }: AgentSectionProps) {
   const [selectedModel, setSelectedModel] = useState(initialModel);
-  const [models, setModels] = useState<ModelInfo[]>([]);
-  const [modelsLoading, setModelsLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{
     type: "success" | "error";
@@ -29,18 +33,12 @@ export function AgentSection({
   const hasChanges = selectedModel !== initialModel;
 
   useEffect(() => {
-    fetchModels()
-      .then((data) => {
-        setModels(data.models);
-        const ids = data.models.map((m: ModelInfo) => m.id);
-        const firstModel = data.models[0];
-        setSelectedModel((current) =>
-          firstModel && !ids.includes(current) ? firstModel.id : current,
-        );
-      })
-      .catch(() => setModels([]))
-      .finally(() => setModelsLoading(false));
-  }, [fetchModels]);
+    const ids = models.map((m) => m.id);
+    const firstModel = models[0];
+    setSelectedModel((current) =>
+      firstModel && !ids.includes(current) ? firstModel.id : current,
+    );
+  }, [models]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -74,6 +72,18 @@ export function AgentSection({
           <Label htmlFor="defaultModel">Default Model</Label>
           {modelsLoading ? (
             <p className="text-sm text-muted-foreground">Loading models...</p>
+          ) : modelsError ? (
+            <div className="space-y-2">
+              <p className="text-sm text-destructive">Failed to load models.</p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={onRetryModels}
+              >
+                Retry
+              </Button>
+            </div>
           ) : (
             <select
               id="defaultModel"

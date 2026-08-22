@@ -46,6 +46,11 @@ const GOOGLE_MODELS: ModelInfo[] = [
   },
 ];
 
+// Catalogs are deployment-defined and intentionally bounded. Keep this cap
+// explicit so a provider expansion cannot turn the singleton read into an
+// unbounded collection response without a contract review.
+export const MODEL_CATALOG_MAX_ITEMS = 100;
+
 export async function registerModelRoutes(
   app: FastifyInstance,
   env: ServerEnv,
@@ -55,6 +60,12 @@ export async function registerModelRoutes(
     if (env.openAIApiKey) models.push(...OPENAI_MODELS);
     if (env.googleApiKey || env.googleVertexProject)
       models.push(...GOOGLE_MODELS);
-    return reply.code(200).send(modelListResponseSchema.parse({ models }));
+    return reply
+      .code(200)
+      .send(
+        modelListResponseSchema.parse({
+          models: models.slice(0, MODEL_CATALOG_MAX_ITEMS),
+        }),
+      );
   });
 }

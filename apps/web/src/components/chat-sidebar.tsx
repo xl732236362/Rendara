@@ -27,6 +27,7 @@ import { useImageModelPreference } from "../hooks/use-image-model-preference";
 import { useVideoModelPreference } from "../hooks/use-video-model-preference";
 import type { RunCallbacks, WebSocketHandle } from "../hooks/use-websocket";
 import {
+  type ActiveRun,
   type AgentRunController,
   createAgentRunController,
 } from "../lib/agent-run-controller";
@@ -122,12 +123,22 @@ export function ChatSidebar({
   const breakpoint = useBreakpoint();
   const isOverlay = breakpoint !== "desktop";
   const { user } = useAuth();
+  const persistenceFailureRef = useRef<((run: ActiveRun) => void) | null>(null);
+  const recoveredPersistenceFailureRef = useRef<
+    | ((
+        event: Extract<StreamEvent, { type: "assistant.persistence_failed" }>,
+      ) => void)
+    | null
+  >(null);
   const compatibilityRunController = useMemo(
     () =>
       providedRunController ??
       createAgentRunController({
         canvasId,
         ws: { onEvent: ws.onEvent, resumeCanvas: ws.resumeCanvas },
+        onPersistenceFailure: (run) => persistenceFailureRef.current?.(run),
+        onRecoveredPersistenceFailure: (event) =>
+          recoveredPersistenceFailureRef.current?.(event),
       }),
     [canvasId, providedRunController, ws.onEvent, ws.resumeCanvas],
   );
@@ -212,6 +223,13 @@ export function ChatSidebar({
               : message,
           );
         });
+        if (
+          run.status === "completed" ||
+          run.status === "failed" ||
+          run.status === "canceled"
+        ) {
+          runController.acknowledgeTerminal(run.runId);
+        }
       }
     });
   }, [runController, updateSessionMessages]);
@@ -237,6 +255,16 @@ export function ChatSidebar({
     retry: () => void;
   } | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
+
+  useEffect(() => {
+    return runController.subscribe(() => {
+      const activeRun = [...runController.getRuns().values()].find(
+        (run) => run.status === "running" || run.status === "stopping",
+      );
+      setActiveRunId(activeRun?.runId ?? null);
+      setStreaming(Boolean(activeRun));
+    });
+  }, [runController, setStreaming]);
   const chatInputRef = useRef<import("./chat-input").ChatInputHandle>(null);
 
   const initialPromptSent = useRef(false);
@@ -281,62 +309,44 @@ export function ChatSidebar({
   const { showTierLimit } = useTierLimitToast();
   const { toast: showToast } = useToast();
 
-  const persistAssistantFallback = useCallback(
-    (sessionId: string, runId: string) => {
-      if (fallbackPersistedRunIdsRef.current.has(runId)) return;
-      const assistantId = runController.getRuns().get(runId)?.assistantId;
-      if (!assistantId) return;
-      const assistant = getSessionMessages(sessionId).find(
-        (message) => message.id === assistantId && message.role === "assistant",
-      );
-      if (!assistant) return;
-      fallbackPersistedRunIdsRef.current.add(runId);
-      const content = assistant.contentBlocks
-        .filter((block) => block.type === "text")
-        .map((block) => block.text)
-        .join("");
-      void saveMessage(accessTokenRef.current, sessionId, {
-        id: runId,
-        role: "assistant",
-        content,
-        contentBlocks: assistant.contentBlocks,
-      }).catch(() => {
-        fallbackPersistedRunIdsRef.current.delete(runId);
-        console.warn("[chat] assistant fallback persistence failed", {
-          assistantId,
-          errorCode: "assistant_fallback_persistence_failed",
-          runId,
-          sessionId,
-        });
+  persistenceFailureRef.current = (run) => {
+    if (fallbackPersistedRunIdsRef.current.has(run.runId)) return;
+    fallbackPersistedRunIdsRef.current.add(run.runId);
+    const content = run.contentBlocks
+      .filter((block) => block.type === "text")
+      .map((block) => block.text)
+      .join("");
+    void saveMessage(accessTokenRef.current, run.sessionId, {
+      id: run.runId,
+      role: "assistant",
+      content,
+      contentBlocks: run.contentBlocks,
+    }).catch(() => {
+      fallbackPersistedRunIdsRef.current.delete(run.runId);
+      console.warn("[chat] assistant fallback persistence failed", {
+        errorCode: "assistant_fallback_persistence_failed",
+        runId: run.runId,
+        sessionId: run.sessionId,
       });
-    },
-    [accessTokenRef, getSessionMessages, runController],
-  );
-
-  useEffect(() => {
-    runController.setPersistenceHandlers({
-      onPersistenceFailure: (run) =>
-        persistAssistantFallback(run.sessionId, run.runId),
-      onRecoveredPersistenceFailure: (event) => {
-        if (!event.assistant || !event.sessionId) return;
-        if (fallbackPersistedRunIdsRef.current.has(event.runId)) return;
-        fallbackPersistedRunIdsRef.current.add(event.runId);
-        void saveMessage(accessTokenRef.current, event.sessionId, {
-          id: event.runId,
-          role: "assistant",
-          content: event.assistant.content,
-          contentBlocks: event.assistant.contentBlocks,
-        }).catch(() => {
-          fallbackPersistedRunIdsRef.current.delete(event.runId);
-          console.warn("[chat] recovered assistant persistence failed", {
-            runId: event.runId,
-            sessionId: event.sessionId,
-          });
-        });
-      },
     });
-    return () => runController.setPersistenceHandlers({});
-  }, [persistAssistantFallback, runController]);
+  };
+  recoveredPersistenceFailureRef.current = (event) => {
+    if (!event.assistant || !event.sessionId) return;
+    if (fallbackPersistedRunIdsRef.current.has(event.runId)) return;
+    fallbackPersistedRunIdsRef.current.add(event.runId);
+    void saveMessage(accessTokenRef.current, event.sessionId, {
+      id: event.runId,
+      role: "assistant",
+      content: event.assistant.content,
+      contentBlocks: event.assistant.contentBlocks,
+    }).catch(() => {
+      fallbackPersistedRunIdsRef.current.delete(event.runId);
+      console.warn("[chat] recovered assistant persistence failed", {
+        runId: event.runId,
+        sessionId: event.sessionId,
+      });
+    });
+  };
 
   const syncedAttachmentRevisionsRef = useRef(new Map<string, number>());
   const attachedJobIdsRef = useRef(new Set<string>());
@@ -904,10 +914,6 @@ export function ChatSidebar({
             // Forward event to parent for fallback job polling (timed-out generation recovery)
             onStreamEvent?.(event);
 
-            if (event.type === "assistant.persistence_failed") {
-              persistAssistantFallback(currentSessionId, event.runId);
-            }
-
             // Preview model hint: suggest switching when run fails
             if (event.type === "run.failed") {
               const currentModel = agentModelRef.current ?? "";
@@ -1050,7 +1056,6 @@ export function ChatSidebar({
       accessTokenRef,
       activeSessionIdRef,
       refreshAttachmentRecovery,
-      persistAssistantFallback,
       runController,
     ],
   );
@@ -1394,6 +1399,7 @@ export function ChatSidebar({
                     runId: activeRunId,
                   });
                   abortRef.current = true;
+                  runController.markStopping(activeRunId);
                   ws.cancelRun(activeRunId);
                 },
               }

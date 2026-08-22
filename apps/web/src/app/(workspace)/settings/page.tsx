@@ -109,11 +109,6 @@ export default function SettingsPage() {
     [getToken],
   );
 
-  const stableFetchModels = useCallback(
-    () => Promise.resolve({ models: modelsQuery.data?.models ?? [] }),
-    [modelsQuery.data?.models],
-  );
-
   if (pageLoading) {
     return <SettingsSkeleton />;
   }
@@ -157,7 +152,10 @@ export default function SettingsPage() {
           <AgentSection
             defaultModel={defaultModel}
             onSave={handleAgentSave}
-            fetchModels={stableFetchModels}
+            models={modelsQuery.data?.models ?? []}
+            modelsLoading={modelsQuery.isPending}
+            modelsError={modelsQuery.isError}
+            onRetryModels={() => void modelsQuery.refetch()}
           />
         ) : activeTab === "usage" ? (
           <CreditUsageHistory />
