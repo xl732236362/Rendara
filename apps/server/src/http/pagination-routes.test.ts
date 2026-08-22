@@ -39,13 +39,20 @@ describe("versioned pagination routes", () => {
   ] as const)(
     "registers the exact %s path with the default limit",
     async (domain, url, method) => {
-      const { app, services } = await createApp();
+      const { app, auth, services } = await createApp();
       const response = await app.inject({ method: "GET", url });
 
       expect(response.statusCode, domain).toBe(200);
       expect(response.json()).toEqual({ items: [], nextCursor: null });
       expect(services[method]).toHaveBeenCalledOnce();
       expect(services[method].mock.calls[0]?.at(-1)).toEqual({ limit: 50 });
+      expect(
+        auth.authenticate.mock.invocationCallOrder.at(0) ??
+          Number.POSITIVE_INFINITY,
+      ).toBeLessThan(
+        services[method].mock.invocationCallOrder.at(0) ??
+          Number.POSITIVE_INFINITY,
+      );
       await app.close();
     },
   );
@@ -72,20 +79,29 @@ describe("versioned pagination routes", () => {
     await app.close();
   });
 
-  it("authenticates before calling a paged service", async () => {
-    const { app, services } = await createApp({ authenticated: false });
-    const response = await app.inject({
-      method: "GET",
-      url: "/api/v2/projects",
-    });
+  it.each([
+    ["/api/v2/projects", "listProjectsPage", false],
+    ["/api/v2/brand-kits", "listKitsPage", true],
+    ["/api/v2/credits/transactions", "listTransactionsPage", true],
+    ["/api/v2/canvases/canvas-1/sessions", "listSessionsPage", false],
+    ["/api/v2/sessions/session-1/messages", "listMessagesPage", false],
+  ] as const)(
+    "authenticates %s before resolving ownership or calling its paged service",
+    async (url, method, usesViewer) => {
+      const { app, services, viewerService } = await createApp({
+        authenticated: false,
+      });
+      const response = await app.inject({ method: "GET", url });
 
-    expect(response.statusCode).toBe(401);
-    expect(services.listProjectsPage).not.toHaveBeenCalled();
-    await app.close();
-  });
+      expect(response.statusCode).toBe(401);
+      expect(services[method]).not.toHaveBeenCalled();
+      if (usesViewer) expect(viewerService.ensureViewer).not.toHaveBeenCalled();
+      await app.close();
+    },
+  );
 
   it("derives brand-kit and credit scope from the authenticated viewer", async () => {
-    const { app, services } = await createApp();
+    const { app, auth, services, viewerService } = await createApp();
     await app.inject({ method: "GET", url: "/api/v2/brand-kits" });
     await app.inject({ method: "GET", url: "/api/v2/credits/transactions" });
 
@@ -97,20 +113,57 @@ describe("versioned pagination routes", () => {
       "user-1",
       { limit: 50 },
     );
+    expect(
+      auth.authenticate.mock.invocationCallOrder.at(0) ??
+        Number.POSITIVE_INFINITY,
+    ).toBeLessThan(
+      viewerService.ensureViewer.mock.invocationCallOrder.at(0) ??
+        Number.POSITIVE_INFINITY,
+    );
+    expect(
+      viewerService.ensureViewer.mock.invocationCallOrder.at(0) ??
+        Number.POSITIVE_INFINITY,
+    ).toBeLessThan(
+      services.listKitsPage.mock.invocationCallOrder.at(0) ??
+        Number.POSITIVE_INFINITY,
+    );
+    expect(
+      viewerService.ensureViewer.mock.invocationCallOrder.at(1) ??
+        Number.POSITIVE_INFINITY,
+    ).toBeLessThan(
+      services.listTransactionsPage.mock.invocationCallOrder.at(0) ??
+        Number.POSITIVE_INFINITY,
+    );
+    expect(
+      auth.authenticate.mock.invocationCallOrder.at(1) ??
+        Number.POSITIVE_INFINITY,
+    ).toBeLessThan(
+      viewerService.ensureViewer.mock.invocationCallOrder.at(1) ??
+        Number.POSITIVE_INFINITY,
+    );
     await app.close();
   });
 
-  it("does not accept workspace or user scope from the query string", async () => {
-    const { app, services } = await createApp();
-    const response = await app.inject({
-      method: "GET",
-      url: "/api/v2/credits/transactions?workspaceId=attacker&userId=attacker",
-    });
+  it.each([
+    ["/api/v2/projects", "listProjectsPage"],
+    ["/api/v2/brand-kits", "listKitsPage"],
+    ["/api/v2/credits/transactions", "listTransactionsPage"],
+    ["/api/v2/canvases/canvas-1/sessions", "listSessionsPage"],
+    ["/api/v2/sessions/session-1/messages", "listMessagesPage"],
+  ] as const)(
+    "does not accept workspace or user scope on %s",
+    async (path, method) => {
+      const { app, services } = await createApp();
+      const response = await app.inject({
+        method: "GET",
+        url: `${path}?workspaceId=attacker&userId=attacker`,
+      });
 
-    expect(response.statusCode).toBe(400);
-    expect(services.listTransactionsPage).not.toHaveBeenCalled();
-    await app.close();
-  });
+      expect(response.statusCode).toBe(400);
+      expect(services[method]).not.toHaveBeenCalled();
+      await app.close();
+    },
+  );
 
   it("returns the stable invalid-cursor envelope without leaking cursor material", async () => {
     const { app, services } = await createApp();
@@ -230,5 +283,5 @@ async function createApp(options: { authenticated?: boolean } = {}) {
       listMessagesPage: services.listMessagesPage,
     } as never,
   });
-  return { app, services };
+  return { app, auth, services, viewerService };
 }

@@ -1,5 +1,5 @@
 const SECRET_KEYS =
-  /^(authorization|proxy-authorization|cookie|set-cookie|token|access[_-]?token|refresh[_-]?token|api[_-]?key|password|secret|client[_-]?secret)$/i;
+  /^(authorization|proxy-authorization|cookie|set-cookie|cursor|token|access[_-]?token|refresh[_-]?token|api[_-]?key|password|secret|client[_-]?secret)$/i;
 
 export function sanitizeRequestUrl(rawUrl: string): string {
   try {

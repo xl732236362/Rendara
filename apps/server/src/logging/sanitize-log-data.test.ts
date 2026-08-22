@@ -3,6 +3,28 @@ import { describe, expect, it } from "vitest";
 import { sanitizeLogData, sanitizeRequestUrl } from "./sanitize-log-data.js";
 
 describe("log data sanitization", () => {
+  it("redacts pagination cursors from URLs while preserving safe query parameters", () => {
+    const sentinel = "sentinel-pagination-cursor";
+    const sanitized = sanitizeRequestUrl(
+      `/api/v2/projects?cursor=${sentinel}&limit=1`,
+    );
+
+    expect(sanitized).not.toContain(sentinel);
+    expect(sanitized).toContain("cursor=%5BREDACTED%5D");
+    expect(sanitized).toContain("limit=1");
+  });
+
+  it("redacts pagination cursors from structured log data", () => {
+    const sentinel = "sentinel-pagination-cursor";
+    const sanitized = JSON.stringify(
+      sanitizeLogData({ cursor: sentinel, limit: 1 }),
+    );
+
+    expect(sanitized).not.toContain(sentinel);
+    expect(sanitized).toContain("[REDACTED]");
+    expect(sanitized).toContain('"limit":1');
+  });
+
   it("redacts credentials from URLs and nested log data", () => {
     const sentinel = "sentinel-secret-token";
     const sanitized = sanitizeLogData({
