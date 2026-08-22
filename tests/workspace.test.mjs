@@ -1116,11 +1116,53 @@ const phase6AArchitectureFixtures = [
       'const raw = ["projects", workspaceId] as const;\nuseQuery({ queryKey: raw, queryFn: loadProjects });',
   },
   {
+    name: "local queryKeys impersonation",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "query-key-factory-boundary",
+    source:
+      'const queryKeys = { workspace: { projects: () => ["forged"] } };\nuseQuery({ queryKey: queryKeys.workspace.projects(), queryFn: loadProjects });',
+  },
+  {
+    name: "aliased local query-key factory impersonation",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "query-key-factory-boundary",
+    source:
+      'const forged = { workspace: { projects: () => ["forged"] } };\nconst queryKeys = forged;\nuseQuery({ queryKey: queryKeys.workspace.projects(), queryFn: loadProjects });',
+  },
+  {
+    name: "default-imported queryKeys impersonation",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "query-key-factory-boundary",
+    source:
+      'import queryKeys from "../lib/not-query-keys";\nuseQuery({ queryKey: queryKeys.workspace.projects(), queryFn: loadProjects });',
+  },
+  {
+    name: "namespace-imported queryKeys impersonation",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "query-key-factory-boundary",
+    source:
+      'import * as forged from "../lib/not-query-keys";\nuseQuery({ queryKey: forged.queryKeys.workspace.projects(), queryFn: loadProjects });',
+  },
+  {
     name: "identity-derived resources under global keys",
     path: "apps/web/src/lib/query/keys.ts",
     rule: "identity-scoped-query-keys",
     source:
       'export const queryKeys = { global: { projects: (workspaceId: string) => ["global", "projects", workspaceId] as const } };',
+  },
+  {
+    name: "global query-key factories with arbitrary parameter names",
+    path: "apps/web/src/lib/query/keys.ts",
+    rule: "identity-scoped-query-keys",
+    source:
+      'export const queryKeys = { global: { projects: (scope: string) => ["global", "projects", scope] as const } };',
+  },
+  {
+    name: "global query-key factories forwarding scoped arguments",
+    path: "apps/web/src/lib/query/keys.ts",
+    rule: "identity-scoped-query-keys",
+    source:
+      'const scoped = "workspace";\nfunction makeKey(value: string) { return ["global", value]; }\nexport const queryKeys = { global: { projects: () => makeKey(scoped) } };',
   },
   {
     name: "component-local V2 collection fetches",
@@ -1151,6 +1193,48 @@ const phase6AArchitectureFixtures = [
       'import { projectClient } from "../lib/api/projects";\nexport function ProjectList() { return projectClient.page(token, {}); }',
   },
   {
+    name: "default-imported domain V2 clients",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "v2-fetch-ownership",
+    source:
+      'import projectClient from "../lib/api/projects";\nexport function ProjectList() { return projectClient.page(token, {}); }',
+  },
+  {
+    name: "direct global fetch calls to literal V2 paths",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "v2-fetch-ownership",
+    source:
+      'export function ProjectList() { return fetch("/api/v2/projects"); }',
+  },
+  {
+    name: "direct apiFetch calls to template V2 paths",
+    path: "apps/web/src/hooks/use-projects.ts",
+    rule: "v2-fetch-ownership",
+    source:
+      "export function useProjects() { return apiFetch(`/api/v2/projects?workspace=${workspaceId}`); }",
+  },
+  {
+    name: "direct request calls through constant V2 URLs",
+    path: "apps/web/src/app/projects/page.tsx",
+    rule: "v2-fetch-ownership",
+    source:
+      'const url = "/api/v2/projects";\nexport function Page() { return request(url); }',
+  },
+  {
+    name: "aliased request calls through constant V2 URLs",
+    path: "apps/web/src/components/project-list.tsx",
+    rule: "v2-fetch-ownership",
+    source:
+      'const url = "/api/v2/projects";\nconst load = apiFetch;\nexport function ProjectList() { return load(url); }',
+  },
+  {
+    name: "direct V2 requests from nonowner lib modules",
+    path: "apps/web/src/lib/project-loader.ts",
+    rule: "v2-fetch-ownership",
+    source:
+      'export function loadProjects() { return apiFetch("/api/v2/projects"); }',
+  },
+  {
     name: "mutation retries without an idempotent-command allowlist",
     path: "apps/web/src/components/project-list.tsx",
     rule: "mutation-retry-policy",
@@ -1175,6 +1259,20 @@ const phase6AArchitectureFixtures = [
     path: "apps/web/src/lib/query/query-client.ts",
     rule: "mutation-retry-policy",
     source: "new QueryClient({ defaultOptions: { mutations: { retry: 2 } } });",
+  },
+  {
+    name: "local allowlisted mutation command impersonation",
+    path: "apps/web/src/components/attachment-retry.tsx",
+    rule: "mutation-retry-policy",
+    source:
+      "const retryGeneratedAssetAttachment = async () => undefined;\nuseMutation({ mutationFn: retryGeneratedAssetAttachment, retry: 2 });",
+  },
+  {
+    name: "renamed unrelated mutation command impersonation",
+    path: "apps/web/src/components/attachment-retry.tsx",
+    rule: "mutation-retry-policy",
+    source:
+      'import { deleteEverything as retryGeneratedAssetAttachment } from "../lib/unsafe";\nuseMutation({ mutationFn: retryGeneratedAssetAttachment, retry: 2 });',
   },
   {
     name: "unbounded collection services outside the route inventory",
@@ -1204,6 +1302,27 @@ const phase6AArchitectureFixtures = [
     source:
       'export function register(app: FastifyInstance, service: WidgetService) { const load = service.fetchAllWidgets; app.get("/api/widgets", async () => load()); }',
   },
+  {
+    name: "direct SQL query collection reads",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      'export function register(app: FastifyInstance, db: Database) { app.get("/api/widgets", async () => db.query("SELECT * FROM widgets")); }',
+  },
+  {
+    name: "direct SQL execute collection reads through constants",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      'const sql = `SELECT id FROM widgets ORDER BY created_at`;\nexport function register(app: FastifyInstance, db: Database) { app.get("/api/widgets", async () => db.execute(sql)); }',
+  },
+  {
+    name: "unknown GET routes without recognizable service names",
+    path: "apps/server/src/http/widgets.ts",
+    rule: "collection-route-inventory",
+    source:
+      'export function register(app: FastifyInstance, service: WidgetService) { app.get("/api/widgets", async () => service.load()); }',
+  },
 ];
 
 for (const fixture of phase6AArchitectureFixtures) {
@@ -1215,15 +1334,92 @@ for (const fixture of phase6AArchitectureFixtures) {
   });
 }
 
-test("phase 6A mutation retry allowlist accepts only named idempotent commands", () => {
+test("phase 6A query factory provenance accepts authoritative imports only", () => {
+  const positiveSources = [
+    {
+      path: "apps/web/src/lib/query/keys.ts",
+      source:
+        'export const queryKeys = { global: { health: () => ["health"] }, workspace: { projects: () => ["projects"] } };',
+    },
+    {
+      path: "apps/web/src/lib/query/index.ts",
+      source: 'export { queryKeys as keys } from "./keys";',
+    },
+    {
+      path: "apps/web/src/components/direct.tsx",
+      source:
+        'import { queryKeys } from "../lib/query/keys";\nuseQuery({ queryKey: queryKeys.workspace.projects() });',
+    },
+    {
+      path: "apps/web/src/components/alias.tsx",
+      source:
+        'import { queryKeys as keys } from "../lib/query/keys";\nuseQuery({ queryKey: keys.workspace.projects() });',
+    },
+    {
+      path: "apps/web/src/components/namespace.tsx",
+      source:
+        'import * as keyModule from "../lib/query/keys";\nuseQuery({ queryKey: keyModule.queryKeys.workspace.projects() });',
+    },
+    {
+      path: "apps/web/src/components/reexport.tsx",
+      source:
+        'import { keys } from "../lib/query";\nuseQuery({ queryKey: keys.workspace.projects() });',
+    },
+    {
+      path: "apps/web/src/components/global.tsx",
+      source:
+        'import { queryKeys } from "../lib/query/keys";\nuseQuery({ queryKey: queryKeys.global.health() });',
+    },
+  ];
+
+  assert.deepEqual(scanPhase6AArchitectureSources(positiveSources), []);
+
+  const forgedReexport = scanPhase6AArchitectureSources([
+    {
+      path: "apps/web/src/lib/query/facade.ts",
+      source: 'export { queryKeys as keys } from "../not-query-keys";',
+    },
+    {
+      path: "apps/web/src/components/forged-reexport.tsx",
+      source:
+        'import { keys } from "../lib/query/facade";\nuseQuery({ queryKey: keys.workspace.projects() });',
+    },
+  ]);
+  assert.equal(forgedReexport[0]?.rule, "query-key-factory-boundary");
+});
+
+test("phase 6A mutation retry allowlist accepts only proven exports", () => {
   assert.deepEqual(phase6ABoundaries.phase6AIdempotentMutationRetryAllowlist, [
-    "retryGeneratedAssetAttachment",
+    {
+      modulePath: "apps/web/src/lib/server-api.ts",
+      exportName: "retryGeneratedAssetAttachment",
+    },
   ]);
   const allowed = scanPhase6AArchitectureSources([
     {
       path: "apps/web/src/components/attachment-retry.tsx",
       source:
-        "useMutation({ mutationFn: retryGeneratedAssetAttachment, retry: 2 });",
+        'import { retryGeneratedAssetAttachment } from "../lib/server-api";\nuseMutation({ mutationFn: retryGeneratedAssetAttachment, retry: 2 });',
+    },
+    {
+      path: "apps/web/src/components/attachment-retry-alias.tsx",
+      source:
+        'import { retryGeneratedAssetAttachment as retryAttachment } from "../lib/server-api";\nuseMutation({ mutationFn: retryAttachment, retry: 2 });',
+    },
+    {
+      path: "apps/web/src/components/attachment-retry-namespace.tsx",
+      source:
+        'import * as api from "../lib/server-api";\nuseMutation({ mutationFn: api.retryGeneratedAssetAttachment, retry: 2 });',
+    },
+    {
+      path: "apps/web/src/lib/retry-commands.ts",
+      source:
+        'export { retryGeneratedAssetAttachment as retryAttachment } from "./server-api";',
+    },
+    {
+      path: "apps/web/src/components/attachment-retry-reexport.tsx",
+      source:
+        'import { retryAttachment } from "../lib/retry-commands";\nuseMutation({ mutationFn: retryAttachment, retry: 2 });',
     },
   ]);
   const unknown = scanPhase6AArchitectureSources([
@@ -1253,6 +1449,31 @@ test("phase 6A collection inventory is unique, classified, and evidence-backed",
       assert.equal(typeof entry.cap, "number", `${entry.path} needs a cap`);
       assert.ok(entry.cap > 0, `${entry.path} cap must be positive`);
     }
+  }
+});
+
+test("phase 6A GET inventory classifies every route without changing collection totals", () => {
+  const inventory = phase6ABoundaries.phase6AGetRouteInventory;
+  assert.equal(inventory.length, 29);
+  const paths = inventory.map(({ path }) => path);
+  assert.equal(
+    new Set(paths).size,
+    paths.length,
+    "duplicate GET inventory path",
+  );
+  assert.equal(
+    inventory.filter(({ classification }) => classification !== "singleton")
+      .length,
+    16,
+  );
+  for (const entry of inventory) {
+    assert.ok(
+      ["singleton", "cursor", "bounded", "legacy-gap"].includes(
+        entry.classification,
+      ),
+      `${entry.path} has an invalid GET classification`,
+    );
+    assert.ok(entry.implementationEvidence.length > 0, entry.path);
   }
 });
 

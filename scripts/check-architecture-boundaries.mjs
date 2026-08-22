@@ -15,7 +15,10 @@ const registryValueShapeWrappers = new Set([
 ]);
 
 export const phase6AIdempotentMutationRetryAllowlist = Object.freeze([
-  "retryGeneratedAssetAttachment",
+  Object.freeze({
+    modulePath: "apps/web/src/lib/server-api.ts",
+    exportName: "retryGeneratedAssetAttachment",
+  }),
 ]);
 
 export const phase6ACollectionRouteInventory = Object.freeze([
@@ -70,8 +73,80 @@ export const phase6ACollectionInventorySummary = Object.freeze(
     .join(", "),
 );
 
+export const phase6AGetRouteInventory = Object.freeze([
+  ...phase6ACollectionRouteInventory,
+  singletonRoute(
+    "/api/brand-kits/:kitId",
+    "apps/server/src/http/brand-kits.ts",
+    "resource lookup by kitId",
+  ),
+  singletonRoute(
+    "/api/credits",
+    "apps/server/src/http/credits.ts",
+    "authenticated workspace balance",
+  ),
+  singletonRoute(
+    "/api/health",
+    "apps/server/src/http/health.ts",
+    "process health snapshot",
+  ),
+  singletonRoute(
+    "/api/health/realtime",
+    "apps/server/src/http/health.ts",
+    "realtime dependency health snapshot",
+  ),
+  singletonRoute(
+    "/api/jobs/:jobId",
+    "apps/server/src/http/jobs.ts",
+    "resource lookup by jobId",
+  ),
+  singletonRoute(
+    "/api/jobs/:jobId/attachment",
+    "apps/server/src/http/jobs.ts",
+    "single attachment lookup for one job",
+  ),
+  singletonRoute(
+    "/api/payments/subscription",
+    "apps/server/src/http/payments.ts",
+    "authenticated workspace subscription",
+  ),
+  singletonRoute(
+    "/api/projects/:projectId",
+    "apps/server/src/http/projects.ts",
+    "resource lookup by projectId",
+  ),
+  singletonRoute(
+    "/api/workspace/settings",
+    "apps/server/src/http/settings.ts",
+    "authenticated workspace settings",
+  ),
+  singletonRoute(
+    "/api/viewer",
+    "apps/server/src/http/viewer.ts",
+    "authenticated viewer identity",
+  ),
+  singletonRoute(
+    "/api/canvases/:canvasId",
+    "apps/server/src/http/canvases.ts",
+    "resource lookup by canvasId",
+  ),
+  singletonRoute(
+    "/api/uploads/:assetId/url",
+    "apps/server/src/http/uploads.ts",
+    "single signed URL lookup by assetId",
+  ),
+  singletonRoute(
+    "/api/proxy-image",
+    "apps/server/src/http/image-proxy.ts",
+    "single upstream image proxy response",
+  ),
+]);
+
 const phase6ACollectionRoutesByPath = new Map(
   phase6ACollectionRouteInventory.map((entry) => [entry.path, entry]),
+);
+const phase6AGetRoutesByPath = new Map(
+  phase6AGetRouteInventory.map((entry) => [entry.path, entry]),
 );
 
 function cursorRoute(pathname, file) {
@@ -99,6 +174,15 @@ function gapRoute(pathname, file) {
     file,
     classification: "legacy-gap",
     implementationEvidence: `${file}#unbounded-compatibility-or-catalog-gap`,
+  });
+}
+
+function singletonRoute(pathname, file, rationale) {
+  return Object.freeze({
+    path: pathname,
+    file,
+    classification: "singleton",
+    implementationEvidence: rationale,
   });
 }
 
@@ -201,11 +285,12 @@ export function scanArchitectureSources(sources) {
 
 export function scanPhase6AArchitectureSources(sources) {
   const findings = [];
+  const sourceGraph = createSourceGraph(sources);
   for (const entry of sources) {
     const filePath = normalizePath(entry.path);
     if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(filePath)) continue;
     const sourceFile = parseSourceFile(entry.source, filePath);
-    const context = createPhase6AContext(filePath, sourceFile);
+    const context = createPhase6AContext(filePath, sourceFile, sourceGraph);
     findings.push(...scanRawQueryKeys(context));
     findings.push(...scanIdentityScopedKeys(context));
     findings.push(...scanComponentV2Fetches(context));
@@ -275,12 +360,22 @@ function isProvenQueryFactoryExpression(expression, context, seen = new Set()) {
         seen,
       );
     }
-    return callRootIdentifier(current.expression) === "queryKeys";
+    return isAuthoritativeQueryKeyAccess(current.expression, context);
   }
   if (ts.isPropertyAccessExpression(current)) {
-    return callRootIdentifier(current) === "queryKeys";
+    return isAuthoritativeQueryKeyAccess(current, context);
   }
   return false;
+}
+
+function isAuthoritativeQueryKeyAccess(expression, context) {
+  const access = rootAccess(expression);
+  if (!access) return false;
+  const origin = resolveImportOrigin(access.root, access.members, context);
+  return (
+    origin?.modulePath === "apps/web/src/lib/query/keys.ts" &&
+    origin.exportName === "queryKeys"
+  );
 }
 
 function isProvenQueryFactoryOrNull(expression, context, seen) {
@@ -376,9 +471,15 @@ function containsIdentityDerivedKey(node) {
   let found = false;
   function visit(current) {
     if (
-      ts.isIdentifier(current) &&
-      /^(?:userId|workspaceId|canvasId|sessionId|ownerId)$/.test(current.text)
+      (ts.isArrowFunction(current) ||
+        ts.isFunctionExpression(current) ||
+        ts.isFunctionDeclaration(current)) &&
+      current.parameters.length > 0
     ) {
+      found = true;
+      return;
+    }
+    if (ts.isCallExpression(current) && current.arguments.length > 0) {
       found = true;
       return;
     }
@@ -389,7 +490,13 @@ function containsIdentityDerivedKey(node) {
 }
 
 function scanComponentV2Fetches(context) {
-  if (!/^apps\/web\/src\/(?:app|components|hooks)\//.test(context.filePath))
+  if (!context.filePath.startsWith("apps/web/src/")) return [];
+  if (
+    context.filePath.startsWith("apps/web/src/lib/api/") ||
+    context.filePath.startsWith("apps/web/src/lib/query/") ||
+    context.filePath === "apps/web/src/lib/api-client.ts" ||
+    context.filePath === "apps/web/src/lib/server-api.ts"
+  )
     return [];
   const domainBindings = new Set();
   for (const statement of context.sourceFile.statements) {
@@ -398,6 +505,8 @@ function scanComponentV2Fetches(context) {
     if (!ts.isStringLiteral(moduleName) || !isDomainApiModule(moduleName.text))
       continue;
     const bindings = statement.importClause?.namedBindings;
+    const defaultBinding = statement.importClause?.name;
+    if (defaultBinding) domainBindings.add(defaultBinding.text);
     if (bindings && ts.isNamedImports(bindings)) {
       for (const element of bindings.elements)
         domainBindings.add(element.name.text);
@@ -409,13 +518,37 @@ function scanComponentV2Fetches(context) {
     context,
     (node) =>
       ts.isCallExpression(node) &&
-      callRootIdentifier(node.expression) !== undefined &&
-      domainBindings.has(callRootIdentifier(node.expression)),
+      ((callRootIdentifier(node.expression) !== undefined &&
+        domainBindings.has(callRootIdentifier(node.expression))) ||
+        isDirectV2Request(node, context)),
   ).map((finding) => ({
     ...finding,
     rule: "v2-fetch-ownership",
     message: "V2 collection fetches must be owned by the shared query layer",
   }));
+}
+
+function isDirectV2Request(call, context) {
+  const callee = resolveExpression(call.expression, context);
+  if (!ts.isIdentifier(callee)) return false;
+  if (!/^(?:fetch|apiFetch|request)$/.test(callee.text)) return false;
+  const url = staticStringValue(call.arguments[0], context);
+  return url?.includes("/api/v2/") ?? false;
+}
+
+function staticStringValue(expression, context) {
+  const current = resolveExpression(expression, context);
+  if (
+    ts.isStringLiteral(current) ||
+    ts.isNoSubstitutionTemplateLiteral(current)
+  )
+    return current.text;
+  if (ts.isTemplateExpression(current)) {
+    return `${current.head.text}${current.templateSpans
+      .map((span) => `${span.literal.text}`)
+      .join("")}`;
+  }
+  return undefined;
 }
 
 function isDomainApiModule(moduleName) {
@@ -469,17 +602,21 @@ function scanMutationRetries(context) {
     inspectRetry(
       options,
       evidenceNode,
-      resolvedSymbolName(mutationFn, context),
+      resolveCommandOrigin(mutationFn, context),
     );
   }
 
-  function inspectRetry(options, evidenceNode, commandName) {
+  function inspectRetry(options, evidenceNode, commandOrigin) {
     if (!options.values.has("retry") && !options.unresolved) return;
     const retry = resolveExpression(options.values.get("retry"), context);
     const staticallyFalse = retry?.kind === ts.SyntaxKind.FalseKeyword;
     const allowlisted =
-      commandName !== undefined &&
-      phase6AIdempotentMutationRetryAllowlist.includes(commandName);
+      commandOrigin !== undefined &&
+      phase6AIdempotentMutationRetryAllowlist.some(
+        (entry) =>
+          entry.modulePath === commandOrigin.modulePath &&
+          entry.exportName === commandOrigin.exportName,
+      );
     if (!staticallyFalse && !allowlisted) {
       findings.push(
         phase6AFinding(
@@ -491,6 +628,13 @@ function scanMutationRetries(context) {
       );
     }
   }
+}
+
+function resolveCommandOrigin(expression, context) {
+  const resolved = resolveExpression(expression, context);
+  const access = rootAccess(resolved);
+  if (!access) return undefined;
+  return resolveImportOrigin(access.root, access.members, context);
 }
 
 function isCallNamed(expression, name) {
@@ -521,8 +665,7 @@ function scanCollectionRoutes(context) {
     if (
       routeArgument &&
       handler &&
-      containsCollectionServiceCall(handler) &&
-      !phase6ACollectionRoutesByPath.has(routeArgument.text)
+      !phase6AGetRoutesByPath.has(routeArgument.text)
     ) {
       findings.push(
         phase6AFinding(
@@ -593,7 +736,16 @@ function findCallInChain(node, methodName) {
   return false;
 }
 
-function createPhase6AContext(filePath, sourceFile) {
+function createSourceGraph(sources) {
+  return new Map(
+    sources.map((entry) => {
+      const filePath = normalizePath(entry.path);
+      return [filePath, parseSourceFile(entry.source, filePath)];
+    }),
+  );
+}
+
+function createPhase6AContext(filePath, sourceFile, sourceGraph) {
   const bindings = new Map();
   function visit(node) {
     if (
@@ -606,7 +758,114 @@ function createPhase6AContext(filePath, sourceFile) {
     ts.forEachChild(node, visit);
   }
   visit(sourceFile);
-  return { filePath, sourceFile, bindings };
+  return { filePath, sourceFile, bindings, sourceGraph };
+}
+
+function rootAccess(expression) {
+  let current = unwrapExpression(expression);
+  const members = [];
+  while (ts.isPropertyAccessExpression(current)) {
+    members.unshift(current.name.text);
+    current = unwrapExpression(current.expression);
+  }
+  return ts.isIdentifier(current) ? { root: current.text, members } : undefined;
+}
+
+function resolveImportOrigin(localName, members, context) {
+  for (const statement of context.sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const moduleSpecifier = statement.moduleSpecifier;
+    if (!ts.isStringLiteral(moduleSpecifier)) continue;
+    const modulePath = resolveModulePath(
+      context.filePath,
+      moduleSpecifier.text,
+      context.sourceGraph,
+    );
+    const importClause = statement.importClause;
+    if (importClause?.name?.text === localName) {
+      return resolveExportOrigin(modulePath, "default", context.sourceGraph);
+    }
+    const bindings = importClause?.namedBindings;
+    if (bindings && ts.isNamedImports(bindings)) {
+      const element = bindings.elements.find(
+        (candidate) => candidate.name.text === localName,
+      );
+      if (element) {
+        const exportName = element.propertyName?.text ?? element.name.text;
+        return resolveExportOrigin(modulePath, exportName, context.sourceGraph);
+      }
+    }
+    if (
+      bindings &&
+      ts.isNamespaceImport(bindings) &&
+      bindings.name.text === localName
+    ) {
+      const [exportName] = members;
+      if (!exportName) return undefined;
+      return resolveExportOrigin(modulePath, exportName, context.sourceGraph);
+    }
+  }
+  return undefined;
+}
+
+function resolveExportOrigin(
+  modulePath,
+  exportName,
+  sourceGraph,
+  seen = new Set(),
+) {
+  const key = `${modulePath}#${exportName}`;
+  if (seen.has(key)) return undefined;
+  seen.add(key);
+  const sourceFile = sourceGraph?.get(modulePath);
+  if (!sourceFile) return { modulePath, exportName };
+  for (const statement of sourceFile.statements) {
+    if (!ts.isExportDeclaration(statement) || !statement.exportClause) continue;
+    if (!ts.isNamedExports(statement.exportClause)) continue;
+    const element = statement.exportClause.elements.find(
+      (candidate) => candidate.name.text === exportName,
+    );
+    if (!element) continue;
+    const sourceName = element.propertyName?.text ?? element.name.text;
+    if (
+      !statement.moduleSpecifier ||
+      !ts.isStringLiteral(statement.moduleSpecifier)
+    ) {
+      return { modulePath, exportName: sourceName };
+    }
+    const sourcePath = resolveModulePath(
+      modulePath,
+      statement.moduleSpecifier.text,
+      sourceGraph,
+    );
+    return resolveExportOrigin(sourcePath, sourceName, sourceGraph, seen);
+  }
+  return { modulePath, exportName };
+}
+
+function resolveModulePath(importerPath, moduleSpecifier, sourceGraph) {
+  let base;
+  if (moduleSpecifier.startsWith("@/")) {
+    base = `apps/web/src/${moduleSpecifier.slice(2)}`;
+  } else if (moduleSpecifier.startsWith(".")) {
+    base = normalizePath(
+      path.posix.join(path.posix.dirname(importerPath), moduleSpecifier),
+    );
+  } else {
+    return moduleSpecifier;
+  }
+  const withoutJs = base.replace(/\.(?:js|jsx|mjs|cjs)$/, "");
+  const candidates = [
+    base,
+    `${withoutJs}.ts`,
+    `${withoutJs}.tsx`,
+    `${withoutJs}/index.ts`,
+    `${withoutJs}/index.tsx`,
+  ];
+  return (
+    candidates.find((candidate) => sourceGraph?.has(candidate)) ??
+    `${withoutJs}.ts`
+  );
 }
 
 function resolveExpression(expression, context, seen = new Set()) {
@@ -655,13 +914,6 @@ function resolveObjectProperties(expression, context, seen = new Set()) {
   return { values, unresolved };
 }
 
-function resolvedSymbolName(expression, context) {
-  const resolved = resolveExpression(expression, context);
-  if (ts.isIdentifier(resolved)) return resolved.text;
-  if (ts.isPropertyAccessExpression(resolved)) return resolved.name.text;
-  return undefined;
-}
-
 function propertyName(name) {
   if (!name) return undefined;
   if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
@@ -690,12 +942,12 @@ export function auditPhase6ACollectionRouteInventory(sources) {
   }
 
   const duplicates = duplicateValues(
-    phase6ACollectionRouteInventory.map((entry) => entry.path),
+    phase6AGetRouteInventory.map((entry) => entry.path),
   );
   for (const pathname of duplicates)
     issues.push(`duplicate inventory path: ${pathname}`);
 
-  for (const inventoryEntry of phase6ACollectionRouteInventory) {
+  for (const inventoryEntry of phase6AGetRouteInventory) {
     const route = registered.find(
       (candidate) =>
         candidate.path === inventoryEntry.path &&
@@ -724,6 +976,11 @@ export function auditPhase6ACollectionRouteInventory(sources) {
   for (const pathname of discoveredCollections) {
     if (!phase6ACollectionRoutesByPath.has(pathname)) {
       issues.push(`${pathname} is a collection GET missing from the inventory`);
+    }
+  }
+  for (const route of registered) {
+    if (!phase6AGetRoutesByPath.has(route.path)) {
+      issues.push(`${route.path} is a GET route missing from the inventory`);
     }
   }
   return issues.sort();
