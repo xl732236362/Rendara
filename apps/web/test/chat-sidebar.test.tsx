@@ -76,11 +76,12 @@ function createMockWs(): WebSocketHandle {
 }
 
 describe("ChatSidebar", () => {
-  it("reuses one UUID for optimistic rendering and user persistence", async () => {
+  it("reuses the user message UUID for optimistic rendering and persistence", async () => {
     const randomUUID = vi
       .spyOn(crypto, "randomUUID")
       .mockReturnValueOnce("11111111-1111-4111-8111-111111111111")
       .mockReturnValueOnce("22222222-2222-4222-8222-222222222222");
+    const ws = createMockWs();
     render(
       <ToastProvider>
         <TierLimitToastProvider>
@@ -89,7 +90,7 @@ describe("ChatSidebar", () => {
             canvasId="canvas-1"
             open
             onToggle={() => {}}
-            ws={createMockWs()}
+            ws={ws}
           />
         </TierLimitToastProvider>
       </ToastProvider>,
@@ -114,6 +115,12 @@ describe("ChatSidebar", () => {
       ),
     ).toBeInTheDocument();
     expect(randomUUID).toHaveBeenCalledTimes(2);
+    expect(ws.startRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        clientRequestId: "22222222-2222-4222-8222-222222222222",
+      }),
+      expect.anything(),
+    );
   });
   it("drops a local assistant placeholder when the server has persisted its response", () => {
     const merged = mergeReloadedMessages(
@@ -715,6 +722,7 @@ describe("ChatSidebar", () => {
       "token_abc",
       "session-real",
       expect.objectContaining({
+        id: "run_123",
         role: "assistant",
         content: "Assistant response.",
       }),
@@ -897,6 +905,7 @@ describe("ChatSidebar", () => {
         "token_abc",
         "session-real",
         expect.objectContaining({
+          id: "run-remounted",
           role: "assistant",
           content: "Recovered after remount.",
         }),
@@ -1046,6 +1055,7 @@ describe("ChatSidebar", () => {
       "token_abc",
       "session-real",
       expect.objectContaining({
+        id: "run_123",
         role: "assistant",
         content: "Recovered assistant response. tail",
       }),
