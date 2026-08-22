@@ -3,7 +3,9 @@ import type {
   ChatMessageCreateRequest,
   ChatSessionSummary,
   ContentBlock,
+  CursorPage,
   Json,
+  PaginationQuery,
 } from "@loomic/shared";
 
 import type {
@@ -11,6 +13,8 @@ import type {
   UserSupabaseClient,
 } from "../../supabase/user.js";
 import type { ThreadService } from "./thread-service.js";
+import type { CursorCodec, CursorScope } from "../../pagination/cursor-codec.js";
+import { buildKeysetPredicate } from "../../pagination/keyset.js";
 
 export class ChatServiceError extends Error {
   readonly statusCode: number;
@@ -32,6 +36,11 @@ export type ChatService = {
     user: AuthenticatedUser,
     canvasId: string,
   ): Promise<ChatSessionSummary[]>;
+  listSessionsPage(
+    user: AuthenticatedUser,
+    canvasId: string,
+    query: PaginationQuery,
+  ): Promise<CursorPage<ChatSessionSummary>>;
   createSession(
     user: AuthenticatedUser,
     canvasId: string,
@@ -47,6 +56,11 @@ export type ChatService = {
     user: AuthenticatedUser,
     sessionId: string,
   ): Promise<ChatMessage[]>;
+  listMessagesPage(
+    user: AuthenticatedUser,
+    sessionId: string,
+    query: PaginationQuery,
+  ): Promise<CursorPage<ChatMessage>>;
   createMessage(
     user: AuthenticatedUser,
     sessionId: string,
@@ -133,6 +147,8 @@ function countArtifacts(blocks: ContentBlock[]): number {
 export function createChatService(options: {
   createUserClient: (accessToken: string) => UserSupabaseClient;
   threadService: Pick<ThreadService, "createThreadId">;
+  cursorCodec?: CursorCodec;
+  logger?: { error(event: string, context: Record<string, unknown>): void };
 }): ChatService {
   return {
     async listSessions(user, canvasId) {
@@ -156,6 +172,56 @@ export function createChatService(options: {
         title: row.title,
         updatedAt: row.updated_at,
       }));
+    },
+
+    async listSessionsPage(user, canvasId, query) {
+      const cursorCodec = requireChatCursorCodec(options.cursorCodec);
+      const client = options.createUserClient(user.accessToken);
+      const workspaceId = await resolveCanvasWorkspace(client, canvasId);
+      const scope: CursorScope = {
+        userId: user.id,
+        workspaceId,
+        owner: "chat_sessions",
+        filterHash: canvasId,
+        direction: "desc",
+      };
+      const boundary = query.cursor
+        ? cursorCodec.decode(query.cursor, scope)
+        : undefined;
+      let collectionQuery = client
+        .from("chat_sessions")
+        .select("id, title, updated_at")
+        .eq("canvas_id", canvasId)
+        .eq("created_by", user.id)
+        .order("updated_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(query.limit + 1);
+      if (boundary) {
+        collectionQuery = collectionQuery.or(
+          serializeKeyset("updated_at", boundary),
+        );
+      }
+      const { data, error } = await collectionQuery;
+      if (error) {
+        logChatPagingFailure(options.logger, "chat_sessions", user.id, workspaceId);
+        throw new ChatServiceError("chat_error", "Failed to list sessions.", 500);
+      }
+      const pageRows = (data ?? []).slice(0, query.limit);
+      const tail = pageRows.at(-1);
+      return {
+        items: pageRows.map((row) => ({
+          id: row.id,
+          title: row.title,
+          updatedAt: row.updated_at,
+        })),
+        nextCursor:
+          data && data.length > query.limit && tail
+            ? cursorCodec.encode(scope, {
+                timestamp: tail.updated_at,
+                id: tail.id,
+              })
+            : null,
+      };
     },
 
     async createSession(user, canvasId, title) {
@@ -226,6 +292,7 @@ export function createChatService(options: {
           "id, role, content, tool_activities, content_blocks, created_at",
         )
         .eq("session_id", sessionId)
+        .is("superseded_by", null)
         .order("created_at", { ascending: true });
 
       if (error) {
@@ -257,6 +324,59 @@ export function createChatService(options: {
 
       // During the static-client transition, retain the richer server record.
       return deduplicateAdjacentMessages(rows);
+    },
+
+    async listMessagesPage(user, sessionId, query) {
+      const cursorCodec = requireChatCursorCodec(options.cursorCodec);
+      const client = options.createUserClient(user.accessToken);
+      const sessionScope = await resolveSessionScope(client, user.id, sessionId);
+      const scope: CursorScope = {
+        userId: user.id,
+        workspaceId: sessionScope.workspaceId,
+        owner: "chat_messages",
+        filterHash: sessionId,
+        direction: "desc",
+      };
+      const boundary = query.cursor
+        ? cursorCodec.decode(query.cursor, scope)
+        : undefined;
+      let collectionQuery = client
+        .from("chat_messages")
+        .select(
+          "id, role, content, tool_activities, content_blocks, created_at",
+        )
+        .eq("session_id", sessionId)
+        .is("superseded_by", null)
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false })
+        .limit(query.limit + 1);
+      if (boundary) {
+        collectionQuery = collectionQuery.or(
+          serializeKeyset("created_at", boundary),
+        );
+      }
+      const { data, error } = await collectionQuery;
+      if (error) {
+        logChatPagingFailure(
+          options.logger,
+          "chat_messages",
+          user.id,
+          sessionScope.workspaceId,
+        );
+        throw new ChatServiceError("chat_error", "Failed to list messages.", 500);
+      }
+      const pageRows = (data ?? []).slice(0, query.limit);
+      const tail = pageRows.at(-1);
+      return {
+        items: pageRows.map(mapMessageRow).reverse(),
+        nextCursor:
+          data && data.length > query.limit && tail
+            ? cursorCodec.encode(scope, {
+                timestamp: tail.created_at,
+                id: tail.id,
+              })
+            : null,
+      };
     },
 
     async createMessage(user, sessionId, input) {
@@ -316,4 +436,97 @@ export function createChatService(options: {
       };
     },
   };
+}
+
+type MessageRow = {
+  id: string;
+  role: string;
+  content: string;
+  tool_activities: Json;
+  content_blocks: Json;
+  created_at: string;
+};
+
+function mapMessageRow(row: MessageRow): ChatMessage {
+  const contentBlocks =
+    Array.isArray(row.content_blocks) && row.content_blocks.length > 0
+      ? (row.content_blocks as ContentBlock[])
+      : synthesizeLegacyBlocks(
+          row.content,
+          row.tool_activities as unknown[] | null,
+        );
+  return {
+    id: row.id,
+    role: row.role as "user" | "assistant",
+    content: row.content,
+    toolActivities: row.tool_activities as ChatMessage["toolActivities"],
+    contentBlocks,
+    createdAt: row.created_at,
+  };
+}
+
+function requireChatCursorCodec(codec: CursorCodec | undefined): CursorCodec {
+  if (!codec) {
+    throw new Error("CursorCodec is required for paged chat queries.");
+  }
+  return codec;
+}
+
+async function resolveCanvasWorkspace(
+  client: UserSupabaseClient,
+  canvasId: string,
+): Promise<string> {
+  const { data, error } = await client
+    .from("canvases")
+    .select("id, projects!inner(workspace_id)")
+    .eq("id", canvasId)
+    .maybeSingle();
+  const project = data?.projects as unknown as { workspace_id?: string } | null;
+  if (error || !project?.workspace_id) {
+    throw new ChatServiceError("chat_error", "Failed to list sessions.", 500);
+  }
+  return project.workspace_id;
+}
+
+async function resolveSessionScope(
+  client: UserSupabaseClient,
+  userId: string,
+  sessionId: string,
+): Promise<{ workspaceId: string }> {
+  const { data, error } = await client
+    .from("chat_sessions")
+    .select("id, canvas_id, created_by, canvases!inner(projects!inner(workspace_id))")
+    .eq("id", sessionId)
+    .eq("created_by", userId)
+    .maybeSingle();
+  const canvas = data?.canvases as unknown as {
+    projects?: { workspace_id?: string };
+  } | null;
+  if (error || !canvas?.projects?.workspace_id) {
+    throw new ChatServiceError("session_not_found", "Session not found.", 404);
+  }
+  return { workspaceId: canvas.projects.workspace_id };
+}
+
+function serializeKeyset(
+  timestampColumn: string,
+  boundary: { timestamp: string; id: string },
+): string {
+  const predicate = buildKeysetPredicate("desc", boundary);
+  const range = predicate.branches[0][0];
+  return `${timestampColumn}.${range.operator}.${range.value},and(${timestampColumn}.eq.${boundary.timestamp},id.${range.operator}.${boundary.id})`;
+}
+
+function logChatPagingFailure(
+  logger: { error(event: string, context: Record<string, unknown>): void } | undefined,
+  collection: string,
+  userId: string,
+  workspaceId: string,
+): void {
+  logger?.error("pagination.query_failed", {
+    collection,
+    stage: "collection_query",
+    userId,
+    workspaceId,
+  });
 }

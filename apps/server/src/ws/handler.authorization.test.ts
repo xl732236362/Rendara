@@ -520,6 +520,7 @@ describe("WebSocket resource commands", () => {
     expect(createMessage.mock.calls[0]?.[2].id).toBe(
       createMessage.mock.calls[1]?.[2].id,
     );
+    expect(createMessage.mock.calls[0]?.[2].id).toBe("run-1");
     expect(createMessage).toHaveBeenLastCalledWith(
       user,
       "session-1",

@@ -560,6 +560,7 @@ async function handleRunCommand(
         chatService: services.chatService,
         input: message,
         log,
+        runId,
         sessionId: payload.sessionId,
         user: authenticatedUser,
       });
@@ -638,11 +639,11 @@ async function persistAssistantMessage(options: {
   chatService: ChatService;
   input: { role: "assistant"; content: string; contentBlocks: ContentBlock[] };
   log: ReturnType<typeof createPipelineLogger>;
+  runId: string;
   sessionId: string;
   user: AuthenticatedUser;
 }): Promise<boolean> {
-  const idempotencyKey = randomUUID();
-  const input = { ...options.input, id: idempotencyKey };
+  const input = { ...options.input, id: options.runId };
   for (
     let attempt = 1;
     attempt <= ASSISTANT_PERSISTENCE_MAX_ATTEMPTS;

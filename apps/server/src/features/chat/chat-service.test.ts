@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ChatMessage } from "@loomic/shared";
 import { deduplicateAdjacentMessages } from "./chat-service.js";
+import { createChatService } from "./chat-service.js";
 
 const timestamp = "2026-08-20T00:00:00.000Z";
 
@@ -182,5 +183,37 @@ describe("deduplicateAdjacentMessages", () => {
       messages[2],
       messages[4],
     ]);
+  });
+});
+
+describe("chat canonical reads", () => {
+  it("excludes superseded message rows from legacy reads", async () => {
+    const calls: unknown[][] = [];
+    const query: Record<string, unknown> = {};
+    for (const method of ["select", "eq", "is", "order"]) {
+      query[method] = (...args: unknown[]) => {
+        calls.push([method, ...args]);
+        return query;
+      };
+    }
+    query.then = (resolve: (value: unknown) => unknown) =>
+      resolve({ data: [], error: null });
+    const service = createChatService({
+      createUserClient: () =>
+        ({ from: () => query }) as never,
+      threadService: { createThreadId: () => "thread-1" },
+    });
+
+    await service.listMessages(
+      {
+        accessToken: "token",
+        email: "user@example.com",
+        id: "user-1",
+        userMetadata: {},
+      },
+      "session-1",
+    );
+
+    expect(calls).toContainEqual(["is", "superseded_by", null]);
   });
 });

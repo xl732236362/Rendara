@@ -696,8 +696,9 @@ export function ChatSidebar({
             : {}),
         };
       });
+      const userMessageId = crypto.randomUUID();
       const userMsg = {
-        id: `user-${Date.now()}`,
+        id: userMessageId,
         role: "user" as const,
         contentBlocks: [
           { type: "text" as const, text },
@@ -709,6 +710,7 @@ export function ChatSidebar({
 
       // Persist user message (fire-and-forget)
       saveMessage(accessTokenRef.current, currentSessionId, {
+        id: userMessageId,
         role: "user",
         content: text,
         contentBlocks: [
@@ -1437,7 +1439,11 @@ export function ChatSidebar({
             <ChatSkills onSend={handleSend} />
           ) : (
             messages.map((msg) => (
-              <div key={msg.id} className="flex flex-col gap-2">
+              <div
+                key={msg.id}
+                className="flex flex-col gap-2"
+                data-message-id={msg.id}
+              >
                 <ChatMessage
                   role={msg.role}
                   contentBlocks={msg.contentBlocks}

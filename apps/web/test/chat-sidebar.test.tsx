@@ -76,6 +76,45 @@ function createMockWs(): WebSocketHandle {
 }
 
 describe("ChatSidebar", () => {
+  it("reuses one UUID for optimistic rendering and user persistence", async () => {
+    const randomUUID = vi
+      .spyOn(crypto, "randomUUID")
+      .mockReturnValueOnce("11111111-1111-4111-8111-111111111111")
+      .mockReturnValueOnce("22222222-2222-4222-8222-222222222222");
+    render(
+      <ToastProvider>
+        <TierLimitToastProvider>
+          <ChatSidebar
+            accessToken="token_abc"
+            canvasId="canvas-1"
+            open
+            onToggle={() => {}}
+            ws={createMockWs()}
+          />
+        </TierLimitToastProvider>
+      </ToastProvider>,
+    );
+
+    const input = await screen.findByPlaceholderText(/start with an idea/i);
+    await userEvent.type(input, "stable user message{Enter}");
+
+    await waitFor(() =>
+      expect(saveMessageMock).toHaveBeenCalledWith(
+        "token_abc",
+        "session-real",
+        expect.objectContaining({
+          id: "11111111-1111-4111-8111-111111111111",
+          role: "user",
+        }),
+      ),
+    );
+    expect(
+      document.querySelector(
+        '[data-message-id="11111111-1111-4111-8111-111111111111"]',
+      ),
+    ).toBeInTheDocument();
+    expect(randomUUID).toHaveBeenCalledTimes(2);
+  });
   it("drops a local assistant placeholder when the server has persisted its response", () => {
     const merged = mergeReloadedMessages(
       [
